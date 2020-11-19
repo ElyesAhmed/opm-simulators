@@ -30,6 +30,7 @@ option(BUILD_FLOW_POLY_GRID "Build flow blackoil with polyhedral grid" OFF)
 option(OPM_ENABLE_PYTHON "Enable python bindings?" OFF)
 option(OPM_ENABLE_PYTHON_TESTS "Enable tests for the python bindings?" ON)
 option(ENABLE_FPGA "Enable FPGA kernels integration?" OFF)
+option(BUILD_FLOW_ALU_GRID "Build flow blackoil with alu grid" OFF)
 
 if(SIBLING_SEARCH AND NOT opm-common_DIR)
   # guess the sibling dir
@@ -430,6 +431,31 @@ opm_add_test(flow_distribute_z
   ${FLOW_TGTS}
   $<TARGET_OBJECTS:moduleVersion>
   )
+
+if (NOT BUILD_FLOW_ALU_GRID)
+  set(FLOW_ALUGRID_ONLY_DEFAULT_ENABLE_IF "FALSE")
+else()
+  set(FLOW_ALUGRID_ONLY_DEFAULT_ENABLE_IF "TRUE")
+endif()
+
+# the production oriented general-purpose ECL simulator
+opm_add_test(flow_alugrid
+  ONLY_COMPILE
+  ALWAYS_ENABLE
+  DEFAULT_ENABLE_IF ${FLOW_ALUGRID_ONLY_DEFAULT_ENABLE_IF}
+  DEPENDS opmsimulators
+  LIBRARIES opmsimulators
+  SOURCES
+  flow/flow_blackoil_alugrid.cpp
+  $<TARGET_OBJECTS:moduleVersion>)
+target_compile_definitions(flow_alugrid PRIVATE USE_ALUGRID)
+
+
+if (NOT BUILD_FLOW_VARIANTS)
+  set(FLOW_VARIANTS_DEFAULT_ENABLE_IF "FALSE")
+else()
+  set(FLOW_VARIANTS_DEFAULT_ENABLE_IF "TRUE")
+endif()
 
 # Variant versions of Flow.
 opm_add_test(flow_blackoil_dunecpr

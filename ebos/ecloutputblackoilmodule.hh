@@ -364,7 +364,7 @@ public:
                     this->bubblePointPressure_[globalDofIdx] = getValue(FluidSystem::bubblePointPressure(fs, intQuants.pvtRegionIndex()));
                 }
                 catch (const NumericalIssue&) {
-                    const auto cartesianIdx = elemCtx.simulator().vanguard().grid().globalCell()[globalDofIdx];
+                    const auto cartesianIdx = elemCtx.simulator().vanguard().cartesianIndex(globalDofIdx);
                     this->failedCellsPb_.push_back(cartesianIdx);
                 }
             }
@@ -373,7 +373,7 @@ public:
                     this->dewPointPressure_[globalDofIdx] = getValue(FluidSystem::dewPointPressure(fs, intQuants.pvtRegionIndex()));
                 }
                 catch (const NumericalIssue&) {
-                    const auto cartesianIdx = elemCtx.simulator().vanguard().grid().globalCell()[globalDofIdx];
+                    const auto cartesianIdx = elemCtx.simulator().vanguard().cartesianIndex(globalDofIdx);
                     this->failedCellsPd_.push_back(cartesianIdx);
                 }
             }
@@ -472,7 +472,7 @@ public:
             updateFluidInPlace_(elemCtx, dofIdx);
 
             // Adding block data
-            const auto cartesianIdx = elemCtx.simulator().vanguard().grid().globalCell()[globalDofIdx];
+            const auto cartesianIdx = elemCtx.simulator().vanguard().cartesianIndex(globalDofIdx);
             for (auto& val: this->blockData_) {
                 const auto& key = val.first;
                 int cartesianIdxBlock = key.second - 1;

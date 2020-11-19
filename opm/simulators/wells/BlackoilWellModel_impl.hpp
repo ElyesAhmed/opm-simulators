@@ -53,10 +53,7 @@ namespace Opm {
 
         // Set up cartesian mapping.
         {
-            const auto& grid = this->ebosSimulator_.vanguard().grid();
-            const auto& cartDims = UgGridHelpers::cartDims(grid);
-            setupCartesianToCompressed_(UgGridHelpers::globalCell(grid),
-                                        cartDims[0] * cartDims[1] * cartDims[2]);
+            setupCartesianToCompressed_();
 
             auto& parallel_wells = ebosSimulator.vanguard().parallelWells();
 
@@ -117,6 +114,8 @@ namespace Opm {
 
         // Create cartesian to compressed mapping
         const auto& schedule_wells = schedule().getWellsatEnd();
+
+        const auto& cartesianSize = ebosSimulator_.vanguard().cartesianDimensions();
 
         // initialize the additional cell connections introduced by wells.
         for (const auto& well : schedule_wells)
@@ -1434,27 +1433,16 @@ namespace Opm {
     template<typename TypeTag>
     void
     BlackoilWellModel<TypeTag>::
-    setupCartesianToCompressed_(const int* global_cell, int number_of_cartesian_cells)
+    setupCartesianToCompressed_()
     {
-        cartesian_to_compressed_.resize(number_of_cartesian_cells, -1);
-        if (global_cell) {
-            auto elemIt = ebosSimulator_.gridView().template begin</*codim=*/ 0>();
-            for (unsigned i = 0; i < local_num_cells_; ++i) {
-                // Skip perforations in the overlap/ghost for distributed wells.
-                if (elemIt->partitionType() == Dune::InteriorEntity)
-                {
-                    assert(ebosSimulator_.gridView().indexSet().index(*elemIt) == static_cast<int>(i));
-                    cartesian_to_compressed_[global_cell[i]] = i;
-                }
-                ++elemIt;
-            }
-        }
-        else {
-            for (unsigned i = 0; i < local_num_cells_; ++i) {
-                cartesian_to_compressed_[i] = i;
-            }
-        }
+        const auto& cartMapper = ebosSimulator_.vanguard().cartesianIndexMapper();
+        const size_t cartesianSize = cartMapper.cartesianSize();
+        cartesian_to_compressed_.resize(cartesianSize, -1);
 
+        for (unsigned i = 0; i < local_num_cells_; ++i) {
+            unsigned cartesianCellIdx = cartMapper.cartesianIndex(i);
+            cartesian_to_compressed_[cartesianCellIdx] = i;
+        }
     }
 
     template<typename TypeTag>
@@ -1554,12 +1542,10 @@ namespace Opm {
     void
     BlackoilWellModel<TypeTag>::extractLegacyDepth_()
     {
-        const auto& grid = ebosSimulator_.vanguard().grid();
-        const unsigned numCells = grid.size(/*codim=*/0);
-
-        depth_.resize(numCells);
-        for (unsigned cellIdx = 0; cellIdx < numCells; ++cellIdx) {
-            depth_[cellIdx] = UgGridHelpers::cellCenterDepth( grid, cellIdx );
+        const auto& eclProblem = ebosSimulator_.problem();
+        depth_.resize(local_num_cells_);
+        for (unsigned cellIdx = 0; cellIdx < local_num_cells_; ++cellIdx) {
+            depth_[cellIdx] = eclProblem.dofCenterDepth(cellIdx);
         }
     }
 

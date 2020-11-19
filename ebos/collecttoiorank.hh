@@ -101,6 +101,9 @@ public:
     { return toIORankComm_.size() > 1; }
 
     int localIdxToGlobalIdx(unsigned localIdx) const;
+   
+    bool doesNeedReordering() const
+    { return needsReordering;}
 
     size_t numCells () const
     { return globalCartesianIndex_.size(); }

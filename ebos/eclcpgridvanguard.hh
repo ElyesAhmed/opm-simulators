@@ -149,6 +149,32 @@ public:
 #endif
     }
 
+    template<class DataHandle>
+    void scatterData(DataHandle& handle) const
+    {
+        grid().scatterData(handle);
+    }
+
+    template<class DataHandle>
+    void gatherData(DataHandle& handle) const
+    {
+        grid().gatherData(handle);
+    }
+
+    template<class DataHandle, class InterfaceType, class CommunicationDirection>
+    void communicate (DataHandle& data, InterfaceType iftype, CommunicationDirection dir) const
+    {
+        grid().communicate(data, iftype, dir);
+    }
+
+    unsigned int gridEquilIdxToGridIdx(unsigned int elemIndex) const {
+        return elemIndex;
+    }
+
+    unsigned int gridIdxToEquilGridIdx(unsigned int elemIndex) const {
+        return elemIndex;
+    }
+
     /*!
      * \brief Get function to query cell centroids for a distributed grid.
      *
@@ -183,6 +209,11 @@ protected:
     double getTransmissibility(unsigned I, unsigned J) override
     {
        return globalTrans_->transmissibility(I,J);
+    }
+
+   const std::vector<int>& globalCell()
+    {
+        return grid().globalCell();
     }
 
     // removing some connection located in inactive grid cells

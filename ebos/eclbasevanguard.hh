@@ -423,7 +423,7 @@ protected:
 
     void updateCartesianToCompressedMapping_()
     {
-        size_t num_cells = asImp_().grid().leafGridView().size(0);
+        size_t num_cells = asImp_().equilGrid().leafGridView().size(0);
         for (unsigned i = 0; i < num_cells; ++i) {
             unsigned cartesianCellIdx = cartesianIndex(i);
             cartesianToCompressed_[cartesianCellIdx] = i;

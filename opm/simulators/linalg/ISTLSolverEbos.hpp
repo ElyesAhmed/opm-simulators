@@ -93,6 +93,7 @@ namespace Opm
         using ElementMapper = GetPropType<TypeTag, Properties::ElementMapper>;
         constexpr static std::size_t pressureIndex = GetPropType<TypeTag, Properties::Indices>::pressureSwitchIdx;
 
+
 #if HAVE_CUDA || HAVE_OPENCL || HAVE_FPGA || HAVE_AMGCL
         static const unsigned int block_size = Matrix::block_type::rows;
         std::unique_ptr<BdaBridge<Matrix, Vector, block_size>> bdaBridge;
@@ -156,7 +157,7 @@ namespace Opm
             extractParallelGridInformationToISTL(simulator_.vanguard().grid(), parallelInformation_);
 
             // For some reason simulator_.model().elementMapper() is not initialized at this stage
-            // Hence const auto& elemMapper = simulator_.model().elementMapper(); does not work.
+            //const auto& elemMapper = simulator_.model().elementMapper(); //does not work.
             // Set it up manually
             ElementMapper elemMapper(simulator_.vanguard().gridView(), Dune::mcmgElementLayout());
             detail::findOverlapAndInterior(simulator_.vanguard().grid(), elemMapper, overlapRows_, interiorRows_);

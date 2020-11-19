@@ -251,6 +251,7 @@ public:
             this->eclOutputModule_->addRftDataToWells(localWellData, reportStepNum);
         }
 
+<<<<<<< HEAD
         if (this->collectToIORank_.isParallel()) {
             this->collectToIORank_.collect(localCellData,
                                            eclOutputModule_->getBlockData(),
@@ -321,6 +322,7 @@ public:
             Action::State& actionState = simulator_.vanguard().actionState();
             auto restartValues = loadParallelRestart(this->eclIO_.get(), actionState, summaryState, solutionKeys, extraKeys,
                                                      gridView.grid().comm());
+            const auto& cartMapper = simulator_.vanguard().cartesianIndexMapper();
             for (unsigned elemIdx = 0; elemIdx < numElements; ++elemIdx) {
                 unsigned globalIdx = this->collectToIORank_.localIdxToGlobalIdx(elemIdx);
                 eclOutputModule_->setRestart(restartValues.solution, elemIdx, globalIdx);
@@ -393,7 +395,7 @@ private:
 
             eclOutputModule_->processElement(elemCtx);
         }
-        OPM_END_PARALLEL_TRY_CATCH("EclWriter::prepareLocalCellData() failed: ", simulator_.vanguard().grid().comm())
+        OPM_END_PARALLEL_TRY_CATCH("EclWriter::prepareLocalCellData() failed: ", simulator_.vanguard().grid().comm());
     }
 
     Simulator& simulator_;

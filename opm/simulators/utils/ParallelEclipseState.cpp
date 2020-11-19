@@ -271,9 +271,8 @@ void ParallelEclipseState::switchToGlobalProps()
 
 void ParallelEclipseState::switchToDistributedProps()
 {
-    if (m_comm.size() == 1) // No need for the parallel frontend
-        return;
-
+//    if (m_comm.size() == 1) // No need for the parallel frontend
+//        return;
     m_parProps = true;
 }
 

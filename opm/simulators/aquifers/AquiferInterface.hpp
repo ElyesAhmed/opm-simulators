@@ -223,6 +223,15 @@ protected:
         pressure_water.at(idx) = fs.pressure(phaseIdx_()).value();
     }
 
+    template <class Intersection>
+    inline double getFaceArea(const Intersection& intersection,
+                              unsigned idx) const
+    {
+        const auto& geometry = intersection.geometry();
+        const auto defaultFaceArea = geometry.volume();
+        return (!this->connections_[idx].influx_coeff.first) ? defaultFaceArea : this->connections_[idx].influx_coeff.second;
+    }
+
     virtual void endTimeStep() = 0;
 
     const int aquiferID_{};

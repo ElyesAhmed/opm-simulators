@@ -228,7 +228,7 @@ namespace Opm {
             data::Wells wellData() const
             {
                 auto wsrpt = this->wellState()
-                    .report(UgGridHelpers::globalCell(grid()),
+                    .report(ebosSimulator_.vanguard().globalCell().data()),
                             [this](const int well_ndex) -> bool
                 {
                     return this->wasDynamicallyShutThisTimeStep(well_ndex);
@@ -368,7 +368,7 @@ namespace Opm {
             // setting the well_solutions_ based on well_state.
             void updatePrimaryVariables(DeferredLogger& deferred_logger);
 
-            void setupCartesianToCompressed_(const int* global_cell, int local_num__cells);
+            void setupCartesianToCompressed_();
 
             void updateAverageFormationFactor();
 

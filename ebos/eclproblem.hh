@@ -28,24 +28,19 @@
 #ifndef EWOMS_ECL_PROBLEM_HH
 #define EWOMS_ECL_PROBLEM_HH
 
-//#define DISABLE_ALUGRID_SFC_ORDERING 1
-//#define EBOS_USE_ALUGRID 1
-
-// make sure that the EBOS_USE_ALUGRID macro. using the preprocessor for this is slightly
-// hacky...
-#if EBOS_USE_ALUGRID
+#if USE_ALUGRID
 //#define DISABLE_ALUGRID_SFC_ORDERING 1
 #if !HAVE_DUNE_ALUGRID
 #warning "ALUGrid was indicated to be used for the ECL black oil simulator, but this "
 #warning "requires the presence of dune-alugrid >= 2.4. Falling back to Dune::CpGrid"
-#undef EBOS_USE_ALUGRID
-#define EBOS_USE_ALUGRID 0
+#undef USE_ALUGRID
+#define USE_ALUGRID 0
 #endif
 #else
-#define EBOS_USE_ALUGRID 0
+#define USE_ALUGRID 0
 #endif
 
-#if EBOS_USE_ALUGRID
+#if USE_ALUGRID
 #include "eclalugridvanguard.hh"
 #elif USE_POLYHEDRALGRID
 #include "eclpolyhedralgridvanguard.hh"
@@ -118,7 +113,7 @@ namespace Opm::Properties {
 
 namespace TTag {
 
-#if EBOS_USE_ALUGRID
+#if USE_ALUGRID
 struct EclBaseProblem {
   using InheritsFrom = std::tuple<VtkEclTracer, EclOutputBlackOil, EclAluGridVanguard>;
 };
@@ -936,6 +931,8 @@ public:
             eclWriter_->writeInit();
         }
 
+        //eclWriter_->writeOutput(false);
+
         simulator.vanguard().releaseGlobalTransmissibilities();
 
         // after finishing the initialization and writing the initial solution, we move
@@ -1458,6 +1455,17 @@ public:
     Scalar dofCenterDepth(const Context& context, unsigned spaceIdx, unsigned timeIdx) const
     {
         unsigned globalSpaceIdx = context.globalSpaceIndex(spaceIdx, timeIdx);
+        return dofCenterDepth(globalSpaceIdx);
+    }
+
+    /*!
+     * \brief Returns the depth of an degree of freedom [m]
+     *
+     * For ECL problems this is defined as the average of the depth of an element and is
+     * thus slightly different from the depth of an element's centroid.
+     */
+    Scalar dofCenterDepth(unsigned globalSpaceIdx) const
+    {
         return this->simulator().vanguard().cellCenterDepth(globalSpaceIdx);
     }
 

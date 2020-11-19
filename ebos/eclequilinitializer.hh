@@ -99,7 +99,7 @@ public:
 
         EQUIL::DeckDependent::InitialStateComputer<TypeTag> initialState(materialLawManager,
                                                                          eclState,
-                                                                         vanguard.gridView(),
+                                                                         vanguard.equilGrid(),
                                                                          vanguard.cartesianMapper(),
                                                                          simulator.problem().gravity()[dimWorld - 1]);
 
