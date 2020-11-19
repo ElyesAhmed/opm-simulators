@@ -129,84 +129,88 @@ public:
 
 
     unsigned satRegion(std::size_t active_index) const {
-        return this->compressed_satnum[active_index] - 1;
+        return this->compressed_satnum[map(active_index)] - 1;
     }
 
     double permx(std::size_t active_index) const {
-        return this->compressed_permx[active_index];
+        return this->compressed_permx[map(active_index)];
     }
 
     double permy(std::size_t active_index) const {
-        return this->compressed_permy[active_index];
+        return this->compressed_permy[map(active_index)];
     }
 
     double permz(std::size_t active_index) const {
-        return this->compressed_permz[active_index];
+        return this->compressed_permz[map(active_index)];
     }
 
     double poro(std::size_t active_index) const {
-        return this->compressed_poro[active_index];
+        return this->compressed_poro[map(active_index)];
     }
 
     const double * swl(std::size_t active_index) const {
-        return this->satfunc(this->compressed_swl, active_index);
+        return this->satfunc(this->compressed_swl, map(active_index));
     }
 
     const double * sgl(std::size_t active_index) const {
-        return this->satfunc(this->compressed_sgl, active_index);
+        return this->satfunc(this->compressed_sgl, map(active_index));
     }
 
     const double * swcr(std::size_t active_index) const {
-        return this->satfunc(this->compressed_swcr, active_index);
+        return this->satfunc(this->compressed_swcr, map(active_index));
     }
 
     const double * sgcr(std::size_t active_index) const {
-        return this->satfunc(this->compressed_sgcr, active_index);
+        return this->satfunc(this->compressed_sgcr, map(active_index));
     }
 
     const double * sowcr(std::size_t active_index) const {
-        return this->satfunc(this->compressed_sowcr, active_index);
+        return this->satfunc(this->compressed_sowcr, map(active_index));
     }
 
     const double * sogcr(std::size_t active_index) const {
-        return this->satfunc(this->compressed_sogcr, active_index);
+        return this->satfunc(this->compressed_sogcr, map(active_index));
     }
 
     const double * swu(std::size_t active_index) const {
-        return this->satfunc(this->compressed_swu, active_index);
+        return this->satfunc(this->compressed_swu, map(active_index));
     }
 
     const double * sgu(std::size_t active_index) const {
-        return this->satfunc(this->compressed_sgu, active_index);
+        return this->satfunc(this->compressed_sgu, map(active_index));
     }
 
     const double * pcw(std::size_t active_index) const {
-        return this->satfunc(this->compressed_pcw, active_index);
+        return this->satfunc(this->compressed_pcw, map(active_index));
     }
 
     const double * pcg(std::size_t active_index) const {
-        return this->satfunc(this->compressed_pcg, active_index);
+        return this->satfunc(this->compressed_pcg, map(active_index));
     }
 
     const double * krw(std::size_t active_index) const {
-        return this->satfunc(this->compressed_krw, active_index);
+        return this->satfunc(this->compressed_krw, map(active_index));
     }
 
     const double * krg(std::size_t active_index) const {
-        return this->satfunc(this->compressed_krg, active_index);
+        return this->satfunc(this->compressed_krg, map(active_index));
     }
 
     const double * kro(std::size_t active_index) const {
-        return this->satfunc(this->compressed_kro, active_index);
+        return this->satfunc(this->compressed_kro, map(active_index));
     }
 
 
 private:
 
+    const std::size_t map(std::size_t active_index) const {
+        return 0;
+    }
+
     const double * satfunc(const std::vector<double>& data, std::size_t active_index) const {
         if (data.empty())
             return nullptr;
-        return &(data[active_index]);
+        return &(data[map(active_index)]);
     }
 
 

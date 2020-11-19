@@ -167,10 +167,10 @@ public:
 
         // copy the SATNUM grid property. in some cases this is not necessary, but it
         // should not require much memory anyway...
-        satnumRegionArray_.resize(numCompressedElems);
+        satnumRegionArray_.resize(numCompressedElems,0);
         if (eclState.fieldProps().has_int("SATNUM")) {
             const auto& satnumRawData = eclState.fieldProps().get_int("SATNUM");
-            for (unsigned elemIdx = 0; elemIdx < numCompressedElems; ++elemIdx) {
+            for (unsigned elemIdx = 0; elemIdx < satnumRawData.size(); ++elemIdx) {
                 satnumRegionArray_[elemIdx] = satnumRawData[elemIdx] - 1;
             }
         }
@@ -419,6 +419,11 @@ public:
     {
         assert(0 <= elemIdx && elemIdx <  materialLawParams_.size());
         return *materialLawParams_[elemIdx];
+    }
+
+    void setMaterialLawParams(std::vector<std::shared_ptr<MaterialLawParams> > materialLawParams)
+    {
+        materialLawParams_ = materialLawParams;
     }
 
     /*!
