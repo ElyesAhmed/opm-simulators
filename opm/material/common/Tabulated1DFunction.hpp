@@ -301,7 +301,7 @@ public:
      *                    cause a failed assertation.
      */
     template <class Evaluation>
-    Evaluation evalSecondDerivative(const Evaluation& x OPM_UNUSED, bool extrapolate OPM_UNUSED = false) const
+    Evaluation evalSecondDerivative(const Evaluation&, bool = false) const
     { return 0.0; }
 
     /*!
@@ -319,7 +319,7 @@ public:
      *                    cause a failed assertation.
      */
     template <class Evaluation>
-    Evaluation evalThirdDerivative(const Evaluation& x OPM_UNUSED, bool extrapolate OPM_UNUSED = false) const
+    Evaluation evalThirdDerivative(const Evaluation&, bool = false) const
     { return 0.0; }
 
     /*!
@@ -418,7 +418,7 @@ public:
         Scalar x0 = std::min(xi0, xi1);
         Scalar x1 = std::max(xi0, xi1);
         const int n = numSamples() - 1;
-        for (int i = 0; i <= k; ++i) {
+        for (unsigned i = 0; i <= k; ++i) {
             double x = i*(x1 - x0)/k + x0;
             double y;
             double dy_dx;
@@ -454,7 +454,7 @@ private:
     size_t findSegmentIndex_(const Evaluation& x, bool extrapolate = false) const
     {
         if (!extrapolate && !applies(x))
-            throw Opm::NumericalIssue("Tried to evaluate a tabulated function outside of its range");
+            throw NumericalIssue("Tried to evaluate a tabulated function outside of its range");
 
         // we need at least two sampling points!
         assert(xValues_.size() >= 2);

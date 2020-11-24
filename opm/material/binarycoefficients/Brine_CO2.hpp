@@ -39,7 +39,7 @@ namespace BinaryCoeff {
  */
 template<class Scalar, class H2O, class CO2, bool verbose = true>
 class Brine_CO2 {
-    typedef Opm::IdealGas<Scalar> IdealGas;
+    typedef ::Opm::IdealGas<Scalar> IdealGas;
     static const int liquidPhaseIdx = 0; // index of the liquid phase
     static const int gasPhaseIdx = 1; // index of the gas phase
 
@@ -52,13 +52,13 @@ public:
      * \param pressure the phase pressure [Pa]
      */
     template <class Evaluation>
-    static Evaluation gasDiffCoeff(const Evaluation& temperature, const Evaluation& pressure)
+    static Evaluation gasDiffCoeff(const Evaluation& temperature, const Evaluation& pressure, bool extrapolate = false)
     {
         //Diffusion coefficient of water in the CO2 phase
         Scalar k = 1.3806504e-23; // Boltzmann constant
         Scalar c = 4; // slip parameter, can vary between 4 (slip condition) and 6 (stick condition)
         Scalar R_h = 1.72e-10; // hydrodynamic radius of the solute
-        const Evaluation& mu = CO2::gasViscosity(temperature, pressure); // CO2 viscosity
+        const Evaluation& mu = CO2::gasViscosity(temperature, pressure, extrapolate); // CO2 viscosity
         return k / (c * M_PI * R_h) * (temperature / mu);
     }
 
@@ -98,9 +98,10 @@ public:
                                        Scalar salinity,
                                        const int knownPhaseIdx,
                                        Evaluation& xlCO2,
-                                       Evaluation& ygH2O)
+                                       Evaluation& ygH2O,
+                                       bool extrapolate = false)
     {
-        Evaluation A = computeA_(temperature, pg);
+        Evaluation A = computeA_(temperature, pg, extrapolate);
 
         /* salinity: conversion from mass fraction to mol fraction */
         Scalar x_NaCl = salinityToMolFrac_(salinity);
@@ -109,7 +110,7 @@ public:
         // with the mutual solubility function
         if (knownPhaseIdx < 0) {
             Scalar molalityNaCl = moleFracToMolality_(x_NaCl); // molality of NaCl //CHANGED
-            Evaluation m0_CO2 = molalityCO2inPureWater_(temperature, pg); // molality of CO2 in pure water
+            Evaluation m0_CO2 = molalityCO2inPureWater_(temperature, pg, extrapolate); // molality of CO2 in pure water
             Evaluation gammaStar = activityCoefficient_(temperature, pg, molalityNaCl);// activity coefficient of CO2 in brine
             Evaluation m_CO2 = m0_CO2 / gammaStar; // molality of CO2 in brine
             xlCO2 = m_CO2 / (molalityNaCl + 55.508 + m_CO2); // mole fraction of CO2 in brine
@@ -134,8 +135,8 @@ public:
      * \brief Henry coefficent \f$\mathrm{[N/m^2]}\f$ for CO2 in brine.
      */
     template <class Evaluation>
-    static Evaluation henry(const Evaluation& temperature)
-    { return fugacityCoefficientCO2(temperature, /*pressure=*/1e5)*1e5; }
+    static Evaluation henry(const Evaluation& temperature, bool extrapolate = false)
+    { return fugacityCoefficientCO2(temperature, /*pressure=*/1e5, extrapolate)*1e5; }
 
     /*!
      * \brief Returns the fugacity coefficient of the CO2 component in a water-CO2 mixture
@@ -146,32 +147,32 @@ public:
      * \param pg the gas phase pressure [Pa]
      */
     template <class Evaluation>
-    static Evaluation fugacityCoefficientCO2(const Evaluation& temperature, const Evaluation& pg)
+    static Evaluation fugacityCoefficientCO2(const Evaluation& temperature, const Evaluation& pg, bool extrapolate = false)
     {
         Valgrind::CheckDefined(temperature);
         Valgrind::CheckDefined(pg);
 
-        Evaluation V = 1 / (CO2::gasDensity(temperature, pg) / CO2::molarMass()) * 1.e6; // molar volume in cm^3/mol
+        Evaluation V = 1 / (CO2::gasDensity(temperature, pg, extrapolate) / CO2::molarMass()) * 1.e6; // molar volume in cm^3/mol
         Evaluation pg_bar = pg / 1.e5; // gas phase pressure in bar
         Evaluation a_CO2 = (7.54e7 - 4.13e4 * temperature); // mixture parameter of  Redlich-Kwong equation
         Scalar b_CO2 = 27.8; // mixture parameter of Redlich-Kwong equation
         Scalar R = IdealGas::R * 10.; // ideal gas constant with unit bar cm^3 /(K mol)
         Evaluation lnPhiCO2;
 
-        lnPhiCO2 = Opm::log(V / (V - b_CO2));
+        lnPhiCO2 = log(V / (V - b_CO2));
         lnPhiCO2 += b_CO2 / (V - b_CO2);
-        lnPhiCO2 -= 2 * a_CO2 / (R * Opm::pow(temperature, 1.5) * b_CO2) * log((V + b_CO2) / V);
+        lnPhiCO2 -= 2 * a_CO2 / (R * pow(temperature, 1.5) * b_CO2) * log((V + b_CO2) / V);
         lnPhiCO2 +=
             a_CO2 * b_CO2
             / (R
-               * Opm::pow(temperature, 1.5)
+               * pow(temperature, 1.5)
                * b_CO2
                * b_CO2)
-            * (Opm::log((V + b_CO2) / V)
+            * (log((V + b_CO2) / V)
                - b_CO2 / (V + b_CO2));
-        lnPhiCO2 -= Opm::log(pg_bar * V / (R * temperature));
+        lnPhiCO2 -= log(pg_bar * V / (R * temperature));
 
-        return Opm::exp(lnPhiCO2); // fugacity coefficient of CO2
+        return exp(lnPhiCO2); // fugacity coefficient of CO2
     }
 
     /*!
@@ -183,9 +184,9 @@ public:
      * \param pg the gas phase pressure [Pa]
      */
     template <class Evaluation>
-    static Evaluation fugacityCoefficientH2O(const Evaluation& temperature, const Evaluation& pg)
+    static Evaluation fugacityCoefficientH2O(const Evaluation& temperature, const Evaluation& pg, bool extrapolate = false)
     {
-        const Evaluation& V = 1 / (CO2::gasDensity(temperature, pg) / CO2::molarMass()) * 1.e6; // molar volume in cm^3/mol
+        const Evaluation& V = 1 / (CO2::gasDensity(temperature, pg, extrapolate) / CO2::molarMass()) * 1.e6; // molar volume in cm^3/mol
         const Evaluation& pg_bar = pg / 1.e5; // gas phase pressure in bar
         const Evaluation& a_CO2 = (7.54e7 - 4.13e4 * temperature);// mixture parameter of  Redlich-Kwong equation
         Scalar a_CO2_H2O = 7.89e7;// mixture parameter of Redlich-Kwong equation
@@ -195,13 +196,13 @@ public:
         Evaluation lnPhiH2O;
 
         lnPhiH2O =
-            Opm::log(V/(V - b_CO2))
+            log(V/(V - b_CO2))
             + b_H2O/(V - b_CO2) - 2*a_CO2_H2O
-            / (R*Opm::pow(temperature, 1.5)*b_CO2)*Opm::log((V + b_CO2)/V)
-            + a_CO2*b_H2O/(R*Opm::pow(temperature, 1.5)*b_CO2*b_CO2)
-            *(Opm::log((V + b_CO2)/V) - b_CO2/(V + b_CO2))
-            - Opm::log(pg_bar*V/(R*temperature));
-        return Opm::exp(lnPhiH2O); // fugacity coefficient of H2O
+            / (R*pow(temperature, 1.5)*b_CO2)*log((V + b_CO2)/V)
+            + a_CO2*b_H2O/(R*pow(temperature, 1.5)*b_CO2*b_CO2)
+            *(log((V + b_CO2)/V) - b_CO2/(V + b_CO2))
+            - log(pg_bar*V/(R*temperature));
+        return exp(lnPhiH2O); // fugacity coefficient of H2O
     }
 
 private:
@@ -240,10 +241,10 @@ private:
      * \param pg The gas phase pressure [Pa]
      */
     template <class Evaluation>
-    static Evaluation molalityCO2inPureWater_(const Evaluation& temperature, const Evaluation& pg)
+    static Evaluation molalityCO2inPureWater_(const Evaluation& temperature, const Evaluation& pg, bool extrapolate = false)
     {
-        const Evaluation& A = computeA_(temperature, pg); // according to Spycher, Pruess and Ennis-King (2003)
-        const Evaluation& B = computeB_(temperature, pg); // according to Spycher, Pruess and Ennis-King (2003)
+        const Evaluation& A = computeA_(temperature, pg, extrapolate); // according to Spycher, Pruess and Ennis-King (2003)
+        const Evaluation& B = computeB_(temperature, pg, extrapolate); // according to Spycher, Pruess and Ennis-King (2003)
         const Evaluation& yH2OinGas = (1 - B) / (1. / A - B); // equilibrium mol fraction of H2O in the gas phase
         const Evaluation& xCO2inWater = B * (1 - yH2OinGas); // equilibrium mol fraction of CO2 in the water phase
         return (xCO2inWater * 55.508) / (1 - xCO2inWater); // CO2 molality
@@ -267,7 +268,7 @@ private:
         const Evaluation& xi = computeXi_(temperature, pg); // Xi_{CO2-Na+-Cl-}
         const Evaluation& lnGammaStar =
             2*molalityNaCl*lambda + xi*molalityNaCl*molalityNaCl;
-        return Opm::exp(lnGammaStar);
+        return exp(lnGammaStar);
     }
 
     /*!
@@ -279,15 +280,15 @@ private:
      * \param pg the gas phase pressure [Pa]
      */
     template <class Evaluation>
-    static Evaluation computeA_(const Evaluation& temperature, const Evaluation& pg)
+    static Evaluation computeA_(const Evaluation& temperature, const Evaluation& pg, bool extrapolate = false)
     {
         const Evaluation& deltaP = pg / 1e5 - 1; // pressure range [bar] from p0 = 1bar to pg[bar]
         Scalar v_av_H2O = 18.1; // average partial molar volume of H2O [cm^3/mol]
         Scalar R = IdealGas::R * 10;
         const Evaluation& k0_H2O = equilibriumConstantH2O_(temperature); // equilibrium constant for H2O at 1 bar
-        const Evaluation& phi_H2O = fugacityCoefficientH2O(temperature, pg); // fugacity coefficient of H2O for the water-CO2 system
+        const Evaluation& phi_H2O = fugacityCoefficientH2O(temperature, pg, extrapolate); // fugacity coefficient of H2O for the water-CO2 system
         const Evaluation& pg_bar = pg / 1.e5;
-        return k0_H2O/(phi_H2O*pg_bar)*Opm::exp(deltaP*v_av_H2O/(R*temperature));
+        return k0_H2O/(phi_H2O*pg_bar)*exp(deltaP*v_av_H2O/(R*temperature));
     }
 
     /*!
@@ -299,15 +300,15 @@ private:
      * \param pg the gas phase pressure [Pa]
      */
     template <class Evaluation>
-    static Evaluation computeB_(const Evaluation& temperature, const Evaluation& pg)
+    static Evaluation computeB_(const Evaluation& temperature, const Evaluation& pg, bool extrapolate = false)
     {
         const Evaluation& deltaP = pg / 1e5 - 1; // pressure range [bar] from p0 = 1bar to pg[bar]
         const Scalar v_av_CO2 = 32.6; // average partial molar volume of CO2 [cm^3/mol]
         const Scalar R = IdealGas::R * 10;
         const Evaluation& k0_CO2 = equilibriumConstantCO2_(temperature); // equilibrium constant for CO2 at 1 bar
-        const Evaluation& phi_CO2 = fugacityCoefficientCO2(temperature, pg); // fugacity coefficient of CO2 for the water-CO2 system
+        const Evaluation& phi_CO2 = fugacityCoefficientCO2(temperature, pg, extrapolate); // fugacity coefficient of CO2 for the water-CO2 system
         const Evaluation& pg_bar = pg / 1.e5;
-        return phi_CO2*pg_bar/(55.508*k0_CO2)*Opm::exp(-(deltaP*v_av_CO2)/(R*temperature));
+        return phi_CO2*pg_bar/(55.508*k0_CO2)*exp(-(deltaP*v_av_CO2)/(R*temperature));
     }
 
     /*!
@@ -330,7 +331,7 @@ private:
             + c[2]/temperature
             + c[3]*pg_bar/temperature
             + c[4]*pg_bar/(630.0 - temperature)
-            + c[5]*temperature*Opm::log(pg_bar);
+            + c[5]*temperature*log(pg_bar);
     }
 
     /*!
@@ -362,7 +363,7 @@ private:
         Evaluation temperatureCelcius = temperature - 273.15;
         static const Scalar c[3] = { 1.189, 1.304e-2, -5.446e-5 };
         Evaluation logk0_CO2 = c[0] + temperatureCelcius*(c[1] + temperatureCelcius*c[2]);
-        Evaluation k0_CO2 = Opm::pow(10.0, logk0_CO2);
+        Evaluation k0_CO2 = pow(10.0, logk0_CO2);
         return k0_CO2;
     }
 
@@ -379,7 +380,7 @@ private:
         static const Scalar c[4] = { -2.209, 3.097e-2, -1.098e-4, 2.048e-7 };
         Evaluation logk0_H2O =
             c[0] + temperatureCelcius*(c[1] + temperatureCelcius*(c[2] + temperatureCelcius*c[3]));
-        return Opm::pow(10.0, logk0_H2O);
+        return pow(10.0, logk0_H2O);
     }
 
 };

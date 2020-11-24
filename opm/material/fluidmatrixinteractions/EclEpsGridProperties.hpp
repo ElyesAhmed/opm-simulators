@@ -28,29 +28,29 @@
 #include "EclEpsConfig.hpp"
 
 #if HAVE_ECL_INPUT
-#include <opm/parser/eclipse/Deck/Deck.hpp>
-#include <opm/parser/eclipse/Deck/DeckRecord.hpp>
-#include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
-#include <opm/parser/eclipse/EclipseState/Grid/FieldPropsManager.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/SgfnTable.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/SgofTable.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/SlgofTable.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/Sof2Table.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/Sof3Table.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/SwfnTable.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/SwofTable.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/TableManager.hpp>
+#include <opm/input/eclipse/Deck/Deck.hpp>
+#include <opm/input/eclipse/Deck/DeckRecord.hpp>
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/EclipseState/Grid/FieldPropsManager.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/SgfnTable.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/SgofTable.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/SlgofTable.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/Sof2Table.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/Sof3Table.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/SwfnTable.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/SwofTable.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/TableManager.hpp>
 #endif
 
 #include <opm/material/common/Means.hpp>
 
-#include <array>
-#include <vector>
-#include <string>
-#include <iostream>
-#include <cassert>
 #include <algorithm>
+#include <array>
+#include <cassert>
 #include <memory>
+#include <string>
+#include <vector>
+
 namespace Opm {
 /*!
  * \brief Collects all grid properties which are relevant for end point scaling.
@@ -78,17 +78,15 @@ class EclEpsGridProperties
 public:
 #if HAVE_ECL_INPUT
 
-    EclEpsGridProperties(const Opm::EclipseState& eclState,
+    EclEpsGridProperties(const EclipseState& eclState,
                          bool useImbibition)
     {
-        std::string kwPrefix = useImbibition?"I":"";
+        const std::string kwPrefix = useImbibition ? "I" : "";
 
         const auto& fp = eclState.fieldProps();
 
-        if (useImbibition)
-            compressed_satnum = fp.get_int("IMBNUM");
-        else
-            compressed_satnum = fp.get_int("SATNUM");
+        compressed_satnum = useImbibition
+            ? fp.get_int("IMBNUM") : fp.get_int("SATNUM");
 
         this->compressed_swl = try_get( fp, kwPrefix+"SWL");
         this->compressed_sgl = try_get( fp, kwPrefix+"SGL");
@@ -101,27 +99,26 @@ public:
         this->compressed_pcw = try_get( fp, kwPrefix+"PCW");
         this->compressed_pcg = try_get( fp, kwPrefix+"PCG");
         this->compressed_krw = try_get( fp, kwPrefix+"KRW");
+        this->compressed_krwr = try_get( fp, kwPrefix+"KRWR");
         this->compressed_kro = try_get( fp, kwPrefix+"KRO");
+        this->compressed_krorg = try_get( fp, kwPrefix+"KRORG");
+        this->compressed_krorw = try_get( fp, kwPrefix+"KRORW");
         this->compressed_krg = try_get( fp, kwPrefix+"KRG");
+        this->compressed_krgr = try_get( fp, kwPrefix+"KRGR");
 
         // _may_ be needed to calculate the Leverett capillary pressure scaling factor
         if (fp.has_double("PORO"))
             this->compressed_poro = fp.get_double("PORO");
 
-        if (fp.has_double("PERMX"))
-            this->compressed_permx = fp.get_double("PERMX");
-        else
-            this->compressed_permx = std::vector<double>(this->compressed_satnum.size());
+        this->compressed_permx = fp.has_double("PERMX")
+            ? fp.get_double("PERMX")
+            : std::vector<double>(this->compressed_satnum.size());
 
-        if (fp.has_double("PERMY"))
-            this->compressed_permy = fp.get_double("PERMY");
-        else
-            this->compressed_permy = this->compressed_permx;
+        this->compressed_permy = fp.has_double("PERMY")
+            ? fp.get_double("PERMY") : this->compressed_permx;
 
-        if (fp.has_double("PERMZ"))
-            this->compressed_permz = fp.get_double("PERMZ");
-        else
-            this->compressed_permz= this->compressed_permx;
+        this->compressed_permz = fp.has_double("PERMZ")
+            ? fp.get_double("PERMZ") : this->compressed_permx;
     }
 
 #endif
@@ -192,25 +189,36 @@ public:
         return this->satfunc(this->compressed_krw, map(active_index));
     }
 
+    const double * krwr(std::size_t active_index) const {
+        return this->satfunc(this->compressed_krwr, active_index);
+    }
+
     const double * krg(std::size_t active_index) const {
         return this->satfunc(this->compressed_krg, map(active_index));
+    }
+
+    const double * krgr(std::size_t active_index) const {
+        return this->satfunc(this->compressed_krgr, active_index);
     }
 
     const double * kro(std::size_t active_index) const {
         return this->satfunc(this->compressed_kro, map(active_index));
     }
 
-
-private:
-
-    const std::size_t map(std::size_t active_index) const {
-        return 0;
+    const double * krorg(std::size_t active_index) const {
+        return this->satfunc(this->compressed_krorg, active_index);
     }
 
-    const double * satfunc(const std::vector<double>& data, std::size_t active_index) const {
-        if (data.empty())
-            return nullptr;
-        return &(data[map(active_index)]);
+    const double * krorw(std::size_t active_index) const {
+        return this->satfunc(this->compressed_krorw, active_index);
+    }
+
+private:
+    const double *
+    satfunc(const std::vector<double>& data,
+            const std::size_t          active_index) const
+    {
+        return data.empty() ? nullptr : &data[active_index];
     }
 
 
@@ -226,8 +234,12 @@ private:
     std::vector<double> compressed_pcw;
     std::vector<double> compressed_pcg;
     std::vector<double> compressed_krw;
+    std::vector<double> compressed_krwr;
     std::vector<double> compressed_kro;
+    std::vector<double> compressed_krorg;
+    std::vector<double> compressed_krorw;
     std::vector<double> compressed_krg;
+    std::vector<double> compressed_krgr;
 
     std::vector<double> compressed_permx;
     std::vector<double> compressed_permy;

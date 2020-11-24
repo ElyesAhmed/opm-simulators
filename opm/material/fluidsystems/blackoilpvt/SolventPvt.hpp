@@ -32,10 +32,10 @@
 #include <opm/material/common/Tabulated1DFunction.hpp>
 
 #if HAVE_ECL_INPUT
-#include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
-#include <opm/parser/eclipse/EclipseState/Schedule/Schedule.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/TableManager.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/PvdsTable.hpp>
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/Schedule/Schedule.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/TableManager.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/PvdsTable.hpp>
 #endif
 
 #include <vector>
@@ -51,7 +51,7 @@ class SolventPvt
     typedef std::vector<std::pair<Scalar, Scalar> > SamplingPoints;
 
 public:
-    typedef Opm::Tabulated1DFunction<Scalar> TabulatedOneDFunction;
+    typedef Tabulated1DFunction<Scalar> TabulatedOneDFunction;
 
     explicit SolventPvt() = default;
     SolventPvt(const std::vector<Scalar>& solventReferenceDensity,
@@ -180,13 +180,21 @@ public:
      */
     template <class Evaluation>
     Evaluation viscosity(unsigned regionIdx,
-                                  const Evaluation& temperature OPM_UNUSED,
+                                  const Evaluation&,
                                   const Evaluation& pressure) const
     {
         const Evaluation& invBg = inverseSolventB_[regionIdx].eval(pressure, /*extrapolate=*/true);
         const Evaluation& invMugBg = inverseSolventBMu_[regionIdx].eval(pressure, /*extrapolate=*/true);
 
         return invBg/invMugBg;
+    }
+
+    template <class Evaluation>
+    Evaluation diffusionCoefficient(const Evaluation& /*temperature*/,
+                                    const Evaluation& /*pressure*/,
+                                    unsigned /*compIdx*/) const
+    {
+        throw std::runtime_error("Not implemented: The PVT model does not provide a diffusionCoefficient()");
     }
 
     /*!
@@ -200,7 +208,7 @@ public:
      */
     template <class Evaluation>
     Evaluation inverseFormationVolumeFactor(unsigned regionIdx,
-                                            const Evaluation& temperature OPM_UNUSED,
+                                            const Evaluation&,
                                             const Evaluation& pressure) const
     { return inverseSolventB_[regionIdx].eval(pressure, /*extrapolate=*/true); }
 

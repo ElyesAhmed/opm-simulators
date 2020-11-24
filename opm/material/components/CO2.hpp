@@ -52,7 +52,6 @@ template <class Scalar, class CO2Tables>
 class CO2 : public Component<Scalar, CO2<Scalar, CO2Tables> >
 {
     static const Scalar R;
-    static bool warningPrinted;
 
 public:
     /*!
@@ -138,11 +137,11 @@ public:
         // this is on page 1524 of the reference
         Evaluation exponent = 0;
         Evaluation Tred = T/criticalTemperature();
-        for (int i = 0; i < 5; ++i)
-            exponent += a[i]*Opm::pow(1 - Tred, t[i]);
+        for (int i = 0; i < 4; ++i)
+            exponent += a[i]*pow(1 - Tred, t[i]);
         exponent *= 1.0/Tred;
 
-        return Opm::exp(exponent)*criticalPressure();
+        return exp(exponent)*criticalPressure();
     }
 
 
@@ -163,9 +162,10 @@ public:
      */
     template <class Evaluation>
     static Evaluation gasEnthalpy(const Evaluation& temperature,
-                                  const Evaluation& pressure)
+                                  const Evaluation& pressure,
+                                  bool extrapolate = false)
     {
-        return CO2Tables::tabulatedEnthalpy.eval(temperature, pressure);
+        return CO2Tables::tabulatedEnthalpy.eval(temperature, pressure, extrapolate);
     }
 
     /*!
@@ -173,10 +173,11 @@ public:
      */
     template <class Evaluation>
     static Evaluation gasInternalEnergy(const Evaluation& temperature,
-                                        const Evaluation& pressure)
+                                        const Evaluation& pressure,
+                                        bool extrapolate = false)
     {
-        const Evaluation& h = gasEnthalpy(temperature, pressure);
-        const Evaluation& rho = gasDensity(temperature, pressure);
+        const Evaluation& h = gasEnthalpy(temperature, pressure, extrapolate);
+        const Evaluation& rho = gasDensity(temperature, pressure, extrapolate);
 
         return h - (pressure / rho);
     }
@@ -185,9 +186,11 @@ public:
      * \brief The density of CO2 at a given pressure and temperature [kg/m^3].
      */
     template <class Evaluation>
-    static Evaluation gasDensity(const Evaluation& temperature, const Evaluation& pressure)
+    static Evaluation gasDensity(const Evaluation& temperature,
+                                 const Evaluation& pressure,
+                                 bool extrapolate = false)
     {
-        return CO2Tables::tabulatedDensity.eval(temperature, pressure);
+        return CO2Tables::tabulatedDensity.eval(temperature, pressure, extrapolate);
     }
 
     /*!
@@ -197,7 +200,9 @@ public:
      *                        - Fenhour etl al., 1998
      */
     template <class Evaluation>
-    static Evaluation gasViscosity(Evaluation temperature, const Evaluation& pressure)
+    static Evaluation gasViscosity(Evaluation temperature,
+                                   const Evaluation& pressure,
+                                   bool extrapolate = false)
     {
         const Scalar a0 = 0.235156;
         const Scalar a1 = -0.491266;
@@ -218,20 +223,20 @@ public:
         Evaluation TStar = temperature/ESP;
 
         // mu0: viscosity in zero-density limit
-        const Evaluation& logTStar = Opm::log(TStar);
-        Evaluation SigmaStar = Opm::exp(a0 + logTStar*(a1 + logTStar*(a2 + logTStar*(a3 + logTStar*a4))));
+        const Evaluation& logTStar = log(TStar);
+        Evaluation SigmaStar = exp(a0 + logTStar*(a1 + logTStar*(a2 + logTStar*(a3 + logTStar*a4))));
 
-        Evaluation mu0 = 1.00697*Opm::sqrt(temperature) / SigmaStar;
+        Evaluation mu0 = 1.00697*sqrt(temperature) / SigmaStar;
 
-        const Evaluation& rho = gasDensity(temperature, pressure); // CO2 mass density [kg/m^3]
+        const Evaluation& rho = gasDensity(temperature, pressure, extrapolate); // CO2 mass density [kg/m^3]
 
         // dmu : excess viscosity at elevated density
         Evaluation dmu =
             d11*rho
             + d21*rho*rho
-            + d64*Opm::pow(rho, 6.0)/(TStar*TStar*TStar)
-            + d81*Opm::pow(rho, 8.0)
-            + d82*Opm::pow(rho, 8.0)/TStar;
+            + d64*pow(rho, 6.0)/(TStar*TStar*TStar)
+            + d81*pow(rho, 8.0)
+            + d82*pow(rho, 8.0)/TStar;
 
         return (mu0 + dmu)/1.0e6; // conversion to [Pa s]
     }
@@ -261,8 +266,6 @@ public:
     }
 };
 
-template <class Scalar, class CO2Tables>
-bool CO2<Scalar, CO2Tables>::warningPrinted = false;
 
 template <class Scalar, class CO2Tables>
 const Scalar CO2<Scalar, CO2Tables>::R = Constants<Scalar>::R;

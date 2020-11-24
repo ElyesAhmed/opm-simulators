@@ -35,9 +35,9 @@
 #include <opm/material/common/Spline.hpp>
 
 #if HAVE_ECL_INPUT
-#include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/SimpleTable.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/TableManager.hpp>
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/SimpleTable.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/TableManager.hpp>
 #endif
 
 namespace Opm {
@@ -54,7 +54,7 @@ template <class Scalar>
 class OilPvtThermal
 {
 public:
-    typedef Opm::Tabulated1DFunction<Scalar> TabulatedOneDFunction;
+    typedef Tabulated1DFunction<Scalar> TabulatedOneDFunction;
     typedef OilPvtMultiplexer<Scalar, /*enableThermal=*/false> IsothermalPvt;
 
     OilPvtThermal()
@@ -239,8 +239,8 @@ public:
     template <class Evaluation>
     Evaluation internalEnergy(unsigned regionIdx,
                               const Evaluation& temperature,
-                              const Evaluation& pressure OPM_UNUSED,
-                              const Evaluation& Rs OPM_UNUSED) const
+                              const Evaluation&,
+                              const Evaluation&) const
     {
         if (!enableInternalEnergy_)
             throw std::runtime_error("Requested the internal energy of oil but it is disabled");
@@ -265,7 +265,7 @@ public:
             return isothermalMu;
 
         // compute the viscosity deviation due to temperature
-        const auto& muOilvisct = oilvisctCurves_[regionIdx].eval(temperature);
+        const auto& muOilvisct = oilvisctCurves_[regionIdx].eval(temperature, /*extrapolate=*/true);
         return muOilvisct/viscRef_[regionIdx]*isothermalMu;
     }
 
@@ -282,7 +282,7 @@ public:
             return isothermalMu;
 
         // compute the viscosity deviation due to temperature
-        const auto& muOilvisct = oilvisctCurves_[regionIdx].eval(temperature, true);
+        const auto& muOilvisct = oilvisctCurves_[regionIdx].eval(temperature, /*extrapolate=*/true);
         return muOilvisct/viscRef_[regionIdx]*isothermalMu;
     }
 
@@ -376,6 +376,14 @@ public:
                                   const Evaluation& temperature,
                                   const Evaluation& pressure) const
     { return isothermalPvt_->saturationPressure(regionIdx, temperature, pressure); }
+
+    template <class Evaluation>
+    Evaluation diffusionCoefficient(const Evaluation& temperature,
+                                    const Evaluation& pressure,
+                                    unsigned compIdx) const
+    {
+        return isothermalPvt_->diffusionCoefficient(temperature, pressure, compIdx);
+    }
 
     const IsothermalPvt* isoThermalPvt() const
     { return isothermalPvt_; }

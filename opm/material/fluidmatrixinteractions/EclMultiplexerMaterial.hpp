@@ -49,19 +49,22 @@ namespace Opm {
 template <class TraitsT,
           class GasOilMaterialLawT,
           class OilWaterMaterialLawT,
+          class GasWaterMaterialLawT,
           class ParamsT = EclMultiplexerMaterialParams<TraitsT,
                                                        GasOilMaterialLawT,
-                                                       OilWaterMaterialLawT> >
+                                                       OilWaterMaterialLawT,
+                                                       GasWaterMaterialLawT> >
 class EclMultiplexerMaterial : public TraitsT
 {
 public:
     typedef GasOilMaterialLawT GasOilMaterialLaw;
     typedef OilWaterMaterialLawT OilWaterMaterialLaw;
+    typedef GasWaterMaterialLawT GasWaterMaterialLaw;
 
-    typedef Opm::EclStone1Material<TraitsT, GasOilMaterialLaw, OilWaterMaterialLaw> Stone1Material;
-    typedef Opm::EclStone2Material<TraitsT, GasOilMaterialLaw, OilWaterMaterialLaw> Stone2Material;
-    typedef Opm::EclDefaultMaterial<TraitsT, GasOilMaterialLaw, OilWaterMaterialLaw> DefaultMaterial;
-    typedef Opm::EclTwoPhaseMaterial<TraitsT, GasOilMaterialLaw, OilWaterMaterialLaw> TwoPhaseMaterial;
+    typedef EclStone1Material<TraitsT, GasOilMaterialLaw, OilWaterMaterialLaw> Stone1Material;
+    typedef EclStone2Material<TraitsT, GasOilMaterialLaw, OilWaterMaterialLaw> Stone2Material;
+    typedef EclDefaultMaterial<TraitsT, GasOilMaterialLaw, OilWaterMaterialLaw> DefaultMaterial;
+    typedef EclTwoPhaseMaterial<TraitsT, GasOilMaterialLaw, OilWaterMaterialLaw, GasWaterMaterialLaw> TwoPhaseMaterial;
 
     // some safety checks
     static_assert(TraitsT::numPhases == 3,
@@ -72,6 +75,9 @@ public:
                   "pressure law must be two!");
     static_assert(OilWaterMaterialLaw::numPhases == 2,
                   "The number of phases considered by the oil-water capillary "
+                  "pressure law must be two!");
+    static_assert(GasWaterMaterialLaw::numPhases == 2,
+                  "The number of phases considered by the gas-water capillary "
                   "pressure law must be two!");
     static_assert(std::is_same<typename GasOilMaterialLaw::Scalar,
                                typename OilWaterMaterialLaw::Scalar>::value,
@@ -434,6 +440,66 @@ public:
         default:
             throw std::logic_error("Not implemented: relativePermeabilities() option for unknown EclMultiplexerApproach (="
                                    + std::to_string(static_cast<int>(params.approach())) + ")");
+        }
+    }
+
+    /*!
+     * \brief The relative permeability of oil in oil/gas system.
+     */
+    template <class Evaluation, class FluidState>
+    static Evaluation relpermOilInOilGasSystem(const Params& params,
+                                               const FluidState& fluidState)
+    {
+        switch (params.approach()) {
+        case EclMultiplexerApproach::EclStone1Approach:
+            return Stone1Material::template relpermOilInOilGasSystem<Evaluation>
+                (params.template getRealParams<EclMultiplexerApproach::EclStone1Approach>(),
+                 fluidState);
+
+        case EclMultiplexerApproach::EclStone2Approach:
+            return Stone2Material::template relpermOilInOilGasSystem<Evaluation>
+                (params.template getRealParams<EclMultiplexerApproach::EclStone2Approach>(),
+                 fluidState);
+
+        case EclMultiplexerApproach::EclDefaultApproach:
+            return DefaultMaterial::template relpermOilInOilGasSystem<Evaluation>
+                (params.template getRealParams<EclMultiplexerApproach::EclDefaultApproach>(),
+                 fluidState);
+
+        default:
+            throw std::logic_error {
+                "relpermOilInOilGasSystem() is specific to three phases"
+            };
+        }
+    }
+
+    /*!
+     * \brief The relative permeability of oil in oil/water system.
+     */
+    template <class Evaluation, class FluidState>
+    static Evaluation relpermOilInOilWaterSystem(const Params& params,
+                                                 const FluidState& fluidState)
+    {
+        switch (params.approach()) {
+        case EclMultiplexerApproach::EclStone1Approach:
+            return Stone1Material::template relpermOilInOilWaterSystem<Evaluation>
+                (params.template getRealParams<EclMultiplexerApproach::EclStone1Approach>(),
+                 fluidState);
+
+        case EclMultiplexerApproach::EclStone2Approach:
+            return Stone2Material::template relpermOilInOilWaterSystem<Evaluation>
+                (params.template getRealParams<EclMultiplexerApproach::EclStone2Approach>(),
+                 fluidState);
+
+        case EclMultiplexerApproach::EclDefaultApproach:
+            return DefaultMaterial::template relpermOilInOilWaterSystem<Evaluation>
+                (params.template getRealParams<EclMultiplexerApproach::EclDefaultApproach>(),
+                 fluidState);
+
+        default:
+            throw std::logic_error {
+                "relpermOilInOilWaterSystem() is specific to three phases"
+            };
         }
     }
 

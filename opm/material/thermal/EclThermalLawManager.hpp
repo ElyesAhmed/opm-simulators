@@ -24,12 +24,12 @@
  * \file
  * \copydoc Opm::EclThermalLawManager
  */
+#ifndef OPM_ECL_THERMAL_LAW_MANAGER_HPP
+#define OPM_ECL_THERMAL_LAW_MANAGER_HPP
+
 #if ! HAVE_ECL_INPUT
 #error "Eclipse input support in opm-common is required to use the ECL thermal law manager!"
 #endif
-
-#ifndef OPM_ECL_THERMAL_LAW_MANAGER_HPP
-#define OPM_ECL_THERMAL_LAW_MANAGER_HPP
 
 #include "EclSolidEnergyLawMultiplexer.hpp"
 #include "EclSolidEnergyLawMultiplexerParams.hpp"
@@ -37,9 +37,9 @@
 #include "EclThermalConductionLawMultiplexer.hpp"
 #include "EclThermalConductionLawMultiplexerParams.hpp"
 
-#include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/TableManager.hpp>
-#include <opm/parser/eclipse/Deck/Deck.hpp>
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/TableManager.hpp>
+#include <opm/input/eclipse/Deck/Deck.hpp>
 
 namespace Opm {
 
@@ -67,7 +67,7 @@ public:
         thermalConductivityApproach_ = ThermalConductionLawParams::undefinedApproach;
     }
 
-    void initParamsForElements(const Opm::EclipseState& eclState, size_t numElems)
+    void initParamsForElements(const EclipseState& eclState, size_t numElems)
     {
         const auto& fp = eclState.fieldProps();
         const auto& tableManager = eclState.getTableManager();
@@ -94,14 +94,14 @@ public:
     {
         switch (solidEnergyApproach_) {
         case SolidEnergyLawParams::heatcrApproach:
-            assert(0 <= elemIdx && elemIdx <  solidEnergyLawParams_.size());
+            assert(elemIdx <  solidEnergyLawParams_.size());
             return solidEnergyLawParams_[elemIdx];
 
         case SolidEnergyLawParams::specrockApproach:
         {
-            assert(0 <= elemIdx && elemIdx <  elemToSatnumIdx_.size());
+            assert(elemIdx <  elemToSatnumIdx_.size());
             unsigned satnumIdx = elemToSatnumIdx_[elemIdx];
-            assert(0 <= satnumIdx && satnumIdx <  solidEnergyLawParams_.size());
+            assert(satnumIdx <  solidEnergyLawParams_.size());
             return solidEnergyLawParams_[satnumIdx];
         }
 
@@ -119,7 +119,7 @@ public:
         switch (thermalConductivityApproach_) {
         case ThermalConductionLawParams::thconrApproach:
         case ThermalConductionLawParams::thcApproach:
-            assert(0 <= elemIdx && elemIdx <  thermalConductionLawParams_.size());
+            assert(elemIdx <  thermalConductionLawParams_.size());
             return thermalConductionLawParams_[elemIdx];
 
         case ThermalConductionLawParams::nullApproach:
@@ -135,7 +135,7 @@ private:
     /*!
      * \brief Initialize the parameters for the solid energy law using using HEATCR and friends.
      */
-    void initHeatcr_(const Opm::EclipseState& eclState,
+    void initHeatcr_(const EclipseState& eclState,
                      size_t numElems)
     {
         solidEnergyApproach_ = SolidEnergyLawParams::heatcrApproach;
@@ -162,7 +162,7 @@ private:
     /*!
      * \brief Initialize the parameters for the solid energy law using using SPECROCK and friends.
      */
-    void initSpecrock_(const Opm::EclipseState& eclState,
+    void initSpecrock_(const EclipseState& eclState,
                        size_t numElems)
     {
         solidEnergyApproach_ = SolidEnergyLawParams::specrockApproach;
@@ -211,7 +211,7 @@ private:
     /*!
      * \brief Initialize the parameters for the thermal conduction law using THCONR and friends.
      */
-    void initThconr_(const Opm::EclipseState& eclState,
+    void initThconr_(const EclipseState& eclState,
                      size_t numElems)
     {
         thermalConductivityApproach_ = ThermalConductionLawParams::thconrApproach;
@@ -244,7 +244,7 @@ private:
     /*!
      * \brief Initialize the parameters for the thermal conduction law using THCROCK and friends.
      */
-    void initThc_(const Opm::EclipseState& eclState,
+    void initThc_(const EclipseState& eclState,
                   size_t numElems)
     {
         thermalConductivityApproach_ = ThermalConductionLawParams::thcApproach;

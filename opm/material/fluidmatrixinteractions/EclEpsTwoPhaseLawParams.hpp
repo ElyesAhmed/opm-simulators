@@ -31,8 +31,8 @@
 #include "EclEpsScalingPoints.hpp"
 
 #if HAVE_ECL_INPUT
-#include <opm/parser/eclipse/Deck/Deck.hpp>
-#include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/Deck/Deck.hpp>
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
 #endif
 
 #include <string>
@@ -57,7 +57,7 @@ class EclEpsTwoPhaseLawParams : public EnsureFinalized
 
 public:
     typedef typename EffLawParams::Traits Traits;
-    typedef Opm::EclEpsScalingPoints<Scalar> ScalingPoints;
+    typedef EclEpsScalingPoints<Scalar> ScalingPoints;
 
     EclEpsTwoPhaseLawParams()
     {
@@ -106,8 +106,8 @@ public:
     /*!
      * \brief Set the scaling points which are seen by the physical model
      */
-    void setScaledPoints(std::shared_ptr<ScalingPoints> value)
-    { scaledPoints_ = *value; }
+    void setScaledPoints(const ScalingPoints& value)
+    { scaledPoints_ = value; }
 
     /*!
      * \brief Returns the scaling points which are seen by the physical model

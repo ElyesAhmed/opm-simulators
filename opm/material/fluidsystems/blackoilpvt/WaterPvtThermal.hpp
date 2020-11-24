@@ -35,9 +35,9 @@
 #include <opm/material/common/Spline.hpp>
 
 #if HAVE_ECL_INPUT
-#include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/SimpleTable.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/TableManager.hpp>
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/SimpleTable.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/TableManager.hpp>
 #endif
 
 namespace Opm {
@@ -50,12 +50,12 @@ class WaterPvtMultiplexer;
  * Note that this _only_ implements the temperature part, i.e., it requires the
  * isothermal properties as input.
  */
-template <class Scalar>
+template <class Scalar, bool enableBrine>
 class WaterPvtThermal
 {
 public:
-    typedef Opm::Tabulated1DFunction<Scalar> TabulatedOneDFunction;
-    typedef WaterPvtMultiplexer<Scalar, /*enableThermal=*/false, false> IsothermalPvt;
+    typedef Tabulated1DFunction<Scalar> TabulatedOneDFunction;
+    typedef WaterPvtMultiplexer<Scalar, /*enableThermal=*/false, enableBrine> IsothermalPvt;
 
     WaterPvtThermal()
     {
@@ -245,7 +245,7 @@ public:
     template <class Evaluation>
     Evaluation internalEnergy(unsigned regionIdx,
                               const Evaluation& temperature,
-                              const Evaluation& pressure OPM_UNUSED) const
+                              const Evaluation&) const
     {
         if (!enableInternalEnergy_)
             throw std::runtime_error("Requested the internal energy of oil but it is disabled");
@@ -344,7 +344,7 @@ public:
     bool enableInternalEnergy() const
     { return enableInternalEnergy_; }
 
-    bool operator==(const WaterPvtThermal<Scalar>& data) const
+    bool operator==(const WaterPvtThermal<Scalar, enableBrine>& data) const
     {
         if (isothermalPvt_ && !data.isothermalPvt_)
             return false;
@@ -369,7 +369,7 @@ public:
                this->enableInternalEnergy() == data.enableInternalEnergy();
     }
 
-    WaterPvtThermal<Scalar>& operator=(const WaterPvtThermal<Scalar>& data)
+    WaterPvtThermal<Scalar, enableBrine>& operator=(const WaterPvtThermal<Scalar, enableBrine>& data)
     {
         if (data.isothermalPvt_)
             isothermalPvt_ = new IsothermalPvt(*data.isothermalPvt_);

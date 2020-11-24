@@ -34,9 +34,10 @@
 #include <opm/material/common/Tabulated1DFunction.hpp>
 
 #if HAVE_ECL_INPUT
-#include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
-#include <opm/parser/eclipse/EclipseState/Schedule/Schedule.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/TableManager.hpp>
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/Schedule/OilVaporizationProperties.hpp>
+#include <opm/input/eclipse/Schedule/Schedule.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/TableManager.hpp>
 #endif
 
 #if HAVE_OPM_COMMON
@@ -54,8 +55,8 @@ class LiveOilPvt
     typedef std::vector<std::pair<Scalar, Scalar> > SamplingPoints;
 
 public:
-    typedef Opm::UniformXTabulated2DFunction<Scalar> TabulatedTwoDFunction;
-    typedef Opm::Tabulated1DFunction<Scalar> TabulatedOneDFunction;
+    typedef UniformXTabulated2DFunction<Scalar> TabulatedTwoDFunction;
+    typedef Tabulated1DFunction<Scalar> TabulatedOneDFunction;
 
     LiveOilPvt()
     {
@@ -195,7 +196,7 @@ public:
         }
 
         vapPar2_ = 0.0;
-        const auto& oilVap = schedule.getOilVaporizationProperties(0);
+        const auto& oilVap = schedule[0].oilvap();
         if (oilVap.getType() == OilVaporizationProperties::OilVaporization::VAPPARS) {
             vapPar2_ = oilVap.vap2();
         }
@@ -439,10 +440,10 @@ public:
      * \brief Returns the specific enthalpy [J/kg] of oil given a set of parameters.
      */
     template <class Evaluation>
-    Evaluation internalEnergy(unsigned regionIdx OPM_UNUSED,
-                        const Evaluation& temperature OPM_UNUSED,
-                        const Evaluation& pressure OPM_UNUSED,
-                        const Evaluation& Rs OPM_UNUSED) const
+    Evaluation internalEnergy(unsigned,
+                        const Evaluation&,
+                        const Evaluation&,
+                        const Evaluation&) const
     {
         throw std::runtime_error("Requested the enthalpy of oil but the thermal option is not enabled");
     }
@@ -531,11 +532,11 @@ public:
 
         // apply the vaporization parameters for the gas phase (cf. the Eclipse VAPPARS
         // keyword)
-        maxOilSaturation = Opm::min(maxOilSaturation, Scalar(1.0));
+        maxOilSaturation = min(maxOilSaturation, Scalar(1.0));
         if (vapPar2_ > 0.0 && maxOilSaturation > 0.01 && oilSaturation < maxOilSaturation) {
             static const Scalar eps = 0.001;
-            const Evaluation& So = Opm::max(oilSaturation, eps);
-            tmp *= Opm::max(1e-3, Opm::pow(So/maxOilSaturation, vapPar2_));
+            const Evaluation& So = max(oilSaturation, eps);
+            tmp *= max(1e-3, pow(So/maxOilSaturation, vapPar2_));
         }
 
         return tmp;
@@ -549,10 +550,10 @@ public:
      */
     template <class Evaluation>
     Evaluation saturationPressure(unsigned regionIdx,
-                                  const Evaluation& temperature OPM_UNUSED,
+                                  const Evaluation&,
                                   const Evaluation& Rs) const
     {
-        typedef Opm::MathToolbox<Evaluation> Toolbox;
+        typedef MathToolbox<Evaluation> Toolbox;
 
         const auto& RsTable = saturatedGasDissolutionFactorTable_[regionIdx];
         const Scalar eps = std::numeric_limits<typename Toolbox::Scalar>::epsilon()*1e6;
@@ -570,7 +571,7 @@ public:
 
             // If the derivative is "zero" Newton will not converge,
             // so simply return our initial guess.
-            if (std::abs(Opm::scalarValue(fPrime)) < 1.0e-30) {
+            if (std::abs(scalarValue(fPrime)) < 1.0e-30) {
                 return pSat;
             }
 
@@ -588,7 +589,7 @@ public:
                 pSat = 0.0;
             }
 
-            if (std::abs(Opm::scalarValue(delta)) < std::abs(Opm::scalarValue(pSat))*eps)
+            if (std::abs(scalarValue(delta)) < std::abs(scalarValue(pSat))*eps)
                 return pSat;
         }
 
@@ -602,6 +603,13 @@ public:
         throw NumericalIssue(errlog.str());
     }
 
+    template <class Evaluation>
+    Evaluation diffusionCoefficient(const Evaluation& /*temperature*/,
+                                    const Evaluation& /*pressure*/,
+                                    unsigned /*compIdx*/) const
+    {
+        throw std::runtime_error("Not implemented: The PVT model does not provide a diffusionCoefficient()");
+    }
     const Scalar gasReferenceDensity(unsigned regionIdx) const
     { return gasReferenceDensity_[regionIdx]; }
 
@@ -637,8 +645,8 @@ public:
 
     bool operator==(const LiveOilPvt<Scalar>& data) const
     {
-        return this->gasReferenceDensity() == data.gasReferenceDensity() &&
-               this->oilReferenceDensity() == data.oilReferenceDensity() &&
+        return this->gasReferenceDensity_ == data.gasReferenceDensity_ &&
+               this->oilReferenceDensity_ == data.oilReferenceDensity_ &&
                this->inverseOilBTable() == data.inverseOilBTable() &&
                this->oilMuTable() == data.oilMuTable() &&
                this->inverseOilBMuTable() == data.inverseOilBMuTable() &&

@@ -31,6 +31,11 @@
 #include <opm/material/common/Exceptions.hpp>
 #include <opm/material/common/MathToolbox.hpp>
 
+#if HAVE_OPM_COMMON
+#include <opm/common/OpmLog/OpmLog.hpp>
+#else
+#include <iostream>
+#endif
 
 #include <vector>
 
@@ -60,6 +65,17 @@ public:
                                Scalar minY, Scalar maxY, unsigned n)
     {
         resize(minX, maxX, m, minY, maxY, n);
+    }
+
+    UniformTabulated2DFunction(Scalar minX, Scalar maxX, unsigned m,
+                               Scalar minY, Scalar maxY, unsigned n,
+                               const std::vector<std::vector<Scalar>>& vals)
+    {
+        resize(minX, maxX, m, minY, maxY, n);
+
+        for (unsigned i = 0; i < m; ++i)
+            for (unsigned j = 0; j < n; ++j)
+                this->setSamplePoint(i, j, vals[i][j]);
     }
 
     /*!
@@ -121,7 +137,7 @@ public:
      */
     Scalar iToX(unsigned i) const
     {
-        assert(0 <= i && i < numX());
+        assert(i < numX());
 
         return xMin() + i*(xMax() - xMin())/(numX() - 1);
     }
@@ -131,7 +147,7 @@ public:
       */
     Scalar jToY(unsigned j) const
     {
-        assert(0 <= j && j < numY());
+        assert(j < numY());
 
         return yMin() + j*(yMax() - yMin())/(numY() - 1);
     }
@@ -174,22 +190,36 @@ public:
     /*!
      * \brief Evaluate the function at a given (x,y) position.
      *
-     * If this method is called for a value outside of the tabulated
-     * range, a \c Opm::NumericalIssue exception is thrown.
+     * \param x x-position
+     * \param y y-position
+     * \param extrapolate Whether to extrapolate for untabulated values. If false then
+     * an exception might be thrown.
      */
     template <class Evaluation>
-    Evaluation eval(const Evaluation& x, const Evaluation& y) const
+    Evaluation eval(const Evaluation& x, const Evaluation& y, bool extrapolate) const
     {
-#ifndef NDEBUG
         if (!applies(x,y))
         {
-            throw NumericalIssue("Attempt to get tabulated value for ("
-                                   +std::to_string(double(Opm::scalarValue(x)))+", "+std::to_string(double(Opm::scalarValue(y)))
-                                   +") on a table of extend "
-                                   +std::to_string(xMin())+" to "+std::to_string(xMax())+" times "
-                                   +std::to_string(yMin())+" to "+std::to_string(yMax()));
-        };
+            std::string msg = "Attempt to get tabulated value for ("
+                +std::to_string(double(scalarValue(x)))+", "+std::to_string(double(scalarValue(y)))
+                +") on a table of extent "
+                +std::to_string(xMin())+" to "+std::to_string(xMax())+" times "
+                +std::to_string(yMin())+" to "+std::to_string(yMax());
+
+            if (!extrapolate)
+            {
+                throw NumericalIssue(msg);
+            }
+            else
+            {
+#if HAVE_OPM_COMMON
+                OpmLog::warning("PVT Table evaluation:" + msg + ". Will use extrapolation");
+#else
+                std::cerr << "warning: "<< msg<<std::endl;
 #endif
+            }
+
+        };
 
         Evaluation alpha = xToI(x);
         Evaluation beta = yToJ(y);
@@ -197,11 +227,11 @@ public:
         unsigned i =
             static_cast<unsigned>(
                 std::max(0, std::min(static_cast<int>(numX()) - 2,
-                                     static_cast<int>(Opm::scalarValue(alpha)))));
+                                     static_cast<int>(scalarValue(alpha)))));
         unsigned j =
             static_cast<unsigned>(
                 std::max(0, std::min(static_cast<int>(numY()) - 2,
-                                     static_cast<int>(Opm::scalarValue(beta)))));
+                                     static_cast<int>(scalarValue(beta)))));
 
         alpha -= i;
         beta -= j;
@@ -219,8 +249,8 @@ public:
      */
     Scalar getSamplePoint(unsigned i, unsigned j) const
     {
-        assert(0 <= i && i < m_);
-        assert(0 <= j && j < n_);
+        assert(i < m_);
+        assert(j < n_);
 
         return samples_[j*m_ + i];
     }
@@ -232,8 +262,8 @@ public:
      */
     void setSamplePoint(unsigned i, unsigned j, Scalar value)
     {
-        assert(0 <= i && i < m_);
-        assert(0 <= j && j < n_);
+        assert(i < m_);
+        assert(j < n_);
 
         samples_[j*m_ + i] = value;
     }
@@ -270,6 +300,7 @@ private:
     Scalar yMin_;
     Scalar yMax_;
 };
+
 } // namespace Opm
 
 #endif

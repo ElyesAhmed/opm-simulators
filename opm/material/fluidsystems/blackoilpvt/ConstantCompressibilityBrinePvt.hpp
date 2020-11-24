@@ -30,9 +30,9 @@
 #include <opm/material/common/Tabulated1DFunction.hpp>
 
 #if HAVE_ECL_INPUT
-#include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
-#include <opm/parser/eclipse/EclipseState/Schedule/Schedule.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/PvtwsaltTable.hpp>
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/Schedule/Schedule.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/PvtwsaltTable.hpp>
 #endif
 
 #include <vector>
@@ -48,7 +48,7 @@ template <class Scalar>
 class ConstantCompressibilityBrinePvt
 {
 public:
-    typedef typename Opm::Tabulated1DFunction<Scalar> TabulatedFunction;
+    typedef Tabulated1DFunction<Scalar> TabulatedFunction;
 
     ConstantCompressibilityBrinePvt() = default;
     ConstantCompressibilityBrinePvt(const std::vector<Scalar>& waterReferenceDensity,
@@ -154,9 +154,9 @@ public:
      * \brief Returns the specific enthalpy [J/kg] of water given a set of parameters.
      */
     template <class Evaluation>
-    Evaluation internalEnergy(unsigned regionIdx OPM_UNUSED,
-                        const Evaluation& temperature OPM_UNUSED,
-                        const Evaluation& pressure OPM_UNUSED) const
+    Evaluation internalEnergy(unsigned,
+                        const Evaluation&,
+                        const Evaluation&) const
     {
         throw std::runtime_error("Requested the enthalpy of water but the thermal option is not enabled");
     }
@@ -222,7 +222,7 @@ public:
 
     bool operator==(const ConstantCompressibilityBrinePvt<Scalar>& data) const
     {
-        return this->waterReferenceDensity() == data.waterReferenceDensity() &&
+        return this->waterReferenceDensity_ == data.waterReferenceDensity_ &&
                this->referencePressure() == data.referencePressure() &&
                this->formationVolumeTables() == data.formationVolumeTables() &&
                this->compressibilityTables() == data.compressibilityTables() &&

@@ -47,10 +47,10 @@
 #include <opm/material/densead/Evaluation.hpp>
 #include <opm/material/densead/Math.hpp>
 
-#include <opm/parser/eclipse/Parser/Parser.hpp>
-#include <opm/parser/eclipse/Deck/Deck.hpp>
-#include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
-#include <opm/parser/eclipse/Python/Python.hpp>
+#include <opm/input/eclipse/Parser/Parser.hpp>
+#include <opm/input/eclipse/Deck/Deck.hpp>
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/Python/Python.hpp>
 
 #include <dune/common/parallel/mpihelper.hh>
 
@@ -233,7 +233,7 @@ inline void testAll()
     Opm::EclipseState eclState(deck);
     Opm::Schedule schedule(deck, eclState, python);
 
-    const auto& pvtwKeyword = deck.getKeyword("PVTW");
+    const auto& pvtwKeyword = deck["PVTW"].back();
     size_t numPvtRegions = pvtwKeyword.size();
 
     if (numPvtRegions != 2)

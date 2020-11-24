@@ -33,8 +33,8 @@
 #include <opm/material/common/Spline.hpp>
 
 #if HAVE_ECL_INPUT
-#include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
-#include <opm/parser/eclipse/EclipseState/Schedule/Schedule.hpp>
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/Schedule/Schedule.hpp>
 #endif
 
 namespace Opm {
@@ -45,7 +45,7 @@ namespace Opm {
 template <class Scalar>
 class ConstantCompressibilityOilPvt
 {
-    typedef Opm::Tabulated1DFunction<Scalar> TabulatedOneDFunction;
+    typedef Tabulated1DFunction<Scalar> TabulatedOneDFunction;
     typedef std::vector<std::pair<Scalar, Scalar> > SamplingPoints;
 
 public:
@@ -174,10 +174,10 @@ public:
      * \brief Returns the specific enthalpy [J/kg] of oil given a set of parameters.
      */
     template <class Evaluation>
-    Evaluation internalEnergy(unsigned regionIdx OPM_UNUSED,
-                        const Evaluation& temperature OPM_UNUSED,
-                        const Evaluation& pressure OPM_UNUSED,
-                        const Evaluation& Rs OPM_UNUSED) const
+    Evaluation internalEnergy(unsigned,
+                        const Evaluation&,
+                        const Evaluation&,
+                        const Evaluation&) const
     {
         throw std::runtime_error("Requested the enthalpy of oil but the thermal option is not enabled");
     }
@@ -272,6 +272,14 @@ public:
                                   const Evaluation& /*Rs*/) const
     { return 0.0; /* this is dead oil, so there isn't any meaningful saturation pressure! */ }
 
+    template <class Evaluation>
+    Evaluation diffusionCoefficient(const Evaluation& /*temperature*/,
+                                    const Evaluation& /*pressure*/,
+                                    unsigned /*compIdx*/) const
+    {
+        throw std::runtime_error("Not implemented: The PVT model does not provide a diffusionCoefficient()");
+    }
+
     const Scalar oilReferenceDensity(unsigned regionIdx) const
     { return oilReferenceDensity_[regionIdx]; }
 
@@ -289,8 +297,8 @@ public:
 
     bool operator==(const ConstantCompressibilityOilPvt<Scalar>& data) const
     {
-        return this->oilReferenceDensity() == data.oilReferenceDensity() &&
-               this->oilReferencePressure() == data.oilReferencePressure() &&
+        return this->oilReferenceDensity_ == data.oilReferenceDensity_ &&
+               this->oilReferencePressure_ == data.oilReferencePressure_ &&
                this->oilReferenceFormationVolumeFactor() == data.oilReferenceFormationVolumeFactor() &&
                this->oilCompressibility() == data.oilCompressibility() &&
                this->oilViscosity() == data.oilViscosity() &&

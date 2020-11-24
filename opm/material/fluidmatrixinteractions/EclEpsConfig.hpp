@@ -28,11 +28,11 @@
 #define OPM_ECL_EPS_CONFIG_HPP
 
 #if HAVE_ECL_INPUT
-#include <opm/parser/eclipse/Deck/Deck.hpp>
-#include <opm/parser/eclipse/Deck/DeckItem.hpp>
-#include <opm/parser/eclipse/Deck/DeckKeyword.hpp>
-#include <opm/parser/eclipse/Deck/DeckRecord.hpp>
-#include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/Deck/Deck.hpp>
+#include <opm/input/eclipse/Deck/DeckItem.hpp>
+#include <opm/input/eclipse/Deck/DeckKeyword.hpp>
+#include <opm/input/eclipse/Deck/DeckRecord.hpp>
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
 #endif
 
 #include <opm/material/common/Unused.hpp>
@@ -49,6 +49,7 @@ namespace Opm {
 enum EclTwoPhaseSystemType {
     EclGasOilSystem,
     EclOilWaterSystem,
+    EclGasWaterSystem
 };
 
 /*!
@@ -111,6 +112,34 @@ public:
     { return enableKrwScaling_; }
 
     /*!
+     * \brief Specify whether three-point relative permeability value
+     * scaling is enabled for the wetting phase (KRWR + KRW).
+     */
+    void setEnableThreePointKrwScaling(const bool enable)
+    { this->enableThreePointKrwScaling_ = enable; }
+
+    /*!
+     * \brief Whether or not three-point relative permeability value scaling
+     * is enabled for the wetting phase (KRWR + KRW).
+     */
+    bool enableThreePointKrwScaling() const
+    { return this->enableThreePointKrwScaling_; }
+
+    /*!
+     * \brief Specify whether three-point relative permeability value
+     * scaling is enabled for the wetting phase (e.g., KRORW + KRO).
+     */
+    void setEnableThreePointKrnScaling(const bool enable)
+    { this->enableThreePointKrnScaling_ = enable; }
+
+    /*!
+     * \brief Whether or not three-point relative permeability value scaling
+     * is enabled for the non-wetting phase (e.g., KRORW + KRO).
+     */
+    bool enableThreePointKrnScaling() const
+    { return this->enableThreePointKrnScaling_; }
+
+    /*!
      * \brief Specify whether relative permeability scaling is enabled for the non-wetting phase.
      */
     void setEnableKrnScaling(bool yesno)
@@ -160,8 +189,10 @@ public:
      *
      * This requires that the opm-parser module is available.
      */
-    void initFromState(const Opm::EclipseState& eclState,
-                       Opm::EclTwoPhaseSystemType twoPhaseSystemType)
+    void initFromState(const EclipseState& eclState,
+                       EclTwoPhaseSystemType twoPhaseSystemType,
+                       const std::string& prefix = "",
+                       const std::string& suffix = "")
     {
         const auto& endscale = eclState.runspec().endpointScaling();
         // find out if endpoint scaling is used in the first place
@@ -176,47 +207,60 @@ public:
             enableKrnScaling_ = false;
             return;
         }
+
         // endpoint scaling is used, i.e., at least saturation scaling needs to be enabled
         enableSatScaling_ = true;
         enableThreePointKrSatScaling_ = endscale.threepoint();
 
-        if (twoPhaseSystemType == EclOilWaterSystem) {
-            // check if Leverett capillary pressure scaling is requested
-            if (eclState.getTableManager().useJFunc()) {
-                const auto& jfunc = eclState.getTableManager().getJFunc();
-                auto flag = jfunc.flag();
-                if (flag == Opm::JFunc::Flag::BOTH || flag == Opm::JFunc::Flag::WATER)
-                    enableLeverettScaling_ = true;
-            }
-        } else {
-            // check if Leverett capillary pressure scaling is requested
-            if (eclState.getTableManager().useJFunc()) {
-                const auto& jfunc = eclState.getTableManager().getJFunc();
-                auto flag = jfunc.flag();
-                if (flag == Opm::JFunc::Flag::BOTH || flag == Opm::JFunc::Flag::GAS)
-                    enableLeverettScaling_ = true;
-            }
-        }
+        if (eclState.getTableManager().useJFunc()) {
+            const auto flag = eclState.getTableManager().getJFunc().flag();
 
+            enableLeverettScaling_ = (flag == JFunc::Flag::BOTH)
+                || ((twoPhaseSystemType == EclOilWaterSystem) &&
+                    (flag == JFunc::Flag::WATER))
+                || ((twoPhaseSystemType == EclGasOilSystem) &&
+                    (flag == JFunc::Flag::GAS));
+        }
 
         const auto& fp = eclState.fieldProps();
+        auto hasKR = [&fp, &prefix, &suffix](const std::string& scaling)
+        {
+            return fp.has_double(prefix + "KR" + scaling + suffix);
+        };
+        auto hasPC = [&fp, &prefix](const std::string& scaling)
+        {
+            return fp.has_double(prefix + "PC" + scaling);
+        };
+
         // check if we are supposed to scale the Y axis of the capillary pressure
         if (twoPhaseSystemType == EclOilWaterSystem) {
-            enableKrnScaling_ = fp.has_double("KRO");
-            enableKrwScaling_ = fp.has_double("KRW");
-            enablePcScaling_  = fp.has_double("PCW") || fp.has_double("SWATINIT");
-        } else {
-            assert(twoPhaseSystemType == EclGasOilSystem);
-            enableKrnScaling_ = fp.has_double("KRG");
-            enableKrwScaling_ = fp.has_double("KRO");
-            enablePcScaling_  = fp.has_double("PCG");
+            this->setEnableThreePointKrwScaling(hasKR("WR"));
+            this->setEnableThreePointKrnScaling(hasKR("ORW"));
+
+            this->enableKrnScaling_ = hasKR("O") || this->enableThreePointKrnScaling();
+            this->enableKrwScaling_ = hasKR("W") || this->enableThreePointKrwScaling();
+            this->enablePcScaling_  = hasPC("W") || fp.has_double("SWATINIT");
+        }
+        else if (twoPhaseSystemType == EclGasOilSystem) {
+            this->setEnableThreePointKrwScaling(hasKR("ORG"));
+            this->setEnableThreePointKrnScaling(hasKR("GR"));
+
+            this->enableKrnScaling_ = hasKR("G") || this->enableThreePointKrnScaling();
+            this->enableKrwScaling_ = hasKR("O") || this->enableThreePointKrwScaling();
+            this->enablePcScaling_  = hasPC("G");
+        }
+        else {
+            assert(twoPhaseSystemType == EclGasWaterSystem);
+            //TODO enable endpoint scaling for gaswater system
         }
 
-        if (enablePcScaling_ && enableLeverettScaling_)
-            throw std::runtime_error("Capillary pressure scaling and the Leverett scaling function are "
-                                     "mutually exclusive: The deck contains the PCW/PCG property and the "
-                                     "JFUNC keyword applies to the water phase.");
-
+        if (enablePcScaling_ && enableLeverettScaling_) {
+            throw std::runtime_error {
+                "Capillary pressure scaling and the Leverett scaling function "
+                "are mutually exclusive. The deck contains the PCW/PCG property "
+                "and the JFUNC keyword applies to the water phase."
+            };
+        }
     }
 #endif
 
@@ -237,6 +281,12 @@ private:
     bool enableLeverettScaling_;
     bool enableKrwScaling_;
     bool enableKrnScaling_;
+
+    // Employ three-point vertical scaling (e.g., KRWR and KRW).
+    bool enableThreePointKrwScaling_{false};
+
+    // Employ three-point vertical scaling (e.g., KRORW and KRO).
+    bool enableThreePointKrnScaling_{false};
 };
 
 } // namespace Opm

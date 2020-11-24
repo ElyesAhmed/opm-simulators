@@ -37,6 +37,12 @@
 
 #include <opm/material/common/Unused.hpp>
 
+#if HAVE_OPM_COMMON
+#include <opm/common/OpmLog/OpmLog.hpp>
+#else
+#include <iostream>
+#endif
+
 #include <cmath>
 
 namespace Opm {
@@ -62,7 +68,7 @@ namespace Opm {
 template <class Scalar>
 class SimpleHuDuanH2O : public Component<Scalar, SimpleHuDuanH2O<Scalar> >
 {
-    typedef Opm::IdealGas<Scalar> IdealGas;
+    typedef ::Opm::IdealGas<Scalar> IdealGas;
     typedef IAPWS::Common<Scalar> Common;
 
     static const Scalar R;  // specific gas constant of water
@@ -155,7 +161,7 @@ public:
         Evaluation B = (n[2]*sigma + n[3])*sigma + n[4];
         Evaluation C = (n[5]*sigma + n[6])*sigma + n[7];
 
-        Evaluation tmp = 2.0*C/(Opm::sqrt(B*B - 4.0*A*C) - B);
+        Evaluation tmp = 2.0*C/(sqrt(B*B - 4.0*A*C) - B);
         tmp *= tmp;
         tmp *= tmp;
 
@@ -178,8 +184,8 @@ public:
      * \copydoc Component::gasHeatCapacity
      */
     template <class Evaluation>
-    static Evaluation gasHeatCapacity(const Evaluation& temperature OPM_UNUSED,
-                                      const Evaluation& pressure OPM_UNUSED)
+    static Evaluation gasHeatCapacity(const Evaluation&,
+                                      const Evaluation&)
     { return 1.976e3; }
 
     /*!
@@ -197,8 +203,8 @@ public:
      * \copydoc Component::liquidHeatCapacity
      */
     template <class Evaluation>
-    static Evaluation liquidHeatCapacity(const Evaluation& temperature OPM_UNUSED,
-                                         const Evaluation& pressure OPM_UNUSED)
+    static Evaluation liquidHeatCapacity(const Evaluation&,
+                                         const Evaluation&)
     { return 4.184e3; }
 
     /*!
@@ -296,11 +302,14 @@ public:
      *
      * \param temperature temperature of component in \f$\mathrm{[K]}\f$
      * \param pressure pressure of component in \f$\mathrm{[Pa]}\f$
+     * \param extrapolate Whether to extrapolate for untabulated/unreasonable
+     *                    values. If false an exception might be thrown.
      */
     template <class Evaluation>
-    static Evaluation liquidDensity(const Evaluation& temperature, const Evaluation& pressure)
+    static Evaluation liquidDensity(const Evaluation& temperature, const Evaluation& pressure,
+                                    bool extrapolate)
     {
-        return liquidDensity_(temperature, pressure);
+        return liquidDensity_(temperature, pressure, extrapolate);
     }
 
     /*!
@@ -334,18 +343,30 @@ public:
      *
      * \param temperature temperature of component in \f$\mathrm{[K]}\f$
      * \param pressure pressure of component in \f$\mathrm{[Pa]}\f$
+     * \param extrapolate Whether to extrapolate for untabulated/unreasonable
+     *                    values. If false an exception might be thrown.
      */
     template <class Evaluation>
-    static Evaluation liquidViscosity(const Evaluation& temperature, const Evaluation& pressure)
+    static Evaluation liquidViscosity(const Evaluation& temperature, const Evaluation& pressure,
+                                      bool extrapolate)
     {
         if (temperature > 570) {
             std::ostringstream oss;
             oss << "Viscosity of water based on Hu et al is too different from IAPWS for T above 570K and "
                 << "(T = " << temperature << ")";
-            throw NumericalIssue(oss.str());
+            if(extrapolate)
+            {
+#if HAVE_OPM_COMMON
+                OpmLog::warning(oss.str());
+#else
+                std::cerr << "warning: "<< oss.str() <<std::endl;
+#endif
+            }
+            else
+                throw NumericalIssue(oss.str());
         }
 
-        const Evaluation& rho = liquidDensity(temperature, pressure);
+        const Evaluation& rho = liquidDensity(temperature, pressure, extrapolate);
         return Common::viscosity(temperature, rho);
     }
 
@@ -356,9 +377,11 @@ private:
      *
      * \param temperature temperature of component in \f$\mathrm{[K]}\f$
      * \param pressure pressure of component in \f$\mathrm{[Pa]}\f$
+     * \param extrapolate Whether to extrapolate for untabulated/unreasonable
+     *                    values. If false an exception might be thrown.
      */
     template <class Evaluation>
-    static Evaluation liquidDensity_(const Evaluation& T, const Evaluation& pressure) {
+    static Evaluation liquidDensity_(const Evaluation& T, const Evaluation& pressure, bool extrapolate) {
         // Hu, Duan, Zhu and Chou: PVTx properties of the CO2-H2O and CO2-H2O-NaCl
         // systems below 647 K: Assessment of experimental data and
         // thermodynamics models, Chemical Geology, 2007.
@@ -366,7 +389,16 @@ private:
             std::ostringstream oss;
             oss << "Density of water is only implemented for temperatures below 647K and "
                 << "pressures below 100MPa. (T = " << T << ", p=" << pressure;
-            throw NumericalIssue(oss.str());
+            if(extrapolate)
+            {
+#if HAVE_OPM_COMMON
+                OpmLog::warning(oss.str());
+#else
+                std::cerr << "warning: "<< oss.str() <<std::endl;
+#endif
+            }
+            else
+                throw NumericalIssue(oss.str());
         }
 
         Evaluation p = pressure / 1e6; // to MPa
@@ -392,7 +424,7 @@ private:
 };
 
 template <class Scalar>
-const Scalar SimpleHuDuanH2O<Scalar>::R = Opm::Constants<Scalar>::R / 18e-3;
+const Scalar SimpleHuDuanH2O<Scalar>::R = Constants<Scalar>::R / 18e-3;
 
 } // namespace Opm
 

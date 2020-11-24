@@ -55,16 +55,16 @@ enum class EclMultiplexerApproach {
  * Essentially, this class just stores parameter object for the "nested" material law and
  * provides some methods to convert to it.
  */
-template<class Traits, class GasOilMaterialLawT, class OilWaterMaterialLawT>
+template<class Traits, class GasOilMaterialLawT, class OilWaterMaterialLawT, class GasWaterMaterialLawT>
 class EclMultiplexerMaterialParams : public Traits, public EnsureFinalized
 {
     typedef typename Traits::Scalar Scalar;
     enum { numPhases = 3 };
 
-    typedef Opm::EclStone1Material<Traits, GasOilMaterialLawT, OilWaterMaterialLawT> Stone1Material;
-    typedef Opm::EclStone2Material<Traits, GasOilMaterialLawT, OilWaterMaterialLawT> Stone2Material;
-    typedef Opm::EclDefaultMaterial<Traits, GasOilMaterialLawT, OilWaterMaterialLawT> DefaultMaterial;
-    typedef Opm::EclTwoPhaseMaterial<Traits, GasOilMaterialLawT, OilWaterMaterialLawT> TwoPhaseMaterial;
+    typedef EclStone1Material<Traits, GasOilMaterialLawT, OilWaterMaterialLawT> Stone1Material;
+    typedef EclStone2Material<Traits, GasOilMaterialLawT, OilWaterMaterialLawT> Stone2Material;
+    typedef EclDefaultMaterial<Traits, GasOilMaterialLawT, OilWaterMaterialLawT> DefaultMaterial;
+    typedef EclTwoPhaseMaterial<Traits, GasOilMaterialLawT, OilWaterMaterialLawT, GasWaterMaterialLawT> TwoPhaseMaterial;
 
     typedef typename Stone1Material::Params Stone1Params;
     typedef typename Stone2Material::Params Stone2Params;

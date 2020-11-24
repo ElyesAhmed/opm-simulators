@@ -55,7 +55,7 @@ namespace Opm {
 template <class Scalar>
 class SimpleH2O : public Component<Scalar, SimpleH2O<Scalar> >
 {
-    typedef Opm::IdealGas<Scalar> IdealGas;
+    typedef ::Opm::IdealGas<Scalar> IdealGas;
 
     static const Scalar R;  // specific gas constant of water
 
@@ -147,7 +147,7 @@ public:
         Evaluation B = (n[2]*sigma + n[3])*sigma + n[4];
         Evaluation C = (n[5]*sigma + n[6])*sigma + n[7];
 
-        Evaluation tmp = 2.0*C/(Opm::sqrt(B*B - 4.0*A*C) - B);
+        Evaluation tmp = 2.0*C/(sqrt(B*B - 4.0*A*C) - B);
         tmp *= tmp;
         tmp *= tmp;
 
@@ -170,8 +170,8 @@ public:
      * \copydoc Component::gasHeatCapacity
      */
     template <class Evaluation>
-    static Evaluation gasHeatCapacity(const Evaluation& temperature OPM_UNUSED,
-                                      const Evaluation& pressure OPM_UNUSED)
+    static Evaluation gasHeatCapacity(const Evaluation&,
+                                      const Evaluation&)
     { return 1.976e3; }
 
     /*!
@@ -189,8 +189,8 @@ public:
      * \copydoc Component::liquidHeatCapacity
      */
     template <class Evaluation>
-    static Evaluation liquidHeatCapacity(const Evaluation& temperature OPM_UNUSED,
-                                         const Evaluation& pressure OPM_UNUSED)
+    static Evaluation liquidHeatCapacity(const Evaluation&,
+                                         const Evaluation&)
     { return 4.184e3; }
 
     /*!
@@ -335,7 +335,7 @@ public:
 };
 
 template <class Scalar>
-const Scalar SimpleH2O<Scalar>::R = Opm::Constants<Scalar>::R / 18e-3;
+const Scalar SimpleH2O<Scalar>::R = Constants<Scalar>::R / 18e-3;
 
 } // namespace Opm
 

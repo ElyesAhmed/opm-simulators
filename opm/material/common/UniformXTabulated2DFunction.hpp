@@ -39,6 +39,7 @@
 #include <tuple>
 #include <sstream>
 #include <cassert>
+#include <cmath>
 
 namespace Opm {
 /*!
@@ -144,7 +145,7 @@ public:
      */
     Scalar iToX(unsigned i) const
     {
-        assert(0 <= i && i < numX());
+        assert(i < numX());
 
         return xPos_.at(i);
     }
@@ -174,8 +175,8 @@ public:
       */
     Scalar jToY(unsigned i, unsigned j) const
     {
-        assert(0 <= i && i < numX());
-        assert(0 <= j && size_t(j) < samples_[i].size());
+        assert(i < numX());
+        assert(size_t(j) < samples_[i].size());
 
         return std::get<1>(samples_.at(i).at(j));
     }
@@ -233,7 +234,7 @@ public:
     template <class Evaluation>
     unsigned ySegmentIndex(const Evaluation& y, unsigned xSampleIdx, bool extrapolate OPM_OPTIM_UNUSED = false) const
     {
-        assert(0 <= xSampleIdx && xSampleIdx < numX());
+        assert(xSampleIdx < numX());
         const auto& colSamplePoints = samples_.at(xSampleIdx);
 
         assert(colSamplePoints.size() >= 2);
@@ -270,8 +271,8 @@ public:
     template <class Evaluation>
     Evaluation yToBeta(const Evaluation& y, unsigned xSampleIdx, unsigned ySegmentIdx) const
     {
-        assert(0 <= xSampleIdx && xSampleIdx < numX());
-        assert(0 <= ySegmentIdx && ySegmentIdx < numY(xSampleIdx) - 1);
+        assert(xSampleIdx < numX());
+        assert(ySegmentIdx < numY(xSampleIdx) - 1);
 
         const auto& colSamplePoints = samples_.at(xSampleIdx);
 
@@ -291,7 +292,7 @@ public:
             return false;
 
         unsigned i = xSegmentIndex(x, /*extrapolate=*/false);
-        Scalar alpha = xToAlpha(Opm::decay<Scalar>(x), i);
+        Scalar alpha = xToAlpha(decay<Scalar>(x), i);
 
         const auto& col1SamplePoints = samples_.at(i);
         const auto& col2SamplePoints = samples_.at(i + 1);
@@ -410,7 +411,7 @@ public:
      */
     size_t appendSamplePoint(size_t i, Scalar y, Scalar value)
     {
-        assert(0 <= i && i < numX());
+        assert(i < numX());
         Scalar x = iToX(i);
         if (samples_[i].empty() || std::get<1>(samples_[i].back()) < y) {
             samples_[i].push_back(SamplePoint(x, y, value));
@@ -446,7 +447,7 @@ public:
 
         Scalar y0 = 1e30;
         Scalar y1 = -1e30;
-        int n = 0;
+        size_t n = 0;
         for (int i = 0; i < m; ++ i) {
             y0 = std::min(y0, yMin(i));
             y1 = std::max(y1, yMax(i));
@@ -457,7 +458,7 @@ public:
         n *= 3;
         for (int i = 0; i <= m; ++i) {
             Scalar x = x0 + (x1 - x0)*i/m;
-            for (int j = 0; j <= n; ++j) {
+            for (size_t j = 0; j <= n; ++j) {
                 Scalar y = y0 + (y1 - y0)*j/n;
                 os << x << " " << y << " " << eval(x, y) << "\n";
             }

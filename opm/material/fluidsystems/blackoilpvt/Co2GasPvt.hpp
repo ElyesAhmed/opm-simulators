@@ -31,13 +31,15 @@
 
 #include <opm/material/common/Tabulated1DFunction.hpp>
 #include <opm/material/components/CO2.hpp>
+#include <opm/material/components/SimpleHuDuanH2O.hpp>
 #include <opm/material/common/UniformTabulated2DFunction.hpp>
+#include <opm/material/binarycoefficients/Brine_CO2.hpp>
 #include <opm/material/components/co2tables.inc>
 
 #if HAVE_ECL_INPUT
-#include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
-#include <opm/parser/eclipse/EclipseState/Schedule/Schedule.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/TableManager.hpp>
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/Schedule/Schedule.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/TableManager.hpp>
 #endif
 
 #include <vector>
@@ -51,10 +53,15 @@ template <class Scalar>
 class Co2GasPvt
 {
     typedef std::vector<std::pair<Scalar, Scalar> > SamplingPoints;
-    typedef Opm::CO2<Scalar, CO2Tables> CO2;
+    typedef ::Opm::CO2<Scalar, CO2Tables> CO2;
+    typedef SimpleHuDuanH2O<Scalar> H2O;
+    static const bool extrapolate = true;
 
 public:
-    typedef Opm::Tabulated1DFunction<Scalar> TabulatedOneDFunction;
+    typedef Tabulated1DFunction<Scalar> TabulatedOneDFunction;
+
+    //! The binary coefficients for brine and CO2 used by this fluid system
+    typedef BinaryCoeff::Brine_CO2<Scalar, H2O, CO2> BinaryCoeffBrineCO2;
 
     explicit Co2GasPvt() = default;
     Co2GasPvt(const std::vector<Scalar>& gasReferenceDensity)
@@ -83,7 +90,7 @@ public:
         size_t regionIdx = 0;
         Scalar T_ref = eclState.getTableManager().stCond().temperature;
         Scalar P_ref = eclState.getTableManager().stCond().pressure;
-        gasReferenceDensity_[regionIdx] = CO2::gasDensity(T_ref, P_ref);
+        gasReferenceDensity_[regionIdx] = CO2::gasDensity(T_ref, P_ref, extrapolate);
         initEnd();
     }
 #endif
@@ -123,12 +130,12 @@ public:
      * \brief Returns the specific enthalpy [J/kg] of gas given a set of parameters.
      */
     template <class Evaluation>
-    Evaluation internalEnergy(unsigned regionIdx OPM_UNUSED,
-                        const Evaluation& temperature OPM_UNUSED,
-                        const Evaluation& pressure OPM_UNUSED,
-                        const Evaluation& Rv OPM_UNUSED) const
+    Evaluation internalEnergy(unsigned,
+                        const Evaluation& temperature,
+                        const Evaluation& pressure,
+                        const Evaluation&) const
     {
-        throw std::runtime_error("Requested the enthalpy of gas but the thermal option is not enabled");
+        return CO2::gasInternalEnergy(temperature, pressure, extrapolate);
     }
 
     /*!
@@ -149,7 +156,7 @@ public:
                                   const Evaluation& temperature,
                                   const Evaluation& pressure) const
     {
-        return CO2::gasViscosity(temperature, pressure);
+        return CO2::gasViscosity(temperature, pressure, extrapolate);
     }
 
     /*!
@@ -170,7 +177,7 @@ public:
                                                      const Evaluation& temperature,
                                                      const Evaluation& pressure) const
     {
-        return CO2::gasDensity(temperature, pressure)/gasReferenceDensity_[regionIdx];
+        return CO2::gasDensity(temperature, pressure, extrapolate)/gasReferenceDensity_[regionIdx];
     }
 
     /*!
@@ -204,6 +211,14 @@ public:
                                               const Evaluation& /*temperature*/,
                                               const Evaluation& /*pressure*/) const
     { return 0.0; /* this is dry gas! */ }
+
+    template <class Evaluation>
+    Evaluation diffusionCoefficient(const Evaluation& temperature,
+                                    const Evaluation& pressure,
+                                    unsigned /*compIdx*/) const
+    {
+        return BinaryCoeffBrineCO2::gasDiffCoeff(temperature, pressure);
+    }
 
     const Scalar gasReferenceDensity(unsigned regionIdx) const
     { return gasReferenceDensity_[regionIdx]; }

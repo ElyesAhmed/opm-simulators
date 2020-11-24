@@ -178,7 +178,7 @@ public:
 
     // create a function evaluation for a "naked" depending variable (i.e., f(x) = x)
     template <class RhsValueType>
-    static Evaluation createVariable(const RhsValueType& value OPM_UNUSED, int varPos OPM_UNUSED)
+    static Evaluation createVariable(const RhsValueType&, int)
     {
         throw std::logic_error("Dynamically sized evaluations require that the number of "
                                "derivatives is specified when creating an evaluation");
@@ -212,7 +212,7 @@ public:
     // "evaluate" a constant function (i.e. a function that does not depend on the set of
     // relevant variables, f(x) = c).
     template <class RhsValueType>
-    static Evaluation createConstant(const RhsValueType& value OPM_UNUSED)
+    static Evaluation createConstant(const RhsValueType&)
     {
         throw std::logic_error("Dynamically-sized evaluation objects require to specify the number of derivatives.");
     }
@@ -566,12 +566,12 @@ using DynamicEvaluation = Evaluation<Scalar, DynamicSize, staticSize>;
 } // namespace DenseAd
 
 template <class Scalar, unsigned staticSize>
-Opm::DenseAd::Evaluation<Scalar, -1, staticSize> constant(int numDerivatives, const Scalar& value)
-{ return Opm::DenseAd::Evaluation<Scalar, -1, staticSize>::createConstant(numDerivatives, value); }
+DenseAd::Evaluation<Scalar, -1, staticSize> constant(int numDerivatives, const Scalar& value)
+{ return DenseAd::Evaluation<Scalar, -1, staticSize>::createConstant(numDerivatives, value); }
 
 template <class Scalar, unsigned staticSize>
-Opm::DenseAd::Evaluation<Scalar, -1, staticSize> variable(int numDerivatives, const Scalar& value, unsigned idx)
-{ return Opm::DenseAd::Evaluation<Scalar, -1, staticSize>::createVariable(numDerivatives, value, idx); }
+DenseAd::Evaluation<Scalar, -1, staticSize> variable(int numDerivatives, const Scalar& value, unsigned idx)
+{ return DenseAd::Evaluation<Scalar, -1, staticSize>::createVariable(numDerivatives, value, idx); }
 
 } // namespace Opm
 

@@ -32,10 +32,10 @@
 #include <opm/material/common/Tabulated1DFunction.hpp>
 
 #if HAVE_ECL_INPUT
-#include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
-#include <opm/parser/eclipse/EclipseState/Schedule/Schedule.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/TableManager.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/PvdgTable.hpp>
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/Schedule/Schedule.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/TableManager.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/PvdgTable.hpp>
 #endif
 
 #include <vector>
@@ -51,7 +51,7 @@ class DryGasPvt
     typedef std::vector<std::pair<Scalar, Scalar> > SamplingPoints;
 
 public:
-    typedef Opm::Tabulated1DFunction<Scalar> TabulatedOneDFunction;
+    typedef Tabulated1DFunction<Scalar> TabulatedOneDFunction;
 
     explicit DryGasPvt() = default;
     DryGasPvt(const std::vector<Scalar>& gasReferenceDensity,
@@ -91,7 +91,7 @@ public:
             Scalar p = 1.01325e5; // surface pressure, [Pa]
             Scalar T = 273.15 + 15.56; // surface temperature, [K]
             Scalar MO = 175e-3; // [kg/mol]
-            Scalar MG = Opm::Constants<Scalar>::R*T*rhoRefG / p; // [kg/mol], consequence of the ideal gas law
+            Scalar MG = Constants<Scalar>::R*T*rhoRefG / p; // [kg/mol], consequence of the ideal gas law
             Scalar MW = 18.0e-3; // [kg/mol]
             // TODO (?): the molar mass of the components can possibly specified
             // explicitly in the deck.
@@ -205,10 +205,10 @@ public:
      * \brief Returns the specific enthalpy [J/kg] of gas given a set of parameters.
      */
     template <class Evaluation>
-    Evaluation internalEnergy(unsigned regionIdx OPM_UNUSED,
-                        const Evaluation& temperature OPM_UNUSED,
-                        const Evaluation& pressure OPM_UNUSED,
-                        const Evaluation& Rv OPM_UNUSED) const
+    Evaluation internalEnergy(unsigned,
+                        const Evaluation&,
+                        const Evaluation&,
+                        const Evaluation&) const
     {
         throw std::runtime_error("Requested the enthalpy of gas but the thermal option is not enabled");
     }
@@ -287,6 +287,14 @@ public:
                                               const Evaluation& /*temperature*/,
                                               const Evaluation& /*pressure*/) const
     { return 0.0; /* this is dry gas! */ }
+
+    template <class Evaluation>
+    Evaluation diffusionCoefficient(const Evaluation& /*temperature*/,
+                                    const Evaluation& /*pressure*/,
+                                    unsigned /*compIdx*/) const
+    {
+        throw std::runtime_error("Not implemented: The PVT model does not provide a diffusionCoefficient()");
+    }
 
     const Scalar gasReferenceDensity(unsigned regionIdx) const
     { return gasReferenceDensity_[regionIdx]; }

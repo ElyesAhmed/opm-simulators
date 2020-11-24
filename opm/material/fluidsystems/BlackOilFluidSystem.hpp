@@ -42,9 +42,9 @@
 #include <opm/material/common/Exceptions.hpp>
 
 #if HAVE_ECL_INPUT
-#include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/FlatTable.hpp>
-#include <opm/parser/eclipse/EclipseState/Tables/TableManager.hpp>
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/FlatTable.hpp>
+#include <opm/input/eclipse/EclipseState/Tables/TableManager.hpp>
 #endif
 
 #include <memory>
@@ -55,49 +55,78 @@ namespace Opm {
 namespace BlackOil {
 OPM_GENERATE_HAS_MEMBER(Rs, ) // Creates 'HasMember_Rs<T>'.
 OPM_GENERATE_HAS_MEMBER(Rv, ) // Creates 'HasMember_Rv<T>'.
+OPM_GENERATE_HAS_MEMBER(Rvw, ) // Creates 'HasMember_Rvw<T>'.
 OPM_GENERATE_HAS_MEMBER(saltConcentration, )
+OPM_GENERATE_HAS_MEMBER(saltSaturation, )
 
 template <class FluidSystem, class FluidState, class LhsEval>
 LhsEval getRs_(typename std::enable_if<!HasMember_Rs<FluidState>::value, const FluidState&>::type fluidState,
                unsigned regionIdx)
 {
     const auto& XoG =
-        Opm::decay<LhsEval>(fluidState.massFraction(FluidSystem::oilPhaseIdx, FluidSystem::gasCompIdx));
+        decay<LhsEval>(fluidState.massFraction(FluidSystem::oilPhaseIdx, FluidSystem::gasCompIdx));
     return FluidSystem::convertXoGToRs(XoG, regionIdx);
 }
 
 template <class FluidSystem, class FluidState, class LhsEval>
 auto getRs_(typename std::enable_if<HasMember_Rs<FluidState>::value, const FluidState&>::type fluidState,
-            unsigned regionIdx OPM_UNUSED)
-    -> decltype(Opm::decay<LhsEval>(fluidState.Rs()))
-{ return Opm::decay<LhsEval>(fluidState.Rs()); }
+            unsigned)
+    -> decltype(decay<LhsEval>(fluidState.Rs()))
+{ return decay<LhsEval>(fluidState.Rs()); }
 
 template <class FluidSystem, class FluidState, class LhsEval>
 LhsEval getRv_(typename std::enable_if<!HasMember_Rv<FluidState>::value, const FluidState&>::type fluidState,
                unsigned regionIdx)
 {
     const auto& XgO =
-        Opm::decay<LhsEval>(fluidState.massFraction(FluidSystem::gasPhaseIdx, FluidSystem::oilCompIdx));
+        decay<LhsEval>(fluidState.massFraction(FluidSystem::gasPhaseIdx, FluidSystem::oilCompIdx));
     return FluidSystem::convertXgOToRv(XgO, regionIdx);
 }
 
 template <class FluidSystem, class FluidState, class LhsEval>
 auto getRv_(typename std::enable_if<HasMember_Rv<FluidState>::value, const FluidState&>::type fluidState,
+            unsigned)
+    -> decltype(decay<LhsEval>(fluidState.Rv()))
+{ return decay<LhsEval>(fluidState.Rv()); }
+
+template <class FluidSystem, class FluidState, class LhsEval>
+LhsEval getRvw_(typename std::enable_if<!HasMember_Rvw<FluidState>::value, const FluidState&>::type fluidState,
+               unsigned regionIdx)
+{
+    const auto& XgW =
+        decay<LhsEval>(fluidState.massFraction(FluidSystem::gasPhaseIdx, FluidSystem::waterCompIdx));
+    return FluidSystem::convertXgWToRvw(XgW, regionIdx);
+}
+
+template <class FluidSystem, class FluidState, class LhsEval>
+auto getRvw_(typename std::enable_if<HasMember_Rvw<FluidState>::value, const FluidState&>::type fluidState,
             unsigned regionIdx OPM_UNUSED)
-    -> decltype(Opm::decay<LhsEval>(fluidState.Rv()))
-{ return Opm::decay<LhsEval>(fluidState.Rv()); }
+    -> decltype(decay<LhsEval>(fluidState.Rvw()))
+{ return decay<LhsEval>(fluidState.Rvw()); }
 
 template <class FluidSystem, class FluidState, class LhsEval>
 LhsEval getSaltConcentration_(typename std::enable_if<!HasMember_saltConcentration<FluidState>::value,
+                              const FluidState&>::type,
+                              unsigned)
+{return 0.0;}
+
+template <class FluidSystem, class FluidState, class LhsEval>
+auto getSaltConcentration_(typename std::enable_if<HasMember_saltConcentration<FluidState>::value, const FluidState&>::type fluidState,
+            unsigned)
+    -> decltype(decay<LhsEval>(fluidState.saltConcentration()))
+{ return decay<LhsEval>(fluidState.saltConcentration()); }
+
+template <class FluidSystem, class FluidState, class LhsEval>
+LhsEval getSaltSaturation_(typename std::enable_if<!HasMember_saltSaturation<FluidState>::value,
                               const FluidState&>::type fluidState OPM_UNUSED,
                               unsigned regionIdx OPM_UNUSED)
 {return 0.0;}
 
 template <class FluidSystem, class FluidState, class LhsEval>
-auto getSaltConcentration_(typename std::enable_if<HasMember_saltConcentration<FluidState>::value, const FluidState&>::type fluidState,
+auto getSaltSaturation_(typename std::enable_if<HasMember_saltSaturation<FluidState>::value, const FluidState&>::type fluidState,
             unsigned regionIdx OPM_UNUSED)
-    -> decltype(Opm::decay<LhsEval>(fluidState.saltConcentration()))
-{ return Opm::decay<LhsEval>(fluidState.saltConcentration()); }
+    -> decltype(decay<LhsEval>(fluidState.saltSaturation()))
+{ return decay<LhsEval>(fluidState.saltSaturation()); }
 
 }
 
@@ -107,19 +136,19 @@ auto getSaltConcentration_(typename std::enable_if<HasMember_saltConcentration<F
  *
  * \tparam Scalar The type used for scalar floating point values
  */
-template <class Scalar, class IndexTraits = Opm::BlackOilDefaultIndexTraits>
+template <class Scalar, class IndexTraits = BlackOilDefaultIndexTraits>
 class BlackOilFluidSystem : public BaseFluidSystem<Scalar, BlackOilFluidSystem<Scalar, IndexTraits> >
 {
     typedef BlackOilFluidSystem ThisType;
 
 public:
-    typedef Opm::GasPvtMultiplexer<Scalar> GasPvt;
-    typedef Opm::OilPvtMultiplexer<Scalar> OilPvt;
-    typedef Opm::WaterPvtMultiplexer<Scalar> WaterPvt;
+    typedef GasPvtMultiplexer<Scalar> GasPvt;
+    typedef OilPvtMultiplexer<Scalar> OilPvt;
+    typedef WaterPvtMultiplexer<Scalar> WaterPvt;
 
     //! \copydoc BaseFluidSystem::ParameterCache
     template <class EvaluationT>
-    struct ParameterCache : public Opm::NullParameterCache<EvaluationT>
+    struct ParameterCache : public NullParameterCache<EvaluationT>
     {
         typedef EvaluationT Evaluation;
 
@@ -219,6 +248,7 @@ public:
 
         setEnableDissolvedGas(eclState.getSimulationConfig().hasDISGAS());
         setEnableVaporizedOil(eclState.getSimulationConfig().hasVAPOIL());
+        setEnableVaporizedWater(eclState.getSimulationConfig().hasVAPWAT());
 
         if (phaseIsActive(gasPhaseIdx)) {
             gasPvt_ = std::make_shared<GasPvt>();
@@ -243,7 +273,43 @@ public:
                                   regionIdx);
         }
 
+        // set default molarMass and mappings
         initEnd();
+
+        // use molarMass of CO2 and Brine as default
+        // when we are using the the CO2STORE option
+        // NB the oil component is used internally for
+        // brine
+        if (eclState.runspec().co2Storage()) {
+            for (unsigned regionIdx = 0; regionIdx < numRegions; ++regionIdx) {
+                molarMass_[regionIdx][oilCompIdx] = BrineCo2Pvt<Scalar>::Brine::molarMass();
+                molarMass_[regionIdx][gasCompIdx] = BrineCo2Pvt<Scalar>::CO2::molarMass();
+            }
+        }
+
+        setEnableDiffusion(eclState.getSimulationConfig().isDiffusive());
+        if(enableDiffusion()) {
+            const auto& diffCoeffTables = eclState.getTableManager().getDiffusionCoefficientTable();
+            if(!diffCoeffTables.empty()) {
+                // if diffusion coefficient table is empty we relay on the PVT model to
+                // to give us the coefficients.
+                diffusionCoefficients_.resize(numRegions,{0,0,0,0,0,0,0,0,0});
+                assert(diffCoeffTables.size() == numRegions);
+                for (unsigned regionIdx = 0; regionIdx < numRegions; ++regionIdx) {
+                    const auto& diffCoeffTable = diffCoeffTables[regionIdx];
+                    molarMass_[regionIdx][oilCompIdx] = diffCoeffTable.oil_mw;
+                    molarMass_[regionIdx][gasCompIdx] = diffCoeffTable.gas_mw;
+                    setDiffusionCoefficient(diffCoeffTable.gas_in_gas, gasCompIdx, gasPhaseIdx, regionIdx);
+                    setDiffusionCoefficient(diffCoeffTable.oil_in_gas, oilCompIdx, gasPhaseIdx, regionIdx);
+                    setDiffusionCoefficient(diffCoeffTable.gas_in_oil, gasCompIdx, oilPhaseIdx, regionIdx);
+                    setDiffusionCoefficient(diffCoeffTable.oil_in_oil, oilCompIdx, oilPhaseIdx, regionIdx);
+                    if(diffCoeffTable.gas_in_oil_cross_phase > 0 || diffCoeffTable.oil_in_oil_cross_phase > 0) {
+                        throw std::runtime_error("Cross phase diffusion is set in the deck, but not implemented in Flow. "
+                                                 "Please default DIFFC item 7 and item 8 or set it to zero.");
+                    }
+                }
+            }
+        }
     }
 #endif // HAVE_ECL_INPUT
 
@@ -261,6 +327,8 @@ public:
 
         enableDissolvedGas_ = true;
         enableVaporizedOil_ = false;
+        enableVaporizedWater_ = false;
+        enableDiffusion_ = false;
 
         oilPvt_ = nullptr;
         gasPvt_ = nullptr;
@@ -293,6 +361,24 @@ public:
      */
     static void setEnableVaporizedOil(bool yesno)
     { enableVaporizedOil_ = yesno; }
+
+     /*!
+     * \brief Specify whether the fluid system should consider that the water component can
+     *        dissolve in the gas phase
+     *
+     * By default, vaporized water is not considered.
+     */
+    static void setEnableVaporizedWater(bool yesno)
+    { enableVaporizedWater_ = yesno; }
+
+    /*!
+     * \brief Specify whether the fluid system should consider diffusion
+     *
+     * By default, diffusion is not considered.
+     */
+    static void setEnableDiffusion(bool yesno)
+    { enableDiffusion_ = yesno; }
+
 
     /*!
      * \brief Set the pressure-volume-saturation (PVT) relations for the gas phase.
@@ -329,6 +415,7 @@ public:
         referenceDensity_[regionIdx][gasPhaseIdx] = rhoGas;
     }
 
+
     /*!
      * \brief Finish initializing the black oil fluid system.
      */
@@ -347,7 +434,7 @@ public:
                 Scalar p = surfacePressure;
                 Scalar T = surfaceTemperature;
                 Scalar rho_g = referenceDensity_[/*regionIdx=*/0][gasPhaseIdx];
-                molarMass_[regionIdx][gasCompIdx] = Opm::Constants<Scalar>::R*T*rho_g / p;
+                molarMass_[regionIdx][gasCompIdx] = Constants<Scalar>::R*T*rho_g / p;
             }
             else
                 // hydrogen gas. we just set this do avoid NaNs later
@@ -411,7 +498,7 @@ public:
     //! \copydoc BaseFluidSystem::isLiquid
     static bool isLiquid(unsigned phaseIdx)
     {
-        assert(0 <= phaseIdx && phaseIdx < numPhases);
+        assert(phaseIdx < numPhases);
         return phaseIdx != gasPhaseIdx;
     }
 
@@ -544,6 +631,23 @@ public:
     { return enableVaporizedOil_; }
 
     /*!
+     * \brief Returns whether the fluid system should consider that the water component can
+     *        dissolve in the gas phase
+     *
+     * By default, vaporized water is not considered.
+     */
+    static bool enableVaporizedWater()
+    { return enableVaporizedWater_; }
+
+    /*!
+     * \brief Returns whether the fluid system should consider diffusion
+     *
+     * By default, diffusion is not considered.
+     */
+    static bool enableDiffusion()
+    { return enableDiffusion_; }
+
+    /*!
      * \brief Returns the density of a fluid phase at surface pressure [kg/m^3]
      *
      * \copydoc Doxygen::phaseIdxParam
@@ -598,18 +702,18 @@ public:
                            unsigned phaseIdx,
                            unsigned regionIdx)
     {
-        assert(0 <= phaseIdx && phaseIdx <= numPhases);
-        assert(0 <= regionIdx && regionIdx <= numRegions());
+        assert(phaseIdx <= numPhases);
+        assert(regionIdx <= numRegions());
 
-        const LhsEval& p = Opm::decay<LhsEval>(fluidState.pressure(phaseIdx));
-        const LhsEval& T = Opm::decay<LhsEval>(fluidState.temperature(phaseIdx));
-        const LhsEval& saltConcentration = Opm::BlackOil::template getSaltConcentration_<ThisType, FluidState, LhsEval>(fluidState, regionIdx);
+        const LhsEval& p = decay<LhsEval>(fluidState.pressure(phaseIdx));
+        const LhsEval& T = decay<LhsEval>(fluidState.temperature(phaseIdx));
+        const LhsEval& saltConcentration = BlackOil::template getSaltConcentration_<ThisType, FluidState, LhsEval>(fluidState, regionIdx);
 
         switch (phaseIdx) {
         case oilPhaseIdx: {
             if (enableDissolvedGas()) {
                 // miscible oil
-                const LhsEval& Rs = Opm::BlackOil::template getRs_<ThisType, FluidState, LhsEval>(fluidState, regionIdx);
+                const LhsEval& Rs = BlackOil::template getRs_<ThisType, FluidState, LhsEval>(fluidState, regionIdx);
                 const LhsEval& bo = oilPvt_->inverseFormationVolumeFactor(regionIdx, T, p, Rs);
 
                 return
@@ -627,7 +731,7 @@ public:
         case gasPhaseIdx: {
             if (enableVaporizedOil()) {
                 // miscible gas
-                const LhsEval& Rv = Opm::BlackOil::template getRv_<ThisType, FluidState, LhsEval>(fluidState, regionIdx);
+                const LhsEval& Rv = BlackOil::template getRv_<ThisType, FluidState, LhsEval>(fluidState, regionIdx);
                 const LhsEval& bg = gasPvt_->inverseFormationVolumeFactor(regionIdx, T, p, Rv);
 
                 return
@@ -662,8 +766,8 @@ public:
                                     unsigned phaseIdx,
                                     unsigned regionIdx)
     {
-        assert(0 <= phaseIdx && phaseIdx <= numPhases);
-        assert(0 <= regionIdx && regionIdx <= numRegions());
+        assert(phaseIdx <= numPhases);
+        assert(regionIdx <= numRegions());
 
         const auto& p = fluidState.pressure(phaseIdx);
         const auto& T = fluidState.temperature(phaseIdx);
@@ -727,19 +831,19 @@ public:
                                                 unsigned phaseIdx,
                                                 unsigned regionIdx)
     {
-        assert(0 <= phaseIdx && phaseIdx <= numPhases);
-        assert(0 <= regionIdx && regionIdx <= numRegions());
+        assert(phaseIdx <= numPhases);
+        assert(regionIdx <= numRegions());
 
-        const auto& p = Opm::decay<LhsEval>(fluidState.pressure(phaseIdx));
-        const auto& T = Opm::decay<LhsEval>(fluidState.temperature(phaseIdx));
-        const auto& saltConcentration = Opm::decay<LhsEval>(fluidState.saltConcentration());
+        const auto& p = decay<LhsEval>(fluidState.pressure(phaseIdx));
+        const auto& T = decay<LhsEval>(fluidState.temperature(phaseIdx));
+        const auto& saltConcentration = decay<LhsEval>(fluidState.saltConcentration());
 
         switch (phaseIdx) {
         case oilPhaseIdx: {
             if (enableDissolvedGas()) {
-                const auto& Rs = Opm::BlackOil::template getRs_<ThisType, FluidState, LhsEval>(fluidState, regionIdx);
+                const auto& Rs = BlackOil::template getRs_<ThisType, FluidState, LhsEval>(fluidState, regionIdx);
                 if (fluidState.saturation(gasPhaseIdx) > 0.0
-                    && Rs >= (1.0 - 1e-10)*oilPvt_->saturatedGasDissolutionFactor(regionIdx, Opm::scalarValue(T), Opm::scalarValue(p)))
+                    && Rs >= (1.0 - 1e-10)*oilPvt_->saturatedGasDissolutionFactor(regionIdx, scalarValue(T), scalarValue(p)))
                 {
                     return oilPvt_->saturatedInverseFormationVolumeFactor(regionIdx, T, p);
                 } else {
@@ -752,9 +856,9 @@ public:
         }
         case gasPhaseIdx: {
             if (enableVaporizedOil()) {
-                const auto& Rv = Opm::BlackOil::template getRv_<ThisType, FluidState, LhsEval>(fluidState, regionIdx);
+                const auto& Rv = BlackOil::template getRv_<ThisType, FluidState, LhsEval>(fluidState, regionIdx);
                 if (fluidState.saturation(oilPhaseIdx) > 0.0
-                    && Rv >= (1.0 - 1e-10)*gasPvt_->saturatedOilVaporizationFactor(regionIdx, Opm::scalarValue(T), Opm::scalarValue(p)))
+                    && Rv >= (1.0 - 1e-10)*gasPvt_->saturatedOilVaporizationFactor(regionIdx, scalarValue(T), scalarValue(p)))
                 {
                     return gasPvt_->saturatedInverseFormationVolumeFactor(regionIdx, T, p);
                 } else {
@@ -783,12 +887,12 @@ public:
                                                          unsigned phaseIdx,
                                                          unsigned regionIdx)
     {
-        assert(0 <= phaseIdx && phaseIdx <= numPhases);
-        assert(0 <= regionIdx && regionIdx <= numRegions());
+        assert(phaseIdx <= numPhases);
+        assert(regionIdx <= numRegions());
 
-        const auto& p = Opm::decay<LhsEval>(fluidState.pressure(phaseIdx));
-        const auto& T = Opm::decay<LhsEval>(fluidState.temperature(phaseIdx));
-        const auto& saltConcentration = Opm::decay<LhsEval>(fluidState.saltConcentration());
+        const auto& p = decay<LhsEval>(fluidState.pressure(phaseIdx));
+        const auto& T = decay<LhsEval>(fluidState.temperature(phaseIdx));
+        const auto& saltConcentration = decay<LhsEval>(fluidState.saltConcentration());
 
         switch (phaseIdx) {
         case oilPhaseIdx: return oilPvt_->saturatedInverseFormationVolumeFactor(regionIdx, T, p);
@@ -805,12 +909,12 @@ public:
                                        unsigned compIdx,
                                        unsigned regionIdx)
     {
-        assert(0 <= phaseIdx && phaseIdx <= numPhases);
-        assert(0 <= compIdx && compIdx <= numComponents);
-        assert(0 <= regionIdx && regionIdx <= numRegions());
+        assert(phaseIdx <= numPhases);
+        assert(compIdx <= numComponents);
+        assert(regionIdx <= numRegions());
 
-        const auto& p = Opm::decay<LhsEval>(fluidState.pressure(phaseIdx));
-        const auto& T = Opm::decay<LhsEval>(fluidState.temperature(phaseIdx));
+        const auto& p = decay<LhsEval>(fluidState.pressure(phaseIdx));
+        const auto& T = decay<LhsEval>(fluidState.temperature(phaseIdx));
 
         // for the fugacity coefficient of the oil component in the oil phase, we use
         // some pseudo-realistic value for the vapor pressure to ease physical
@@ -849,8 +953,8 @@ public:
                 const auto& x_oGSat = convertXoGToxoG(X_oGSat, regionIdx);
                 const auto& x_oOSat = 1.0 - x_oGSat;
 
-                const auto& p_o = Opm::decay<LhsEval>(fluidState.pressure(oilPhaseIdx));
-                const auto& p_g = Opm::decay<LhsEval>(fluidState.pressure(gasPhaseIdx));
+                const auto& p_o = decay<LhsEval>(fluidState.pressure(oilPhaseIdx));
+                const auto& p_g = decay<LhsEval>(fluidState.pressure(gasPhaseIdx));
 
                 return phi_oO*p_o*x_oOSat / (p_g*x_gOSat);
             }
@@ -885,8 +989,8 @@ public:
                 const auto& X_oGSat = convertRsToXoG(R_sSat, regionIdx);
                 const auto& x_oGSat = convertXoGToxoG(X_oGSat, regionIdx);
 
-                const auto& p_o = Opm::decay<LhsEval>(fluidState.pressure(oilPhaseIdx));
-                const auto& p_g = Opm::decay<LhsEval>(fluidState.pressure(gasPhaseIdx));
+                const auto& p_o = decay<LhsEval>(fluidState.pressure(oilPhaseIdx));
+                const auto& p_g = decay<LhsEval>(fluidState.pressure(gasPhaseIdx));
 
                 return phi_gG*p_g*x_gGSat / (p_o*x_oGSat);
             }
@@ -926,19 +1030,19 @@ public:
                              unsigned phaseIdx,
                              unsigned regionIdx)
     {
-        assert(0 <= phaseIdx && phaseIdx <= numPhases);
-        assert(0 <= regionIdx && regionIdx <= numRegions());
+        assert(phaseIdx <= numPhases);
+        assert(regionIdx <= numRegions());
 
-        const LhsEval& p = Opm::decay<LhsEval>(fluidState.pressure(phaseIdx));
-        const LhsEval& T = Opm::decay<LhsEval>(fluidState.temperature(phaseIdx));
-        const LhsEval& saltConcentration = Opm::BlackOil::template getSaltConcentration_<ThisType, FluidState, LhsEval>(fluidState, regionIdx);
+        const LhsEval& p = decay<LhsEval>(fluidState.pressure(phaseIdx));
+        const LhsEval& T = decay<LhsEval>(fluidState.temperature(phaseIdx));
+        const LhsEval& saltConcentration = BlackOil::template getSaltConcentration_<ThisType, FluidState, LhsEval>(fluidState, regionIdx);
 
         switch (phaseIdx) {
         case oilPhaseIdx: {
             if (enableDissolvedGas()) {
-                const auto& Rs = Opm::BlackOil::template getRs_<ThisType, FluidState, LhsEval>(fluidState, regionIdx);
+                const auto& Rs = BlackOil::template getRs_<ThisType, FluidState, LhsEval>(fluidState, regionIdx);
                 if (fluidState.saturation(gasPhaseIdx) > 0.0
-                    && Rs >= (1.0 - 1e-10)*oilPvt_->saturatedGasDissolutionFactor(regionIdx, Opm::scalarValue(T), Opm::scalarValue(p)))
+                    && Rs >= (1.0 - 1e-10)*oilPvt_->saturatedGasDissolutionFactor(regionIdx, scalarValue(T), scalarValue(p)))
                 {
                     return oilPvt_->saturatedViscosity(regionIdx, T, p);
                 } else {
@@ -952,9 +1056,9 @@ public:
 
         case gasPhaseIdx: {
             if (enableVaporizedOil()) {
-                const auto& Rv = Opm::BlackOil::template getRv_<ThisType, FluidState, LhsEval>(fluidState, regionIdx);
+                const auto& Rv = BlackOil::template getRv_<ThisType, FluidState, LhsEval>(fluidState, regionIdx);
                 if (fluidState.saturation(oilPhaseIdx) > 0.0
-                    && Rv >= (1.0 - 1e-10)*gasPvt_->saturatedOilVaporizationFactor(regionIdx, Opm::scalarValue(T), Opm::scalarValue(p)))
+                    && Rv >= (1.0 - 1e-10)*gasPvt_->saturatedOilVaporizationFactor(regionIdx, scalarValue(T), scalarValue(p)))
                 {
                     return gasPvt_->saturatedViscosity(regionIdx, T, p);
                 } else {
@@ -981,21 +1085,21 @@ public:
                             unsigned phaseIdx,
                             unsigned regionIdx)
     {
-        assert(0 <= phaseIdx && phaseIdx <= numPhases);
-        assert(0 <= regionIdx && regionIdx <= numRegions());
+        assert(phaseIdx <= numPhases);
+        assert(regionIdx <= numRegions());
 
-        const auto& p = Opm::decay<LhsEval>(fluidState.pressure(phaseIdx));
-        const auto& T = Opm::decay<LhsEval>(fluidState.temperature(phaseIdx));
+        const auto& p = decay<LhsEval>(fluidState.pressure(phaseIdx));
+        const auto& T = decay<LhsEval>(fluidState.temperature(phaseIdx));
 
         switch (phaseIdx) {
         case oilPhaseIdx:
             return
-                oilPvt_->internalEnergy(regionIdx, T, p, Opm::BlackOil::template getRs_<ThisType, FluidState, LhsEval>(fluidState, regionIdx))
+                oilPvt_->internalEnergy(regionIdx, T, p, BlackOil::template getRs_<ThisType, FluidState, LhsEval>(fluidState, regionIdx))
                 + p/density<FluidState, LhsEval>(fluidState, phaseIdx, regionIdx);
 
         case gasPhaseIdx:
             return
-                gasPvt_->internalEnergy(regionIdx, T, p, Opm::BlackOil::template getRv_<ThisType, FluidState, LhsEval>(fluidState, regionIdx))
+                gasPvt_->internalEnergy(regionIdx, T, p, BlackOil::template getRv_<ThisType, FluidState, LhsEval>(fluidState, regionIdx))
                 + p/density<FluidState, LhsEval>(fluidState, phaseIdx, regionIdx);
 
         case waterPhaseIdx:
@@ -1021,12 +1125,12 @@ public:
                                               unsigned regionIdx,
                                               const LhsEval& maxOilSaturation)
     {
-        assert(0 <= phaseIdx && phaseIdx <= numPhases);
-        assert(0 <= regionIdx && regionIdx <= numRegions());
+        assert(phaseIdx <= numPhases);
+        assert(regionIdx <= numRegions());
 
-        const auto& p = Opm::decay<LhsEval>(fluidState.pressure(phaseIdx));
-        const auto& T = Opm::decay<LhsEval>(fluidState.temperature(phaseIdx));
-        const auto& So = Opm::decay<LhsEval>(fluidState.saturation(oilPhaseIdx));
+        const auto& p = decay<LhsEval>(fluidState.pressure(phaseIdx));
+        const auto& T = decay<LhsEval>(fluidState.temperature(phaseIdx));
+        const auto& So = decay<LhsEval>(fluidState.saturation(oilPhaseIdx));
 
         switch (phaseIdx) {
         case oilPhaseIdx: return oilPvt_->saturatedGasDissolutionFactor(regionIdx, T, p, So, maxOilSaturation);
@@ -1049,11 +1153,11 @@ public:
                                               unsigned phaseIdx,
                                               unsigned regionIdx)
     {
-        assert(0 <= phaseIdx && phaseIdx <= numPhases);
-        assert(0 <= regionIdx && regionIdx <= numRegions());
+        assert(phaseIdx <= numPhases);
+        assert(regionIdx <= numRegions());
 
-        const auto& p = Opm::decay<LhsEval>(fluidState.pressure(phaseIdx));
-        const auto& T = Opm::decay<LhsEval>(fluidState.temperature(phaseIdx));
+        const auto& p = decay<LhsEval>(fluidState.pressure(phaseIdx));
+        const auto& T = decay<LhsEval>(fluidState.temperature(phaseIdx));
 
         switch (phaseIdx) {
         case oilPhaseIdx: return oilPvt_->saturatedGasDissolutionFactor(regionIdx, T, p);
@@ -1099,14 +1203,14 @@ public:
                                       unsigned phaseIdx,
                                       unsigned regionIdx)
     {
-        assert(0 <= phaseIdx && phaseIdx <= numPhases);
-        assert(0 <= regionIdx && regionIdx <= numRegions());
+        assert(phaseIdx <= numPhases);
+        assert(regionIdx <= numRegions());
 
-        const auto& T = Opm::decay<LhsEval>(fluidState.temperature(phaseIdx));
+        const auto& T = decay<LhsEval>(fluidState.temperature(phaseIdx));
 
         switch (phaseIdx) {
-        case oilPhaseIdx: return oilPvt_->saturationPressure(regionIdx, T, Opm::BlackOil::template getRs_<ThisType, FluidState, LhsEval>(fluidState, regionIdx));
-        case gasPhaseIdx: return gasPvt_->saturationPressure(regionIdx, T, Opm::BlackOil::template getRv_<ThisType, FluidState, LhsEval>(fluidState, regionIdx));
+        case oilPhaseIdx: return oilPvt_->saturationPressure(regionIdx, T, BlackOil::template getRs_<ThisType, FluidState, LhsEval>(fluidState, regionIdx));
+        case gasPhaseIdx: return gasPvt_->saturationPressure(regionIdx, T, BlackOil::template getRv_<ThisType, FluidState, LhsEval>(fluidState, regionIdx));
         case waterPhaseIdx: return 0.0;
         default: throw std::logic_error("Unhandled phase index "+std::to_string(phaseIdx));
         }
@@ -1142,6 +1246,20 @@ public:
     }
 
     /*!
+     * \brief Convert the mass fraction of the water component in the gas phase to the
+     *        corresponding water vaporization factor.
+     */
+    template <class LhsEval>
+    static LhsEval convertXgWToRvw(const LhsEval& XgW, unsigned regionIdx)
+    {
+        Scalar rho_wRef = referenceDensity_[regionIdx][waterPhaseIdx];
+        Scalar rho_gRef = referenceDensity_[regionIdx][gasPhaseIdx];
+
+        return XgW/(1.0 - XgW)*(rho_gRef/rho_wRef);
+    }
+
+
+    /*!
      * \brief Convert a gas dissolution factor to the the corresponding mass fraction
      *        of the gas component in the oil phase.
      */
@@ -1167,6 +1285,20 @@ public:
 
         const LhsEval& rho_gO = Rv*rho_oRef;
         return rho_gO/(rho_gRef + rho_gO);
+    }
+
+    /*!
+     * \brief Convert an water vaporization factor to the corresponding mass fraction
+     *        of the water component in the gas phase.
+     */
+    template <class LhsEval>
+    static LhsEval convertRvwToXgW(const LhsEval& Rvw, unsigned regionIdx)
+    {
+        Scalar rho_wRef = referenceDensity_[regionIdx][waterPhaseIdx];
+        Scalar rho_gRef = referenceDensity_[regionIdx][gasPhaseIdx];
+
+        const LhsEval& rho_gW = Rvw*rho_wRef;
+        return rho_gW/(rho_gRef + rho_gW);
     }
 
     /*!
@@ -1252,7 +1384,7 @@ public:
      *
      * This method is black-oil specific and only makes sense for isothermal simulations.
      */
-    static Scalar reservoirTemperature(unsigned pvtRegionIdx OPM_UNUSED = 0)
+    static Scalar reservoirTemperature(unsigned = 0)
     { return reservoirTemperature_; }
 
     /*!
@@ -1274,6 +1406,43 @@ public:
         return canonicalToActivePhaseIdx_[phaseIdx];
     }
 
+    //! \copydoc BaseFluidSystem::diffusionCoefficient
+    static Scalar diffusionCoefficient(unsigned compIdx, unsigned phaseIdx, unsigned regionIdx = 0)
+    { return diffusionCoefficients_[regionIdx][numPhases*compIdx + phaseIdx]; }
+
+    //! \copydoc BaseFluidSystem::setDiffusionCoefficient
+    static void setDiffusionCoefficient(Scalar coefficient, unsigned compIdx, unsigned phaseIdx, unsigned regionIdx = 0)
+    { diffusionCoefficients_[regionIdx][numPhases*compIdx + phaseIdx] = coefficient ; }
+
+    /*!
+     * \copydoc BaseFluidSystem::diffusionCoefficient
+     */
+    template <class FluidState, class LhsEval = typename FluidState::Scalar, class ParamCacheEval = LhsEval>
+    static LhsEval diffusionCoefficient(const FluidState& fluidState,
+                                        const ParameterCache<ParamCacheEval>& paramCache,
+                                        unsigned phaseIdx,
+                                        unsigned compIdx)
+    {
+        // diffusion is disabled by the user
+        if(!enableDiffusion())
+            return 0.0;
+
+        // diffusion coefficients are set, and we use them
+        if(!diffusionCoefficients_.empty()) {
+            return diffusionCoefficient(compIdx, phaseIdx, paramCache.regionIndex());
+        }
+
+        const auto& p = decay<LhsEval>(fluidState.pressure(phaseIdx));
+        const auto& T = decay<LhsEval>(fluidState.temperature(phaseIdx));
+
+        switch (phaseIdx) {
+        case oilPhaseIdx: return oilPvt().diffusionCoefficient(T, p, compIdx);
+        case gasPhaseIdx: return gasPvt().diffusionCoefficient(T, p, compIdx);
+        case waterPhaseIdx: return 0.0;
+        default: throw std::logic_error("Unhandled phase index "+std::to_string(phaseIdx));
+        }
+    }
+
 private:
     static void resizeArrays_(size_t numRegions)
     {
@@ -1289,12 +1458,15 @@ private:
 
     static bool enableDissolvedGas_;
     static bool enableVaporizedOil_;
+    static bool enableVaporizedWater_;
+    static bool enableDiffusion_;
 
     // HACK for GCC 4.4: the array size has to be specified using the literal value '3'
     // here, because GCC 4.4 seems to be unable to determine the number of phases from
     // the BlackOil fluid system in the attribute declaration below...
     static std::vector<std::array<Scalar, /*numPhases=*/3> > referenceDensity_;
     static std::vector<std::array<Scalar, /*numComponents=*/3> > molarMass_;
+    static std::vector<std::array<Scalar, /*numComponents=*/3 * /*numPhases=*/3> > diffusionCoefficients_;
 
     static std::array<short, numPhases> activeToCanonicalPhaseIdx_;
     static std::array<short, numPhases> canonicalToActivePhaseIdx_;
@@ -1333,11 +1505,17 @@ template <class Scalar, class IndexTraits>
 bool BlackOilFluidSystem<Scalar, IndexTraits>::enableVaporizedOil_;
 
 template <class Scalar, class IndexTraits>
+bool BlackOilFluidSystem<Scalar, IndexTraits>::enableVaporizedWater_;
+
+template <class Scalar, class IndexTraits>
+bool BlackOilFluidSystem<Scalar, IndexTraits>::enableDiffusion_;
+
+template <class Scalar, class IndexTraits>
 std::shared_ptr<OilPvtMultiplexer<Scalar> >
 BlackOilFluidSystem<Scalar, IndexTraits>::oilPvt_;
 
 template <class Scalar, class IndexTraits>
-std::shared_ptr<Opm::GasPvtMultiplexer<Scalar> >
+std::shared_ptr<GasPvtMultiplexer<Scalar> >
 BlackOilFluidSystem<Scalar, IndexTraits>::gasPvt_;
 
 template <class Scalar, class IndexTraits>
@@ -1351,6 +1529,10 @@ BlackOilFluidSystem<Scalar, IndexTraits>::referenceDensity_;
 template <class Scalar, class IndexTraits>
 std::vector<std::array<Scalar, 3> >
 BlackOilFluidSystem<Scalar, IndexTraits>::molarMass_;
+
+template <class Scalar, class IndexTraits>
+std::vector<std::array<Scalar, 9> >
+BlackOilFluidSystem<Scalar, IndexTraits>::diffusionCoefficients_;
 
 template <class Scalar, class IndexTraits>
 bool BlackOilFluidSystem<Scalar, IndexTraits>::isInitialized_ = false;

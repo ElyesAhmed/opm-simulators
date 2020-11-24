@@ -116,7 +116,7 @@ public:
     template <class Container, class FluidState>
     static void capillaryPressures(Container& values, const Params& params, const FluidState& fs)
     {
-        typedef Opm::SaturationOverlayFluidState<FluidState> OverlayFluidState;
+        typedef SaturationOverlayFluidState<FluidState> OverlayFluidState;
 
         OverlayFluidState overlayFs(fs);
         for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++ phaseIdx) {
@@ -142,7 +142,7 @@ public:
     template <class Container, class FluidState>
     static void relativePermeabilities(Container& values, const Params& params, const FluidState& fs)
     {
-        typedef Opm::SaturationOverlayFluidState<FluidState> OverlayFluidState;
+        typedef SaturationOverlayFluidState<FluidState> OverlayFluidState;
 
         OverlayFluidState overlayFs(fs);
         for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++ phaseIdx) {
@@ -169,7 +169,7 @@ public:
     template <class FluidState, class Evaluation = typename FluidState::Scalar>
     static Evaluation pcnw(const Params& params, const FluidState& fs)
     {
-        typedef Opm::SaturationOverlayFluidState<FluidState> OverlayFluidState;
+        typedef SaturationOverlayFluidState<FluidState> OverlayFluidState;
 
         static_assert(FluidState::numPhases == numPhases,
                       "The fluid state and the material law must exhibit the same "
@@ -274,7 +274,7 @@ public:
     template <class FluidState, class Evaluation = typename FluidState::Scalar>
     static Evaluation krw(const Params& params, const FluidState& fs)
     {
-        typedef Opm::SaturationOverlayFluidState<FluidState> OverlayFluidState;
+        typedef SaturationOverlayFluidState<FluidState> OverlayFluidState;
 
         static_assert(FluidState::numPhases == numPhases,
                       "The fluid state and the material law must exhibit the same "
@@ -294,7 +294,7 @@ public:
     template <class Evaluation>
     static typename std::enable_if<implementsTwoPhaseSatApi, Evaluation>::type
     twoPhaseSatKrw(const Params& params, const Evaluation& Sw)
-    { return EffLaw::twoPhaseSatKrw(params, effectiveSaturation(params, Sw, Traits::nonWettingPhaseIdx)); }
+    { return EffLaw::twoPhaseSatKrw(params, effectiveSaturation(params, Sw, Traits::wettingPhaseIdx)); }
 
     /*!
      * \brief The relative permeability of the non-wetting phase.
@@ -302,7 +302,7 @@ public:
     template <class FluidState, class Evaluation = typename FluidState::Scalar>
     static Evaluation krn(const Params& params, const FluidState& fs)
     {
-        typedef Opm::SaturationOverlayFluidState<FluidState> OverlayFluidState;
+        typedef SaturationOverlayFluidState<FluidState> OverlayFluidState;
 
         static_assert(FluidState::numPhases == numPhases,
                       "The fluid state and the material law must exhibit the same "
@@ -322,7 +322,7 @@ public:
     template <class Evaluation>
     static typename std::enable_if<implementsTwoPhaseSatApi, Evaluation>::type
     twoPhaseSatKrn(const Params& params, const Evaluation& Sw)
-    { return EffLaw::twoPhaseSatKrn(params, effectiveSaturation(params, Sw, Traits::nonWettingPhaseIdx)); }
+    { return EffLaw::twoPhaseSatKrn(params, effectiveSaturation(params, Sw, Traits::wettingPhaseIdx)); }
 
     /*!
      * \brief The relative permability of the gas phase
@@ -333,7 +333,7 @@ public:
     static typename std::enable_if< (Traits::numPhases > 2), Evaluation>::type
     krg(const Params& params, const FluidState& fs)
     {
-        typedef Opm::SaturationOverlayFluidState<FluidState> OverlayFluidState;
+        typedef SaturationOverlayFluidState<FluidState> OverlayFluidState;
 
         static_assert(FluidState::numPhases == numPhases,
                       "The fluid state and the material law must exhibit the same "
