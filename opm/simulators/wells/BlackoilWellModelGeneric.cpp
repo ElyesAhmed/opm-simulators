@@ -1819,7 +1819,7 @@ updateWellPotentials(const int reportStepIdx,
     }
     logAndCheckForExceptionsAndThrow(deferred_logger, exc_type,
                                      "computeWellPotentials() failed: " + exc_msg,
-                                     terminal_output_);
+                                     terminal_output_, comm_);
 
 }
 
