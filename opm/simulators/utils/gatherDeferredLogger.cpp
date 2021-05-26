@@ -23,7 +23,7 @@
 #include <opm/simulators/utils/gatherDeferredLogger.hpp>
 
 #if HAVE_MPI
-
+#include <dune/dune-common/dune/common/parallel/mpihelper.hh>
 #include <cassert>
 #include <cstdint>
 #include <numeric>
@@ -32,7 +32,7 @@
 namespace
 {
 
-    void packMessages(const std::vector<Opm::DeferredLogger::Message>& local_messages, std::vector<char>& buf, int& offset, const MPI_Comm mpi_communicator)
+    void packMessages(const std::vector<Opm::DeferredLogger::Message>& local_messages, std::vector<char>& buf, int& offset, const MPI_Comm  mpi_communicator)
     {
 
         int messagesize = local_messages.size();
@@ -80,7 +80,7 @@ namespace
         return Opm::DeferredLogger::Message({flag, tag, text});
     }
 
-    std::vector<Opm::DeferredLogger::Message> unpackMessages(const std::vector<char>& recv_buffer, const std::vector<int>& displ, const MPI_Comm mpi_communicator)
+    std::vector<Opm::DeferredLogger::Message> unpackMessages(const std::vector<char>& recv_buffer, const std::vector<int>& displ, const Dune::MPIHelper::MPICommunicator mpi_communicator)
     {
         std::vector<Opm::DeferredLogger::Message> messages;
         const int num_processes = displ.size() - 1;

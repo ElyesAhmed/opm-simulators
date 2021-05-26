@@ -87,7 +87,7 @@ BOOST_AUTO_TEST_CASE(NoMessages)
 
     Opm::DeferredLogger local_deferredlogger;
 
-    Opm::DeferredLogger global_deferredlogger = gatherDeferredLogger(local_deferredlogger);
+    Opm::DeferredLogger global_deferredlogger = gatherDeferredLogger(local_deferredlogger, cc);
 
     if (cc.rank() == 0) {
 
@@ -119,7 +119,7 @@ BOOST_AUTO_TEST_CASE(VariableNumberOfMessages)
         local_deferredlogger.bug("tagme", "bug from rank " + std::to_string(cc.rank()));
     }
 
-    Opm::DeferredLogger global_deferredlogger = gatherDeferredLogger(local_deferredlogger);
+    Opm::DeferredLogger global_deferredlogger = gatherDeferredLogger(local_deferredlogger, cc);
 
     if (cc.rank() == 0) {
 
@@ -146,10 +146,10 @@ BOOST_AUTO_TEST_CASE(AllHaveOneMessage)
     std::ostringstream log_stream;
     initLogger(log_stream);
 
-    Opm::DeferredLogger local_deferredlogger;
+    Opm::DeferredLogger local_deferredlogger; 
     local_deferredlogger.info("info from rank " + std::to_string(cc.rank()));
 
-    Opm::DeferredLogger global_deferredlogger = gatherDeferredLogger(local_deferredlogger);
+    Opm::DeferredLogger global_deferredlogger = gatherDeferredLogger(local_deferredlogger, cc);
 
     if (cc.rank() == 0) {
 

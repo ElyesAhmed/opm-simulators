@@ -22,6 +22,7 @@
 #define OPM_DEFERREDLOGGINGERRORHELPERS_HPP
 
 #include <opm/simulators/utils/DeferredLogger.hpp>
+#include <opm/simulators/utils/gatherDeferredLogger.hpp>
 
 #include <dune/common/version.hh>
 #include <dune/common/parallel/mpihelper.hh>
@@ -82,9 +83,10 @@ inline void checkForExceptionsAndThrow(Opm::ExceptionType::ExcEnum exc_type, con
     _throw(exc_type, message);
 }
 
-inline void logAndCheckForExceptionsAndThrow(Opm::DeferredLogger& deferred_logger, Opm::ExceptionType::ExcEnum exc_type , const std::string& message, const bool terminal_output)
+inline void logAndCheckForExceptionsAndThrow(Opm::DeferredLogger& deferred_logger, Opm::ExceptionType::ExcEnum exc_type , const std::string& message, const bool terminal_output, Dune::MPIHelper::MPICommunicator communicator)
 {
-    Opm::DeferredLogger global_deferredLogger = gatherDeferredLogger(deferred_logger);
+    Opm::DeferredLogger global_deferredLogger = gatherDeferredLogger(deferred_logger, communicator);
+
     if (terminal_output) {
         global_deferredLogger.logMessages();
     }

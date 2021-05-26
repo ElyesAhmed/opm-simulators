@@ -25,6 +25,7 @@
 
 #include <string>
 #include <vector>
+#include <mpi.h>
 
 namespace Opm
 {
@@ -88,7 +89,11 @@ enum ExcEnum {
 
     private:
         std::vector<Message> messages_;
+<<<<<<< HEAD
         friend DeferredLogger gatherDeferredLogger(const DeferredLogger& local_deferredlogger);
+=======
+        friend Opm::DeferredLogger gatherDeferredLogger(const Opm::DeferredLogger& local_deferredlogger, MPI_Comm mpi_communicator);
+>>>>>>> use of  the MPIhelper communicator
     };
 
 } // namespace Opm
