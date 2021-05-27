@@ -22,13 +22,13 @@
 #define OPM_GATHERCONVERGENCEREPORT_HEADER_INCLUDED
 
 #include <opm/simulators/timestepping/ConvergenceReport.hpp>
-
+#include <dune/dune-common/dune/common/parallel/mpihelper.hh>
 namespace Opm
 {
 
     /// Create a global convergence report combining local
     /// (per-process) reports.
-    ConvergenceReport gatherConvergenceReport(const ConvergenceReport& local_report);
+    ConvergenceReport gatherConvergenceReport(const ConvergenceReport& local_report, Dune::MPIHelper::MPICommunicator communicator);
 
 } // namespace Opm
 

@@ -1348,7 +1348,7 @@ namespace Opm {
             global_deferredLogger.logMessages();
         }
 
-        ConvergenceReport report = gatherConvergenceReport(local_report);
+        ConvergenceReport report = gatherConvergenceReport(local_report, cc);
 
         // Log debug messages for NaN or too large residuals.
         if (terminal_output_) {
