@@ -2540,7 +2540,7 @@ namespace Opm {
             OPM_DEFLOG_THROW(std::runtime_error, "Group " + group.name() + " has sale rate target less then zero. Not implemented in Flow" , deferred_logger);
         }
 
-        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
+        auto cc = Dune::MPIHelper::getCollectiveCommunication();
         if (!ss.str().empty() && cc.rank() == 0)
             deferred_logger.info(ss.str());
 
@@ -2592,7 +2592,7 @@ namespace Opm {
             throw("Invalid procedure for maximum rate limit selected for group" + group.name());
         }
 
-        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
+        auto cc = Dune::MPIHelper::getCollectiveCommunication();
         if (!ss.str().empty() && cc.rank() == 0)
             deferred_logger.info(ss.str());
 
@@ -2614,7 +2614,7 @@ namespace Opm {
                << " to " << Group::InjectionCMode2String(newControl);
             this->groupState().injection_control(group.name(), controlPhase, newControl);
         }
-        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
+        auto cc = Dune::MPIHelper::getCollectiveCommunication();
         if (!ss.str().empty() && cc.rank() == 0)
             deferred_logger.info(ss.str());
 
