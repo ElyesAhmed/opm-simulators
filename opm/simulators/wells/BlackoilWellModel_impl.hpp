@@ -315,7 +315,6 @@ namespace Opm {
     {
         updatePerforationIntensiveQuantities();
         updateAverageFormationFactor();
-        auto cc = Dune::MPIHelper::getCollectiveCommunication();
         DeferredLogger local_deferredLogger;
 
         this->resetWGState();
@@ -367,7 +366,7 @@ namespace Opm {
             exc_type = ExceptionType::DEFAULT;
             exc_msg = e.what();
         }
-
+        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
         logAndCheckForExceptionsAndThrow(local_deferredLogger, exc_type, "beginTimeStep() failed: " + exc_msg, terminal_output_, cc);
 
         for (auto& well : well_container_) {
@@ -572,8 +571,7 @@ namespace Opm {
 
         this->commitWGState();
  
-        auto cc = Dune::MPIHelper::getCollectiveCommunication();
-
+        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
         DeferredLogger global_deferredLogger = gatherDeferredLogger(local_deferredLogger,cc);
         if (terminal_output_) {
             global_deferredLogger.logMessages();
@@ -904,7 +902,7 @@ namespace Opm {
         }
 
         // Collect log messages and print.
-        auto cc = Dune::MPIHelper::getCollectiveCommunication();
+        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
         DeferredLogger global_deferredLogger = gatherDeferredLogger(local_deferredLogger,cc);
         if (terminal_output_) {
             global_deferredLogger.logMessages();
@@ -1027,7 +1025,6 @@ namespace Opm {
              const double dt)
     {
 
-        auto cc = Dune::MPIHelper::getCollectiveCommunication();
         DeferredLogger local_deferredLogger;
         if (this->glift_debug) {
             const std::string msg = fmt::format(
@@ -1072,6 +1069,7 @@ namespace Opm {
             exc_type = ExceptionType::DEFAULT;
             exc_msg = e.what();
         }
+        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
         logAndCheckForExceptionsAndThrow(local_deferredLogger, exc_type, "assemble() failed: " + exc_msg, terminal_output_, cc);
         last_report_.converged = true;
         last_report_.assemble_time_well += perfTimer.stop();
@@ -1248,7 +1246,6 @@ namespace Opm {
     recoverWellSolutionAndUpdateWellState(const BVector& x)
     {
          
-        auto cc = Dune::MPIHelper::getCollectiveCommunication();
         DeferredLogger local_deferredLogger;
         auto exc_type = ExceptionType::NONE;
         std::string exc_msg;
@@ -1271,6 +1268,7 @@ namespace Opm {
             exc_type = ExceptionType::DEFAULT;
             exc_msg = e.what();
         }
+        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
         logAndCheckForExceptionsAndThrow(local_deferredLogger, exc_type, "recoverWellSolutionAndUpdateWellState() failed: " + exc_msg, terminal_output_,cc);
     }
 
@@ -1342,7 +1340,7 @@ namespace Opm {
                 local_report += well->getWellConvergence(this->wellState(), B_avg, local_deferredLogger);
             }
         }
-        auto cc = Dune::MPIHelper::getCollectiveCommunication();
+        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
         DeferredLogger global_deferredLogger = gatherDeferredLogger(local_deferredLogger, cc);
         if (terminal_output_) {
             global_deferredLogger.logMessages();
@@ -1546,7 +1544,7 @@ namespace Opm {
                 this->closed_this_step_.insert(well->name());
             }
         }
-            auto cc = Dune::MPIHelper::getCollectiveCommunication();
+        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
         DeferredLogger global_deferredLogger = gatherDeferredLogger(local_deferredLogger, cc);
         if (terminal_output_) {
             global_deferredLogger.logMessages();
@@ -1560,7 +1558,6 @@ namespace Opm {
     BlackoilWellModel<TypeTag>::
     updateWellPotentials(const int reportStepIdx, const bool onlyAfterEvent, DeferredLogger& deferred_logger)
     {
-        auto cc = Dune::MPIHelper::getCollectiveCommunication();
         const int np = numPhases();
 
         auto well_state_copy = this->wellState();
@@ -1631,6 +1628,7 @@ namespace Opm {
                 }
             }
         }
+        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
         logAndCheckForExceptionsAndThrow(deferred_logger, exc_type,
                                          "computeWellPotentials() failed: " + exc_msg,
                                          terminal_output_, cc);
@@ -1704,7 +1702,6 @@ namespace Opm {
     prepareTimeStep(DeferredLogger& deferred_logger)
     {
         auto exc_type = ExceptionType::NONE;
-        auto cc = Dune::MPIHelper::getCollectiveCommunication();
         std::string exc_msg;
         try {
             for (const auto& well : well_container_) {
@@ -1740,6 +1737,7 @@ namespace Opm {
             exc_type = ExceptionType::DEFAULT;
             exc_msg = e.what();
         }
+        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
         logAndCheckForExceptionsAndThrow(deferred_logger, exc_type, "prepareTimestep() failed: " + exc_msg, terminal_output_, cc);
     }
 
@@ -2542,7 +2540,7 @@ namespace Opm {
             OPM_DEFLOG_THROW(std::runtime_error, "Group " + group.name() + " has sale rate target less then zero. Not implemented in Flow" , deferred_logger);
         }
 
-        auto cc = Dune::MPIHelper::getCollectiveCommunication();
+        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
         if (!ss.str().empty() && cc.rank() == 0)
             deferred_logger.info(ss.str());
 
@@ -2594,7 +2592,7 @@ namespace Opm {
             throw("Invalid procedure for maximum rate limit selected for group" + group.name());
         }
 
-        auto cc = Dune::MPIHelper::getCollectiveCommunication();
+        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
         if (!ss.str().empty() && cc.rank() == 0)
             deferred_logger.info(ss.str());
 
@@ -2616,7 +2614,7 @@ namespace Opm {
                << " to " << Group::InjectionCMode2String(newControl);
             this->groupState().injection_control(group.name(), controlPhase, newControl);
         }
-        auto cc = Dune::MPIHelper::getCollectiveCommunication();
+        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
         if (!ss.str().empty() && cc.rank() == 0)
             deferred_logger.info(ss.str());
 
