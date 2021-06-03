@@ -37,11 +37,13 @@
 #include <dune/common/parallel/mpicollectivecommunication.hh>
 #include <dune/common/parallel/collectivecommunication.hh>
 #endif
-
+#include <dune/common/parallel/mpihelper.hh>
 #include <dune/common/parallel/indexset.hh>
 #include <dune/common/parallel/communicator.hh>
 #include <dune/common/parallel/remoteindices.hh>
 #include <dune/istl/owneroverlapcopy.hh>
+
+#include <opm/grid/CpGrid.hpp>
 
 #include <opm/common/utility/platform_dependent/reenable_warnings.h>
 
@@ -181,11 +183,10 @@ void createRandomVectors(O& pinfo, int NN, std::vector<double>& x, std::vector<d
     }
     pinfo.copyOwnerToAll(b,b);
 }
-
 inline std::tuple<int,int,int,int> computeRegions(int N=100)
 {
-    int procs, rank;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    int procs, rank; 
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank); 
     MPI_Comm_size(MPI_COMM_WORLD, &procs);
     int n = N/procs; // number of unknowns per process
     int bigger = N%procs; // number of process with n+1 unknows

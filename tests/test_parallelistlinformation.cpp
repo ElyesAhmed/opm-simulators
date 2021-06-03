@@ -37,7 +37,7 @@ void runSumMaxMinTest(const T offset)
     const int N=100;
     int start, end, istart, iend;
     std::tie(start,istart,iend,end) = computeRegions(N);
-    Opm::ParallelISTLInformation comm(MPI_COMM_WORLD);
+    Opm::ParallelISTLInformation comm(Dune::MPIHelper::getCollectiveCommunication());
     auto mat = create1DLaplacian(*comm.indexSet(), N, start, end, istart, iend);
     std::vector<T> x(end-start);
     assert(comm.indexSet()->size()==x.size());
@@ -89,7 +89,7 @@ BOOST_AUTO_TEST_CASE(singleContainerReductionTest)
     int N=100;
     int start, end, istart, iend;
     std::tie(start,istart,iend,end) = computeRegions(N);
-    Opm::ParallelISTLInformation comm(MPI_COMM_WORLD);
+    Opm::ParallelISTLInformation comm(Dune::MPIHelper::getCollectiveCommunication());
     auto mat = create1DLaplacian(*comm.indexSet(), N, start, end, istart, iend);
     std::vector<int> x(end-start);
     assert(comm.indexSet()->size()==x.size());
