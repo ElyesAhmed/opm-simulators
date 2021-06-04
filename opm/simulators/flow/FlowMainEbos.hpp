@@ -215,8 +215,7 @@ namespace Opm
 
             int mpiRank = 0;
 #if HAVE_MPI
-            const Dune::MPIHelper::MPICommunicator& cc = Grid().comm();
-            MPI_Comm_rank(cc, &mpiRank);
+            MPI_Comm_rank(MPI_COMM_WORLD, &mpiRank);
 #endif
 
             // read in the command line parameters
@@ -231,7 +230,7 @@ namespace Opm
                 }
 #if HAVE_MPI
                 int globalUnknownKeyWords;
-                MPI_Allreduce(&unknownKeyWords,  &globalUnknownKeyWords, 1, MPI_INT,  MPI_SUM, cc);
+                MPI_Allreduce(&unknownKeyWords,  &globalUnknownKeyWords, 1, MPI_INT,  MPI_SUM, MPI_COMM_WORLD);
                 unknownKeyWords = globalUnknownKeyWords;
 #endif
                 if ( unknownKeyWords )
@@ -311,8 +310,7 @@ namespace Opm
 #endif
 
 #if HAVE_MPI
-            const Dune::MPIHelper::MPICommunicator& cc = Grid().comm();
-            MPI_Comm_size(cc, &mpiSize);
+            MPI_Comm_size(MPI_COMM_WORLD, &mpiSize);
 #endif
 
             std::cout << "Using "<< mpiSize << " MPI processes with "<< threads <<" OMP threads on each \n\n";
@@ -449,9 +447,8 @@ namespace Opm
             // involved in the simulation. MPI must have already been initialized
             // here. (yes, the name of this method is misleading.)
 #if HAVE_MPI
-            const Dune::MPIHelper::MPICommunicator& cc = Grid().comm();
-            MPI_Comm_rank(cc, &mpi_rank_);
-            MPI_Comm_size(cc, &mpi_size_);
+            MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank_);
+            MPI_Comm_size(MPI_COMM_WORLD, &mpi_size_);
 #else
             mpi_rank_ = 0;
             mpi_size_ = 1;

@@ -21,7 +21,7 @@
 #ifndef OPM_GATHERDEFERREDLOGGER_HEADER_INCLUDED
 #define OPM_GATHERDEFERREDLOGGER_HEADER_INCLUDED
 
-#include <dune/dune-common/dune/common/parallel/mpihelper.hh>
+#include <dune/common/parallel/mpihelper.hh>
 #include <opm/simulators/utils/DeferredLogger.hpp>
 
 namespace Opm
