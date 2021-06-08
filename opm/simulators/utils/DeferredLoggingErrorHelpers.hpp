@@ -26,7 +26,6 @@
 
 #include <dune/common/version.hh>
 #include <dune/common/parallel/mpihelper.hh>
-
 #include <string>
 #include <sstream>
 #include <exception>
@@ -52,8 +51,8 @@
 
 namespace {
 
-void _throw(Opm::ExceptionType::ExcEnum exc_type, const std::string& message) {
-    const auto& cc = Dune::MPIHelper::getCollectiveCommunication();
+void _throw(Opm::ExceptionType::ExcEnum exc_type, const std::string& message, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> cc) {
+    // const auto& cc = Dune::MPIHelper::getCollectiveCommunication()
     auto global_exc = cc.max(exc_type);
 
     switch (global_exc) {
@@ -78,12 +77,12 @@ void _throw(Opm::ExceptionType::ExcEnum exc_type, const std::string& message) {
 
 
 
-inline void checkForExceptionsAndThrow(Opm::ExceptionType::ExcEnum exc_type, const std::string& message)
+inline void checkForExceptionsAndThrow(Opm::ExceptionType::ExcEnum exc_type, const std::string& message, Dune::MPIHelper::MPICommunicator communicator)
 {
-    _throw(exc_type, message);
+    _throw(exc_type, message, communicator);
 }
 
-inline void logAndCheckForExceptionsAndThrow(Opm::DeferredLogger& deferred_logger, Opm::ExceptionType::ExcEnum exc_type , const std::string& message, const bool terminal_output, Dune::MPIHelper::MPICommunicator communicator)
+inline void logAndCheckForExceptionsAndThrow(Opm::DeferredLogger& deferred_logger, Opm::ExceptionType::ExcEnum exc_type , const std::string& message, const bool terminal_output, Dune::MPIHelper::MPICommunicator  communicator)
 {
     Opm::DeferredLogger global_deferredLogger = gatherDeferredLogger(deferred_logger, communicator);
 
@@ -94,7 +93,7 @@ inline void logAndCheckForExceptionsAndThrow(Opm::DeferredLogger& deferred_logge
     // cleared from the global logger, but we must also clear them
     // from the local logger.
     deferred_logger.clearMessages();
-    _throw(exc_type, message);
+    _throw(exc_type, message, communicator);
 }
 
 #endif // OPM_DEFERREDLOGGINGERRORHELPERS_HPP

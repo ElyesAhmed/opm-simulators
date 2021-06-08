@@ -24,6 +24,7 @@ namespace Opm {
 class EclipseState;
 class Schedule;
 class SummaryConfig;
+class Communicator;
 
 /*! \brief Broadcasts an eclipse state from root node in parallel runs.
  *! \param eclState EclipseState to broadcast

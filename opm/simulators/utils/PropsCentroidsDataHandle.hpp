@@ -69,26 +69,27 @@ public:
           m_centroids(centroids)
     {
         // Scatter the keys
-        const auto& comm = Dune::MPIHelper::getCollectiveCommunication();
-        if (comm.rank() == 0)
+       // const auto& comm = Dune::MPIHelper::getCollectiveCommunication(); 
+       // const Dune::MPIHelper::MPICommunicator & comm = m_grid.comm();
+        if (m_grid.comm().rank() == 0)
         {
             const auto& globalProps = eclState.globalFieldProps();
             m_intKeys = globalProps.keys<int>();
             m_doubleKeys = globalProps.keys<double>();
-            std::size_t packSize = Mpi::packSize(m_intKeys, comm) +
-                Mpi::packSize(m_doubleKeys,comm);
+            std::size_t packSize = Mpi::packSize(m_intKeys, m_grid.comm()) +
+                Mpi::packSize(m_doubleKeys,m_grid.comm());
             std::vector<char> buffer(packSize);
             int position = 0;
-            Mpi::pack(m_intKeys, buffer, position, comm);
-            Mpi::pack(m_doubleKeys, buffer, position, comm);
+            Mpi::pack(m_intKeys, buffer, position, m_grid.comm());
+            Mpi::pack(m_doubleKeys, buffer, position, m_grid.comm());
             int calcStart = position;
             {
                 std::vector<char> tran_buffer = globalProps.serialize_tran();
                 position += tran_buffer.size();
                 buffer.insert(buffer.end(), std::make_move_iterator(tran_buffer.begin()), std::make_move_iterator(tran_buffer.end()));
             }
-            comm.broadcast(&position, 1, 0);
-            comm.broadcast(buffer.data(), position, 0);
+            m_grid.comm().broadcast(&position, 1, 0);
+            m_grid.comm().broadcast(buffer.data(), position, 0);
 
             // Unpack Calculator as we need it here, too.
             m_distributed_fieldProps.deserialize_tran( std::vector<char>(buffer.begin() + calcStart, buffer.end()) );
@@ -135,12 +136,12 @@ public:
         else
         {
             int bufferSize;
-            comm.broadcast(&bufferSize, 1, 0);
+            m_grid.comm().broadcast(&bufferSize, 1, 0);
             std::vector<char> buffer(bufferSize);
-            comm.broadcast(buffer.data(), bufferSize, 0);
+            m_grid.comm().broadcast(buffer.data(), bufferSize, 0);
             int position{};
-            Mpi::unpack(m_intKeys, buffer, position, comm);
-            Mpi::unpack(m_doubleKeys, buffer, position, comm);
+            Mpi::unpack(m_intKeys, buffer, position, m_grid.comm());
+            Mpi::unpack(m_doubleKeys, buffer, position, m_grid.comm());
             m_distributed_fieldProps.deserialize_tran( std::vector<char>(buffer.begin() + position, buffer.end()) );
             m_no_data = m_intKeys.size() + m_doubleKeys.size() +
                 Grid::dimensionworld;
