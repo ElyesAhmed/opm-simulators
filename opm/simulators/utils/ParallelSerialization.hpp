@@ -19,12 +19,12 @@
 #ifndef PARALLEL_SERIALIZATION_HPP
 #define PARALLEL_SERIALIZATION_HPP
 
+#include <dune/common/parallel/mpihelper.hh>
 namespace Opm {
 
 class EclipseState;
 class Schedule;
 class SummaryConfig;
-class Communicator;
 
 /*! \brief Broadcasts an eclipse state from root node in parallel runs.
  *! \param eclState EclipseState to broadcast

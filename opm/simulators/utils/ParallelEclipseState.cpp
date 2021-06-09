@@ -242,7 +242,7 @@ const FieldPropsManager& ParallelEclipseState::globalFieldProps() const
 
 
 const EclipseGrid& ParallelEclipseState::getInputGrid() const
-{
+{    
     if (Dune::MPIHelper::getCollectiveCommunication().rank() != 0)
         OPM_THROW(std::runtime_error, "Attempt to access eclipse grid on non-root process");
     return this->EclipseState::getInputGrid();

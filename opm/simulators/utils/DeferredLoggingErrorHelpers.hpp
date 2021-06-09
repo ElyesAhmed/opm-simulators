@@ -52,7 +52,6 @@
 namespace {
 
 void _throw(Opm::ExceptionType::ExcEnum exc_type, const std::string& message, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> cc) {
-    // const auto& cc = Dune::MPIHelper::getCollectiveCommunication()
     auto global_exc = cc.max(exc_type);
 
     switch (global_exc) {
