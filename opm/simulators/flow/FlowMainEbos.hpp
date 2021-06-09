@@ -214,8 +214,9 @@ namespace Opm
             EWOMS_END_PARAM_REGISTRATION(TypeTag);
 
             int mpiRank = 0;
-#if HAVE_MPI
-            MPI_Comm_rank(MPI_COMM_WORLD, &mpiRank);
+#if HAVE_MPI  
+            const Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> cc = Grid().comm(); 
+            MPI_Comm_rank(cc, &mpiRank);
 #endif
 
             // read in the command line parameters
@@ -230,7 +231,7 @@ namespace Opm
                 }
 #if HAVE_MPI
                 int globalUnknownKeyWords;
-                MPI_Allreduce(&unknownKeyWords,  &globalUnknownKeyWords, 1, MPI_INT,  MPI_SUM, MPI_COMM_WORLD);
+                MPI_Allreduce(&unknownKeyWords,  &globalUnknownKeyWords, 1, MPI_INT,  MPI_SUM, cc);
                 unknownKeyWords = globalUnknownKeyWords;
 #endif
                 if ( unknownKeyWords )
@@ -310,7 +311,8 @@ namespace Opm
 #endif
 
 #if HAVE_MPI
-            MPI_Comm_size(MPI_COMM_WORLD, &mpiSize);
+            const Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> cc = Grid().comm(); 
+            MPI_Comm_size(cc, &mpiSize);
 #endif
 
             std::cout << "Using "<< mpiSize << " MPI processes with "<< threads <<" OMP threads on each \n\n";
@@ -446,9 +448,10 @@ namespace Opm
             // determine the rank of the current process and the number of processes
             // involved in the simulation. MPI must have already been initialized
             // here. (yes, the name of this method is misleading.)
-#if HAVE_MPI
-            MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank_);
-            MPI_Comm_size(MPI_COMM_WORLD, &mpi_size_);
+#if HAVE_MPI        
+            const Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> cc = Grid().comm(); 
+            MPI_Comm_rank(cc, &mpi_rank_);
+            MPI_Comm_size(cc, &mpi_size_);
 #else
             mpi_rank_ = 0;
             mpi_size_ = 1;
@@ -660,7 +663,7 @@ namespace Opm
 
 
         Grid& grid()
-        { return ebosSimulator_->vanguard().grid(); }
+        {return ebosSimulator_->vanguard().grid(); }
 
     private:
         std::unique_ptr<EbosSimulator> ebosSimulator_;
