@@ -451,7 +451,7 @@ namespace Opm
 #if HAVE_MPI        
             const Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> cc = Grid().comm(); 
             MPI_Comm_rank(cc, &mpi_rank_);
-            MPI_Comm_size(cc, &mpi_size_);
+            MPI_Comm_size(cc, &mpi_size_);            
 #else
             mpi_rank_ = 0;
             mpi_size_ = 1;

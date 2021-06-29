@@ -349,6 +349,15 @@ namespace Opm
         /// \param exitCode The exitCode of the program.
         /// \return Whether to actually run the simulator. I.e. true if parsing of command line
         /// was successful and no --help, --print-properties, or --print-parameters have been found.
+
+        /**
+        * @brief return rank of process
+        */
+        int rank () const { return rank_; }
+        /**
+        * @brief return number of processes
+        */
+        int size () const { return size_; }
         template <class TypeTagEarlyBird>
         bool initialize_(int& exitCode)
         {
@@ -365,12 +374,48 @@ namespace Opm
             // get the instance without having the argc and argv parameters available and it is
             // not possible to determine the MPI rank and size without an instance. (IOW: the
             // rank() and size() methods are supposed to be static.)
-            const auto& mpiHelper = Dune::MPIHelper::instance(argc_, argv_);
-            int mpiRank = mpiHelper.rank();
+            
+             MPI_Init( &argc_, &argv_);
+ 
+
+            //const auto& mpiHelper = Dune::MPIHelper::instance(argc_, argv_);
+            //int mpiRank = mpiHelper.rank();
+            //int mpiSize = mpiHelper.size(); 
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank_);
+            MPI_Comm_size(MPI_COMM_WORLD, &size_);
+           // printf(" WORLD RANK/SIZE: %d/%d\n",
+           // mpiRank, mpiSize); 
+            int color = rank_ / 2; // Determine color based on row
+
+            // Split the communicator based on the color and use the
+            // original rank for ordering
+            MPI_Comm mycomm_;
+            //MPI_Comm_split_type (MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &mycomm_);
+            MPI_Comm_split(MPI_COMM_WORLD,color,rank_,&mycomm_);
+            int result;
+            MPI_Comm_compare(MPI_COMM_WORLD,mycomm_, &result );
+            printf("unequal: %d",
+            	result);
+           // int sharedmemRank_, sharedmemsize_;
+           // MPI_Comm_rank(mycomm_, &sharedmemRank_);
+           // MPI_Comm_size(mycomm_, &sharedmemsize_);
+            //MPI_Comm_split(MPI_COMM_WORLD, (sharedmemRank_==0)?0:MPI_UNDEFINED,0,&mycomm_);
+            int rank_, size_;
+            MPI_Comm_rank(mycomm_, &rank_);
+            MPI_Comm_size(mycomm_, &size_);
+
+            printf(" ROW RANK/SIZE: %d/%d\n",
+            	rank_, size_); 
+            rank();
+            size();  
+            int mpiRank = rank_;
+            int mpiSize = size_; 
+            MPI_Comm_free( &mycomm_ );
 #endif
 
             // we always want to use the default locale, and thus spare us the trouble
             // with incorrect locale settings.
+
             resetLocale();
 
             // this is a work-around for a catch 22: we do not know what code path to use without
@@ -543,6 +588,8 @@ namespace Opm
         std::unique_ptr<EclipseState> eclipseState_;
         std::unique_ptr<Schedule> schedule_;
         std::unique_ptr<SummaryConfig> summaryConfig_;
+        int rank_;
+        int size_;
     };
 
 } // namespace Opm

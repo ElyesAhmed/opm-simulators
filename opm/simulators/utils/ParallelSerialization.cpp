@@ -41,7 +41,8 @@ namespace Opm {
 
 void eclStateBroadcast(EclipseState& eclState, Schedule& schedule,
                        SummaryConfig& summaryConfig)
-{
+{   
+
     Opm::EclMpiSerializer ser(Dune::MPIHelper::getCollectiveCommunication());
     ser.broadcast(eclState);
     ser.broadcast(schedule);

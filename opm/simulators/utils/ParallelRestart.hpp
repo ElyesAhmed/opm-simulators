@@ -76,18 +76,18 @@ class State;
 namespace Mpi
 {
 template<class T>
-std::size_t packSize(const T*, std::size_t, Dune::MPIHelper::MPICommunicator,
+std::size_t packSize(const T*, std::size_t, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator>,
                      std::integral_constant<bool, false>);
 
 template<class T>
-std::size_t packSize(const T*, std::size_t l, Dune::MPIHelper::MPICommunicator comm,
+std::size_t packSize(const T*, std::size_t l, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm,
                      std::integral_constant<bool, true>);
 
 template<class T>
-std::size_t packSize(const T* data, std::size_t l, Dune::MPIHelper::MPICommunicator comm);
+std::size_t packSize(const T* data, std::size_t l, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T>
-std::size_t packSize(const T&, Dune::MPIHelper::MPICommunicator,
+std::size_t packSize(const T&, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator>,
                      std::integral_constant<bool, false>)
 {
     std::string msg = std::string{"Packing not (yet) supported for non-pod type: "} + typeid(T).name();
@@ -95,7 +95,7 @@ std::size_t packSize(const T&, Dune::MPIHelper::MPICommunicator,
 }
 
 template<class T>
-std::size_t packSize(const T&, Dune::MPIHelper::MPICommunicator comm,
+std::size_t packSize(const T&, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm,
                      std::integral_constant<bool, true>)
 {
 #if HAVE_MPI
@@ -109,69 +109,69 @@ std::size_t packSize(const T&, Dune::MPIHelper::MPICommunicator comm,
 }
 
 template<class T>
-std::size_t packSize(const T& data, Dune::MPIHelper::MPICommunicator comm)
+std::size_t packSize(const T& data, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm)
 {
     return packSize(data, comm, typename std::is_pod<T>::type());
 }
 
 template<class T1, class T2>
-std::size_t packSize(const std::pair<T1,T2>& data, Dune::MPIHelper::MPICommunicator comm);
+std::size_t packSize(const std::pair<T1,T2>& data, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T>
-std::size_t packSize(const std::optional<T>& data, Dune::MPIHelper::MPICommunicator comm);
+std::size_t packSize(const std::optional<T>& data, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T, class A>
-std::size_t packSize(const std::vector<T,A>& data, Dune::MPIHelper::MPICommunicator comm);
+std::size_t packSize(const std::vector<T,A>& data, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class K, class C, class A>
 std::size_t packSize(const std::set<K,C,A>& data,
-                     Dune::MPIHelper::MPICommunicator comm);
+                     Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T, class H, class KE, class A>
 std::size_t packSize(const std::unordered_set<T,H,KE,A>& data,
-                     Dune::MPIHelper::MPICommunicator comm);
+                     Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class A>
-std::size_t packSize(const std::vector<bool,A>& data, Dune::MPIHelper::MPICommunicator comm);
+std::size_t packSize(const std::vector<bool,A>& data, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class... Ts>
-std::size_t packSize(const std::tuple<Ts...>& data, Dune::MPIHelper::MPICommunicator comm);
+std::size_t packSize(const std::tuple<Ts...>& data, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T, std::size_t N>
-std::size_t packSize(const std::array<T,N>& data, Dune::MPIHelper::MPICommunicator comm);
+std::size_t packSize(const std::array<T,N>& data, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
-std::size_t packSize(const char* str, Dune::MPIHelper::MPICommunicator comm);
+std::size_t packSize(const char* str, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T1, class T2, class C, class A>
-std::size_t packSize(const std::map<T1,T2,C,A>& data, Dune::MPIHelper::MPICommunicator comm);
+std::size_t packSize(const std::map<T1,T2,C,A>& data, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T1, class T2, class H, class P, class A>
-std::size_t packSize(const std::unordered_map<T1,T2,H,P,A>& data, Dune::MPIHelper::MPICommunicator comm);
+std::size_t packSize(const std::unordered_map<T1,T2,H,P,A>& data, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 ////// pack routines
 
 template<class T>
 void pack(const T*, std::size_t, std::vector<char>&, int&,
-          Dune::MPIHelper::MPICommunicator, std::integral_constant<bool, false>);
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator>, std::integral_constant<bool, false>);
 
 template<class T>
 void pack(const T* data, std::size_t l, std::vector<char>& buffer, int& position,
-          Dune::MPIHelper::MPICommunicator comm, std::integral_constant<bool, true>);
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm, std::integral_constant<bool, true>);
 
 template<class T>
 void pack(const T* data, std::size_t l, std::vector<char>& buffer, int& position,
-          Dune::MPIHelper::MPICommunicator comm);
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T>
 void pack(const T&, std::vector<char>&, int&,
-          Dune::MPIHelper::MPICommunicator, std::integral_constant<bool, false>)
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator>, std::integral_constant<bool, false>)
 {
     OPM_THROW(std::logic_error, "Packing not (yet) supported for this non-pod type.");
 }
 
 template<class T>
 void pack(const T& data, std::vector<char>& buffer, int& position,
-          Dune::MPIHelper::MPICommunicator comm, std::integral_constant<bool, true>)
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm, std::integral_constant<bool, true>)
 {
 #if HAVE_MPI
     MPI_Pack(&data, 1, Dune::MPITraits<T>::getType(), buffer.data(),
@@ -186,81 +186,81 @@ void pack(const T& data, std::vector<char>& buffer, int& position,
 
 template<class T>
 void pack(const T& data, std::vector<char>& buffer, int& position,
-          Dune::MPIHelper::MPICommunicator comm)
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm)
 {
     pack(data, buffer, position, comm, typename std::is_pod<T>::type());
 }
 
 template<class T1, class T2>
 void pack(const std::pair<T1,T2>& data, std::vector<char>& buffer, int& position,
-          Dune::MPIHelper::MPICommunicator comm);
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T>
 void pack(const std::optional<T>& data, std::vector<char>& buffer, int& position,
-          Dune::MPIHelper::MPICommunicator comm);
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T, class A>
 void pack(const std::vector<T,A>& data, std::vector<char>& buffer, int& position,
-          Dune::MPIHelper::MPICommunicator comm);
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class A>
 void pack(const std::vector<bool,A>& data, std::vector<char>& buffer, int& position,
-          Dune::MPIHelper::MPICommunicator comm);
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class... Ts>
 void pack(const std::tuple<Ts...>& data, std::vector<char>& buffer,
-          int& position, Dune::MPIHelper::MPICommunicator comm);
+          int& position, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class K, class C, class A>
 void pack(const std::set<K,C,A>& data,
           std::vector<char>& buffer, int& position,
-          Dune::MPIHelper::MPICommunicator comm);
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T, class H, class KE, class A>
 void pack(const std::unordered_set<T,H,KE,A>& data,
           std::vector<char>& buffer, int& position,
-          Dune::MPIHelper::MPICommunicator comm);
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T, size_t N>
 void pack(const std::array<T,N>& data, std::vector<char>& buffer, int& position,
-          Dune::MPIHelper::MPICommunicator comm);
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T1, class T2, class C, class A>
 void pack(const std::map<T1,T2,C,A>& data, std::vector<char>& buffer, int& position,
-          Dune::MPIHelper::MPICommunicator comm);
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T1, class T2, class H, class P, class A>
 void pack(const std::unordered_map<T1,T2,H,P,A>& data, std::vector<char>& buffer, int& position,
-          Dune::MPIHelper::MPICommunicator comm);
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 void pack(const char* str, std::vector<char>& buffer, int& position,
-          Dune::MPIHelper::MPICommunicator comm);
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 /// unpack routines
 
 template<class T>
 void unpack(T*, const std::size_t&, std::vector<char>&, int&,
-            Dune::MPIHelper::MPICommunicator, std::integral_constant<bool, false>);
+            Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator>, std::integral_constant<bool, false>);
 
 template<class T>
 void unpack(T* data, const std::size_t& l, std::vector<char>& buffer, int& position,
-            Dune::MPIHelper::MPICommunicator comm,
+            Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm,
             std::integral_constant<bool, true>);
 
 template<class T>
 void unpack(T* data, const std::size_t& l, std::vector<char>& buffer, int& position,
-            Dune::MPIHelper::MPICommunicator comm);
+            Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T>
 void unpack(T&, std::vector<char>&, int&,
-            Dune::MPIHelper::MPICommunicator, std::integral_constant<bool, false>)
+            Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator>, std::integral_constant<bool, false>)
 {
     OPM_THROW(std::logic_error, "Packing not (yet) supported for this non-pod type.");
 }
 
 template<class T>
 void unpack(T& data, std::vector<char>& buffer, int& position,
-            Dune::MPIHelper::MPICommunicator comm, std::integral_constant<bool, true>)
+            Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm, std::integral_constant<bool, true>)
 {
 #if HAVE_MPI
     MPI_Unpack(buffer.data(), buffer.size(), &position, &data, 1,
@@ -275,64 +275,64 @@ void unpack(T& data, std::vector<char>& buffer, int& position,
 
 template<class T>
 void unpack(T& data, std::vector<char>& buffer, int& position,
-            Dune::MPIHelper::MPICommunicator comm)
+            Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm)
 {
     unpack(data, buffer, position, comm, typename std::is_pod<T>::type());
 }
 
 template<class T1, class T2>
 void unpack(std::pair<T1,T2>& data, std::vector<char>& buffer, int& position,
-            Dune::MPIHelper::MPICommunicator comm);
+            Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T>
 void unpack(std::optional<T>& data, std::vector<char>& buffer, int& position,
-            Dune::MPIHelper::MPICommunicator comm);
+            Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T, class A>
 void unpack(std::vector<T,A>& data, std::vector<char>& buffer, int& position,
-            Dune::MPIHelper::MPICommunicator comm);
+            Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class A>
 void unpack(std::vector<bool,A>& data, std::vector<char>& buffer, int& position,
-          Dune::MPIHelper::MPICommunicator comm);
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class... Ts>
 void unpack(std::tuple<Ts...>& data, std::vector<char>& buffer,
-            int& position, Dune::MPIHelper::MPICommunicator comm);
+            int& position, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class K, class C, class A>
 void unpack(std::set<K,C,A>& data,
             std::vector<char>& buffer, int& position,
-            Dune::MPIHelper::MPICommunicator comm);
+            Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T, class H, class KE, class A>
 void unpack(std::unordered_set<T,H,KE,A>& data,
             std::vector<char>& buffer, int& position,
-            Dune::MPIHelper::MPICommunicator comm);
+            Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T, size_t N>
 void unpack(std::array<T,N>& data, std::vector<char>& buffer, int& position,
-          Dune::MPIHelper::MPICommunicator comm);
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T1, class T2, class C, class A>
 void unpack(std::map<T1,T2,C,A>& data, std::vector<char>& buffer, int& position,
-            Dune::MPIHelper::MPICommunicator comm);
+            Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 template<class T1, class T2, class H, class P, class A>
 void unpack(std::unordered_map<T1,T2,H,P,A>& data, std::vector<char>& buffer, int& position,
-            Dune::MPIHelper::MPICommunicator comm);
+            Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 void unpack(char* str, std::size_t length, std::vector<char>& buffer, int& position,
-            Dune::MPIHelper::MPICommunicator comm);
+            Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 /// prototypes for complex types
 
 #define ADD_PACK_PROTOTYPES(T) \
-  std::size_t packSize(const T& data, Dune::MPIHelper::MPICommunicator comm); \
+  std::size_t packSize(const T& data, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm); \
   void pack(const T& data, std::vector<char>& buffer, int& position, \
-          Dune::MPIHelper::MPICommunicator comm); \
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm); \
   void unpack(T& data, std::vector<char>& buffer, int& position, \
-              Dune::MPIHelper::MPICommunicator comm);
+              Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
 ADD_PACK_PROTOTYPES(data::AquiferData)
 ADD_PACK_PROTOTYPES(data::CarterTracyData)
