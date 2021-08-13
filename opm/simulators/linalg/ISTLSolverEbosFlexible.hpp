@@ -28,8 +28,6 @@
 
 #include <opm/common/ErrorMacros.hpp>
 
-#include <boost/property_tree/json_parser.hpp>
-
 #include <memory>
 #include <utility>
 
@@ -85,6 +83,7 @@ class ISTLSolverEbosFlexible
     using ThreadManager = GetPropType<TypeTag, Properties::ThreadManager>;
     typedef typename GridView::template Codim<0>::Entity Element;
     using ElementContext = GetPropType<TypeTag, Properties::ElementContext>;
+    constexpr static std::size_t pressureIndex = GetPropType<TypeTag, Properties::Indices>::pressureSwitchIdx;
 
 public:
     static void registerParameters()
@@ -99,7 +98,10 @@ public:
         , interiorCellNum_(detail::numMatrixRowsToUseInSolver(simulator_.vanguard().grid(), ownersFirst_))
     {
         parameters_.template init<TypeTag>();
-        prm_ = setupPropertyTree<TypeTag>(parameters_);
+        prm_ = setupPropertyTree(parameters_,
+                                 EWOMS_PARAM_IS_SET(TypeTag, int, LinearSolverMaxIter),
+                                 EWOMS_PARAM_IS_SET(TypeTag, int, CprMaxEllIter));
+
         extractParallelGridInformationToISTL(simulator_.vanguard().grid(), parallelInformation_);
         // For some reason simulator_.model().elementMapper() is not initialized at this stage
         // Hence const auto& elemMapper = simulator_.model().elementMapper(); does not work.
@@ -120,7 +122,7 @@ public:
         if (simulator.gridView().comm().rank() == 0) {
             std::ostringstream os;
             os << "Property tree for linear solver:\n";
-            boost::property_tree::write_json(os, prm_, true);
+            prm_.write_json(os, true);
             OpmLog::note(os.str());
         }
     }
@@ -155,7 +157,8 @@ public:
                 if (matrixAddWellContributions_) {
                     using ParOperatorType = Dune::OverlappingSchwarzOperator<MatrixType, VectorType, VectorType, Communication>;
                     auto op = std::make_unique<ParOperatorType>(mat.istlMatrix(), *comm_);
-                    auto sol = std::make_unique<SolverType>(*op, *comm_, prm_, weightsCalculator);
+                    auto sol = std::make_unique<SolverType>(*op, *comm_, prm_, weightsCalculator,
+                                                            pressureIndex);
                     solver_ = std::move(sol);
                     linear_operator_ = std::move(op);
                 } else {
@@ -166,7 +169,8 @@ public:
                     using ParOperatorType = WellModelGhostLastMatrixAdapter<MatrixType, VectorType, VectorType, true>;
                     auto well_op = std::make_unique<WellModelOpType>(simulator_.problem().wellModel());
                     auto op = std::make_unique<ParOperatorType>(mat.istlMatrix(), *well_op, interiorCellNum_);
-                    auto sol = std::make_unique<SolverType>(*op, *comm_, prm_, weightsCalculator);
+                    auto sol = std::make_unique<SolverType>(*op, *comm_, prm_, weightsCalculator,
+                                                            pressureIndex);
                     solver_ = std::move(sol);
                     linear_operator_ = std::move(op);
                     well_operator_ = std::move(well_op);
@@ -176,14 +180,16 @@ public:
                 if (matrixAddWellContributions_) {
                     using SeqOperatorType = Dune::MatrixAdapter<MatrixType, VectorType, VectorType>;
                     auto op = std::make_unique<SeqOperatorType>(mat.istlMatrix());
-                    auto sol = std::make_unique<SolverType>(*op, prm_, weightsCalculator);
+                    auto sol = std::make_unique<SolverType>(*op, prm_, weightsCalculator,
+                                                            pressureIndex);
                     solver_ = std::move(sol);
                     linear_operator_ = std::move(op);
                 } else {
                     using SeqOperatorType = WellModelMatrixAdapter<MatrixType, VectorType, VectorType, false>;
                     auto well_op = std::make_unique<WellModelOpType>(simulator_.problem().wellModel());
                     auto op = std::make_unique<SeqOperatorType>(mat.istlMatrix(), *well_op);
-                    auto sol = std::make_unique<SolverType>(*op, prm_, weightsCalculator);
+                    auto sol = std::make_unique<SolverType>(*op, prm_, weightsCalculator,
+                                                            pressureIndex);
                     solver_ = std::move(sol);
                     linear_operator_ = std::move(op);
                     well_operator_ = std::move(well_op);
@@ -263,19 +269,20 @@ protected:
     {
         std::function<VectorType()> weightsCalculator;
 
-        auto preconditionerType = prm_.get("preconditioner.type", "cpr");
+        using namespace std::string_literals;
+
+        auto preconditionerType = prm_.get("preconditioner.type", "cpr"s);
         if (preconditionerType == "cpr" || preconditionerType == "cprt") {
             const bool transpose = preconditionerType == "cprt";
-            const auto weightsType = prm_.get("preconditioner.weight_type", "quasiimpes");
-            const auto pressureIndex = this->prm_.get("preconditioner.pressure_var_index", 1);
+            const auto weightsType = prm_.get("preconditioner.weight_type", "quasiimpes"s);
             if (weightsType == "quasiimpes") {
                 // weighs will be created as default in the solver
-                weightsCalculator = [&mat, transpose, pressureIndex]() {
-                    return Opm::Amg::getQuasiImpesWeights<MatrixType, VectorType>(mat, pressureIndex, transpose);
+                weightsCalculator = [&mat, transpose, p = pressureIndex]() {
+                    return Opm::Amg::getQuasiImpesWeights<MatrixType, VectorType>(mat, p, transpose);
                 };
             } else if (weightsType == "trueimpes") {
-                weightsCalculator = [this, &b, pressureIndex]() {
-                    return this->getTrueImpesWeights(b, pressureIndex);
+                weightsCalculator = [this, &b, p = pressureIndex]() {
+                    return this->getTrueImpesWeights(b, p);
                 };
             } else {
                 OPM_THROW(std::invalid_argument,
@@ -337,7 +344,7 @@ protected:
     std::unique_ptr<AbstractOperatorType> linear_operator_;
     std::unique_ptr<SolverType> solver_;
     FlowLinearSolverParameters parameters_;
-    boost::property_tree::ptree prm_;
+    PropertyTree prm_;
     VectorType rhs_;
     Dune::InverseOperatorResult res_;
     std::any parallelInformation_;

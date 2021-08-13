@@ -36,6 +36,8 @@
 #include <opm/io/eclipse/EclIOdata.hpp>
 
 #include <opm/output/eclipse/RestartIO.hpp>
+#include <opm/io/eclipse/ERst.hpp>
+#include <opm/io/eclipse/RestartFileView.hpp>
 #include <opm/io/eclipse/rst/state.hpp>
 
 #include <opm/parser/eclipse/Deck/Deck.hpp>
@@ -44,6 +46,7 @@
 #include <opm/parser/eclipse/EclipseState/Schedule/Schedule.hpp>
 #include <opm/parser/eclipse/EclipseState/Schedule/SummaryState.hpp>
 #include <opm/parser/eclipse/EclipseState/SummaryConfig/SummaryConfig.hpp>
+#include <opm/parser/eclipse/EclipseState/Schedule/UDQ/UDQState.hpp>
 
 #include <opm/parser/eclipse/Parser/Parser.hpp>
 #include <opm/parser/eclipse/Parser/ErrorGuard.hpp>
@@ -58,6 +61,8 @@
 #include <fmt/format.h>
 
 #include <cstdlib>
+#include <memory>
+#include <utility>
 
 namespace Opm
 {
@@ -182,7 +187,7 @@ void setupMessageLimiter(const Opm::MessageLimits msgLimits,  const std::string&
 
 
 void readDeck(int rank, std::string& deckFilename, std::unique_ptr<Opm::Deck>& deck, std::unique_ptr<Opm::EclipseState>& eclipseState,
-              std::unique_ptr<Opm::Schedule>& schedule, std::unique_ptr<Opm::SummaryConfig>& summaryConfig,
+              std::unique_ptr<Opm::Schedule>& schedule, std::unique_ptr<UDQState>& udqState, std::unique_ptr<Opm::SummaryConfig>& summaryConfig,
               std::unique_ptr<ErrorGuard> errorGuard, std::shared_ptr<Opm::Python>& python, std::unique_ptr<ParseContext> parseContext,
               bool initFromRestart, bool checkDeck, const std::optional<int>& outputInterval)
 {
@@ -210,7 +215,8 @@ void readDeck(int rank, std::string& deckFilename, std::unique_ptr<Opm::Deck>& d
                 Opm::KeywordValidation::KeywordValidator keyword_validator(
                     Opm::FlowKeywordValidation::unsupportedKeywords(),
                     Opm::FlowKeywordValidation::partiallySupported<std::string>(),
-                    Opm::FlowKeywordValidation::partiallySupported<int>());
+                    Opm::FlowKeywordValidation::partiallySupported<int>(),
+                    Opm::FlowKeywordValidation::partiallySupported<double>());
                 keyword_validator.validateDeck(*deck, *parseContext, *errorGuard);
 
                 if ( checkDeck )
@@ -231,17 +237,22 @@ void readDeck(int rank, std::string& deckFilename, std::unique_ptr<Opm::Deck>& d
             */
             const auto& init_config = eclipseState->getInitConfig();
             if (init_config.restartRequested() && initFromRestart) {
-                int report_step = init_config.getRestartStep();
-                const auto& rst_filename = eclipseState->getIOConfig().getRestartFileName( init_config.getRestartRootName(), report_step, false );
-                Opm::EclIO::ERst rst_file(rst_filename);
-                const auto& rst_state = Opm::RestartIO::RstState::load(rst_file, report_step);
+                const int report_step = init_config.getRestartStep();
+                const auto rst_filename = eclipseState->getIOConfig().getRestartFileName( init_config.getRestartRootName(), report_step, false );
+                auto rst_file = std::make_shared<EclIO::ERst>(rst_filename);
+                auto rst_view = std::make_shared<EclIO::RestartFileView>(std::move(rst_file), report_step);
+                const auto rst_state = Opm::RestartIO::RstState::load(std::move(rst_view));
                 if (!schedule)
                     schedule = std::make_unique<Opm::Schedule>(*deck, *eclipseState, *parseContext, *errorGuard, python, outputInterval, &rst_state);
+                udqState = std::make_unique<Opm::UDQState>( schedule->operator[](0).udq().params().undefinedValue() );
+                udqState->load_rst(rst_state);
             }
             else {
                 if (!schedule)
                     schedule = std::make_unique<Opm::Schedule>(*deck, *eclipseState, *parseContext, *errorGuard, python);
+                udqState = std::make_unique<Opm::UDQState>( schedule->operator[](0).udq().params().undefinedValue() );
             }
+
             if (Opm::OpmLog::hasBackend("STDOUT_LOGGER")) // loggers might not be set up!
             {
                 setupMessageLimiter(schedule->operator[](0).message_limits(), "STDOUT_LOGGER");

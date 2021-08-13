@@ -37,37 +37,50 @@ list (APPEND MAIN_SOURCE_FILES
   opm/simulators/timestepping/SimulatorReport.cpp
   opm/simulators/flow/countGlobalCells.cpp
   opm/simulators/flow/KeywordValidation.cpp
+  opm/simulators/flow/SimulatorFullyImplicitBlackoilEbos.cpp
   opm/simulators/linalg/ExtractParallelGridInformationToISTL.cpp
   opm/simulators/linalg/FlexibleSolver1.cpp
   opm/simulators/linalg/FlexibleSolver2.cpp
   opm/simulators/linalg/FlexibleSolver3.cpp
   opm/simulators/linalg/FlexibleSolver4.cpp
+  opm/simulators/linalg/PropertyTree.cpp
   opm/simulators/linalg/setupPropertyTree.cpp
   opm/simulators/utils/PartiallySupportedFlowKeywords.cpp
   opm/simulators/utils/readDeck.cpp
   opm/simulators/utils/UnsupportedFlowKeywords.cpp
-  opm/simulators/timestepping/TimeStepControl.cpp
   opm/simulators/timestepping/AdaptiveSimulatorTimer.cpp
+  opm/simulators/timestepping/AdaptiveTimeSteppingEbos.cpp
+  opm/simulators/timestepping/TimeStepControl.cpp
   opm/simulators/timestepping/SimulatorTimer.cpp
+  opm/simulators/timestepping/SimulatorTimerInterface.cpp
   opm/simulators/timestepping/gatherConvergenceReport.cpp
   opm/simulators/utils/DeferredLogger.cpp
   opm/simulators/utils/gatherDeferredLogger.cpp
   opm/simulators/utils/ParallelFileMerger.cpp
   opm/simulators/utils/ParallelRestart.cpp
   opm/simulators/wells/ALQState.cpp
+  opm/simulators/wells/BlackoilWellModelGeneric.cpp
+  opm/simulators/wells/GasLiftGroupInfo.cpp
   opm/simulators/wells/GasLiftSingleWellGeneric.cpp
   opm/simulators/wells/GasLiftStage2.cpp
   opm/simulators/wells/GlobalWellInfo.cpp
   opm/simulators/wells/GroupState.cpp
+  opm/simulators/wells/MultisegmentWellEval.cpp
+  opm/simulators/wells/MultisegmentWellGeneric.cpp
   opm/simulators/wells/ParallelWellInfo.cpp
+  opm/simulators/wells/PerfData.cpp
   opm/simulators/wells/SegmentState.cpp
+  opm/simulators/wells/StandardWellEval.cpp
+  opm/simulators/wells/StandardWellGeneric.cpp
   opm/simulators/wells/TargetCalculator.cpp
   opm/simulators/wells/VFPHelpers.cpp
   opm/simulators/wells/VFPProdProperties.cpp
   opm/simulators/wells/VFPInjProperties.cpp
   opm/simulators/wells/WellGroupHelpers.cpp
+  opm/simulators/wells/WellInterfaceEval.cpp
   opm/simulators/wells/WellInterfaceFluidSystem.cpp
   opm/simulators/wells/WellInterfaceGeneric.cpp
+  opm/simulators/wells/WellInterfaceIndices.cpp
   opm/simulators/wells/WellProdIndexCalculator.cpp
   opm/simulators/wells/WellState.cpp
   opm/simulators/wells/WGState.cpp
@@ -101,7 +114,15 @@ if(HAVE_FPGA)
   list (APPEND MAIN_SOURCE_FILES opm/simulators/linalg/bda/MultisegmentWellContribution.cpp)
   list (APPEND MAIN_SOURCE_FILES opm/simulators/linalg/bda/WellContributions.cpp)
 endif()
-
+if(HAVE_AMGCL)
+  list (APPEND MAIN_SOURCE_FILES opm/simulators/linalg/bda/BdaBridge.cpp)
+  list (APPEND MAIN_SOURCE_FILES opm/simulators/linalg/bda/WellContributions.cpp)
+  list (APPEND MAIN_SOURCE_FILES opm/simulators/linalg/bda/MultisegmentWellContribution.cpp)
+  list (APPEND MAIN_SOURCE_FILES opm/simulators/linalg/bda/amgclSolverBackend.cpp)
+  if(CUDA_FOUND)
+    list (APPEND MAIN_SOURCE_FILES opm/simulators/linalg/bda/amgclSolverBackend.cu)
+  endif()
+endif()
 if(MPI_FOUND)
   list(APPEND MAIN_SOURCE_FILES opm/simulators/utils/ParallelEclipseState.cpp
                                 opm/simulators/utils/ParallelSerialization.cpp)
@@ -139,6 +160,12 @@ list (APPEND TEST_SOURCE_FILES
 if(MPI_FOUND)
   list(APPEND TEST_SOURCE_FILES tests/test_parallelistlinformation.cpp
                                 tests/test_ParallelRestart.cpp)
+endif()
+if(CUDA_FOUND)
+  list(APPEND TEST_SOURCE_FILES tests/test_cusparseSolver.cpp)
+endif()
+if(OPENCL_FOUND)
+  list(APPEND TEST_SOURCE_FILES tests/test_openclSolver.cpp)
 endif()
 
 list (APPEND TEST_DATA_FILES
@@ -214,6 +241,7 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/aquifers/AquiferNumerical.hpp
   opm/simulators/aquifers/BlackoilAquiferModel.hpp
   opm/simulators/aquifers/BlackoilAquiferModel_impl.hpp
+  opm/simulators/linalg/bda/amgclSolverBackend.hpp
   opm/simulators/linalg/bda/BdaBridge.hpp
   opm/simulators/linalg/bda/BdaResult.hpp
   opm/simulators/linalg/bda/BdaSolver.hpp
@@ -253,12 +281,12 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/linalg/PressureTransferPolicy.hpp
   opm/simulators/linalg/PreconditionerFactory.hpp
   opm/simulators/linalg/PreconditionerWithUpdate.hpp
+  opm/simulators/linalg/PropertyTree.hpp
   opm/simulators/linalg/WellOperators.hpp
   opm/simulators/linalg/WriteSystemMatrixHelper.hpp
   opm/simulators/linalg/findOverlapRowsAndColumns.hpp
   opm/simulators/linalg/getQuasiImpesWeights.hpp
   opm/simulators/linalg/setupPropertyTree.hpp
-  opm/simulators/linalg/setupPropertyTree_impl.hpp
   opm/simulators/timestepping/AdaptiveSimulatorTimer.hpp
   opm/simulators/timestepping/AdaptiveTimeSteppingEbos.hpp
   opm/simulators/timestepping/ConvergenceReport.hpp
@@ -275,6 +303,7 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/utils/ParallelEclipseState.hpp
   opm/simulators/utils/ParallelRestart.hpp
   opm/simulators/utils/PropsCentroidsDataHandle.hpp
+  opm/simulators/wells/PerfData.hpp
   opm/simulators/wells/PerforationData.hpp
   opm/simulators/wells/RateConverter.hpp
   opm/simulators/utils/readDeck.hpp

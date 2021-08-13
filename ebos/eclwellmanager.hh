@@ -40,7 +40,6 @@
 #include <opm/simulators/wells/WGState.hpp>
 #include <opm/parser/eclipse/EclipseState/Schedule/Well/WellConnections.hpp>
 #include <opm/parser/eclipse/EclipseState/Schedule/Well/Well.hpp>
-#include <opm/parser/eclipse/EclipseState/Schedule/TimeMap.hpp>
 #include <opm/output/eclipse/RestartValue.hpp>
 
 #include <opm/output/data/Wells.hpp>
@@ -568,8 +567,7 @@ public:
     }
 
     data::GroupAndNetworkValues
-    groupAndNetworkData(const int /* reportStepIdx */,
-                        const Schedule& /* sched */) const
+    groupAndNetworkData(const int /* reportStepIdx */)
     {
         return {};
     }
@@ -579,7 +577,7 @@ public:
      *        to the hard disk.
      */
     template <class Restarter>
-    void serialize(Restarter& res OPM_UNUSED)
+    void serialize(Restarter&)
     {
         /* do nothing: Everything which we need here is provided by the deck->.. */
     }
@@ -591,7 +589,7 @@ public:
      * It is the inverse of the serialize() method.
      */
     template <class Restarter>
-    void deserialize(Restarter& res OPM_UNUSED)
+    void deserialize(Restarter&)
     {
         // initialize the wells for the current episode
         beginEpisode(/*wasRestarted=*/true);
@@ -621,7 +619,7 @@ public:
                                ScheduleEvents::WELL_STATUS_CHANGE );
     }
 
-    void initFromRestartFile(const RestartValue& restartValues OPM_UNUSED){
+    void initFromRestartFile(const RestartValue&) {
         throw std::logic_error("initFromRestartFile() method not implemented for class eclwellmanager");
     }
 
@@ -685,7 +683,7 @@ public:
 
 
 protected:
-    bool wellTopologyChanged_(const EclipseState& eclState OPM_UNUSED,
+    bool wellTopologyChanged_(const EclipseState&,
                               const Schedule& schedule,
                               unsigned reportStepIdx) const
     {
@@ -704,7 +702,7 @@ protected:
                                ScheduleEvents::COMPLETION_CHANGE);
     }
 
-    void updateWellTopology_(unsigned reportStepIdx OPM_UNUSED,
+    void updateWellTopology_(unsigned,
                              const WellConnectionsMap& wellConnections,
                              std::vector<bool>& gridDofIsPenetrated) const
     {
@@ -764,7 +762,8 @@ protected:
         }
     }
 
-    void computeWellConnectionsMap_(unsigned reportStepIdx OPM_UNUSED, WellConnectionsMap& cartesianIdxToConnectionMap)
+    void computeWellConnectionsMap_(unsigned reportStepIdx,
+                                    WellConnectionsMap& cartesianIdxToConnectionMap)
     {
         const auto& deckSchedule = simulator_.vanguard().schedule();
 

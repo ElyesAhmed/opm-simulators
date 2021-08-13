@@ -109,6 +109,7 @@ namespace KeywordValidation
             // Otherwise, check all its items.
             validateKeywordItems(keyword, m_string_items, errors);
             validateKeywordItems(keyword, m_int_items, errors);
+            validateKeywordItems(keyword, m_double_items, errors);
         }
     }
 
@@ -128,14 +129,16 @@ namespace KeywordValidation
                     // Find the index number, which starts counting at one, so item_index + 1
                     const auto& item_properties = keyword_properties->second.find(item_index + 1);
                     if (item_properties != keyword_properties->second.end()) {
-                        // Validate the item, if it is partially supported.
-                        validateKeywordItem<T>(keyword,
-                                               item_properties->second,
-                                               keyword.size() > 1,
-                                               record_index,
-                                               item_index,
-                                               item.get<T>(0),
-                                               errors);
+                        if (item.hasValue(0)) {
+                            // Validate the item, if it is partially supported.
+                            validateKeywordItem<T>(keyword,
+                                                   item_properties->second,
+                                                   keyword.size() > 1,
+                                                   record_index,
+                                                   item_index,
+                                                   item.get<T>(0),
+                                                   errors);
+                        }
                     }
                 }
             }
@@ -152,8 +155,7 @@ namespace KeywordValidation
                                                const T& item_value,
                                                std::vector<ValidationError>& errors) const
     {
-        const auto& permitted = properties.permitted_values;
-        if (std::find(permitted.begin(), permitted.end(), item_value) == permitted.end()) {
+        if (!properties.validator(item_value)) {
             // If the value is not permitted, format the value to report it.
             std::string formatted_value;
             if constexpr (std::is_arithmetic<T>::value)

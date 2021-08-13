@@ -39,12 +39,17 @@
 #include <opm/parser/eclipse/EclipseState/Schedule/SummaryState.hpp>
 #include <opm/parser/eclipse/EclipseState/SummaryConfig/SummaryConfig.hpp>
 
-#include <dune/common/parallel/mpicollectivecommunication.hh>
+#include <dune/common/version.hh>
+#if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
+#include <dune/common/parallel/communication.hh>
+#else
+#include <dune/common/parallel/collectivecommunication.hh>
+#endif
 #include <dune/common/parallel/mpihelper.hh>
 
 namespace Opm {
 
-namespace data { struct Solution; }
+namespace data { class Solution; }
 class EclipseState;
 
 template<class FluidSystem, class Scalar>
@@ -256,7 +261,7 @@ protected:
 
     void makeRegionSum(Inplace& inplace,
                        const std::string& region_name,
-                       const Comm& comm);
+                       const Comm& comm) const;
 
     Inplace accumulateRegionSums(const Comm& comm);
 
@@ -280,7 +285,7 @@ protected:
     // Sum Fip values over regions.
     static ScalarBuffer regionSum(const ScalarBuffer& property,
                                   const std::vector<int>& regionId,
-                                  size_t maxNumberOfRegions,
+                                  const std::size_t maxNumberOfRegions,
                                   const Comm& comm);
 
     static int regionMax(const std::vector<int>& region,
@@ -288,9 +293,9 @@ protected:
 
     static void update(Inplace& inplace,
                        const std::string& region_name,
-                       Inplace::Phase phase,
-                       std::size_t ntFip,
-                       const std::vector<double>& values);
+                       const Inplace::Phase phase,
+                       const std::size_t ntFip,
+                       const ScalarBuffer& values);
 
     static Scalar sum(const ScalarBuffer& v);
 
@@ -327,6 +332,7 @@ protected:
     ScalarBuffer hydrocarbonPoreVolume_;
     ScalarBuffer pressureTimesPoreVolume_;
     ScalarBuffer pressureTimesHydrocarbonVolume_;
+    ScalarBuffer dynamicPoreVolume_;
     ScalarBuffer oilPressure_;
     ScalarBuffer temperature_;
     ScalarBuffer rs_;

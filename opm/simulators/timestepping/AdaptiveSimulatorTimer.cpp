@@ -27,13 +27,15 @@
 #include <opm/parser/eclipse/Units/Units.hpp>
 #include <opm/simulators/timestepping/AdaptiveSimulatorTimer.hpp>
 
+#include <boost/date_time/posix_time/posix_time.hpp>
+
 namespace Opm
 {
     AdaptiveSimulatorTimer::
     AdaptiveSimulatorTimer( const SimulatorTimerInterface& timer,
                             const double lastStepTaken,
                             const double maxTimeStep )
-        : start_date_time_( timer.startDateTime() )
+        : start_date_time_( std::make_shared<boost::posix_time::ptime>(timer.startDateTime()) )
         , start_time_( timer.simulationTimeElapsed() )
         , total_time_( start_time_ + timer.currentStepLength() )
         , report_step_( timer.reportStepNum() )
@@ -135,14 +137,14 @@ AdaptiveSimulatorTimer& AdaptiveSimulatorTimer::operator++ ()
     /// \brief return max step length used so far
     double AdaptiveSimulatorTimer::maxStepLength () const
     {
-        if( steps_.size() == 0 ) return 0.0;
+        if( steps_.empty() ) return 0.0;
         return *(std::max_element( steps_.begin(), steps_.end() ));
     }
 
     /// \brief return min step length used so far
     double AdaptiveSimulatorTimer::minStepLength () const
     {
-        if( steps_.size() == 0 ) return 0.0;
+        if( steps_.empty() ) return 0.0;
         return *(std::min_element( steps_.begin(), steps_.end() ));
     }
 
@@ -160,7 +162,7 @@ AdaptiveSimulatorTimer& AdaptiveSimulatorTimer::operator++ ()
 
     boost::posix_time::ptime AdaptiveSimulatorTimer::startDateTime() const
     {
-        return start_date_time_;
+        return *start_date_time_;
     }
 
     /// return copy of object

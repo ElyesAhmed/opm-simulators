@@ -35,7 +35,7 @@
 #include <opm/simulators/linalg/setupPropertyTree.hpp>
 
 
-#if HAVE_CUDA || HAVE_OPENCL || HAVE_FPGA
+#if HAVE_CUDA || HAVE_OPENCL || HAVE_FPGA || HAVE_AMGCL
 #include <opm/simulators/linalg/bda/BdaBridge.hpp>
 #endif
 
@@ -91,8 +91,9 @@ namespace Opm
         using AbstractOperatorType = Dune::AssembledLinearOperator<Matrix, Vector, Vector>;
         using WellModelOperator = WellModelAsLinearOperator<WellModel, Vector, Vector>;
         using ElementMapper = GetPropType<TypeTag, Properties::ElementMapper>;
+        constexpr static std::size_t pressureIndex = GetPropType<TypeTag, Properties::Indices>::pressureSwitchIdx;
 
-#if HAVE_CUDA || HAVE_OPENCL || HAVE_FPGA
+#if HAVE_CUDA || HAVE_OPENCL || HAVE_FPGA || HAVE_AMGCL
         static const unsigned int block_size = Matrix::block_type::rows;
         std::unique_ptr<BdaBridge<Matrix, Vector, block_size>> bdaBridge;
 #endif
@@ -125,8 +126,11 @@ namespace Opm
             comm_.reset( new CommunicationType( simulator_.vanguard().grid().comm() ) );
 #endif
             parameters_.template init<TypeTag>();
-            prm_ = setupPropertyTree<TypeTag>(parameters_);
-#if HAVE_CUDA || HAVE_OPENCL || HAVE_FPGA
+            prm_ = setupPropertyTree(parameters_,
+                                     EWOMS_PARAM_IS_SET(TypeTag, int, LinearSolverMaxIter),
+                                     EWOMS_PARAM_IS_SET(TypeTag, int, CprMaxEllIter));
+
+#if HAVE_CUDA || HAVE_OPENCL || HAVE_FPGA || HAVE_AMGCL
             {
                 std::string accelerator_mode = EWOMS_GET_PARAM(TypeTag, std::string, AcceleratorMode);
                 if ((simulator_.vanguard().grid().comm().size() > 1) && (accelerator_mode != "none")) {
@@ -146,7 +150,7 @@ namespace Opm
             }
 #else
             if (EWOMS_GET_PARAM(TypeTag, std::string, AcceleratorMode) != "none") {
-                OPM_THROW(std::logic_error,"Cannot use accelerated solver since neither CUDA nor OpenCL were found by cmake and FPGA was not enabled");
+                OPM_THROW(std::logic_error,"Cannot use accelerated solver since CUDA, OpenCL and amgcl were not found by cmake and FPGA was not enabled");
             }
 #endif
             extractParallelGridInformationToISTL(simulator_.vanguard().grid(), parallelInformation_);
@@ -179,7 +183,7 @@ namespace Opm
             if (on_io_rank) {
                 std::ostringstream os;
                 os << "Property tree for linear solver:\n";
-                boost::property_tree::write_json(os, prm_, true);
+                prm_.write_json(os, true);
                 OpmLog::note(os.str());
             }
         }
@@ -253,17 +257,20 @@ namespace Opm
 
             // Use GPU if: available, chosen by user, and successful.
             // Use FPGA if: support compiled, chosen by user, and successful.
-#if HAVE_CUDA || HAVE_OPENCL || HAVE_FPGA
+#if HAVE_CUDA || HAVE_OPENCL || HAVE_FPGA || HAVE_AMGCL
             bool use_gpu = bdaBridge->getUseGpu();
             bool use_fpga = bdaBridge->getUseFpga();
             if (use_gpu || use_fpga) {
                 const std::string accelerator_mode = EWOMS_GET_PARAM(TypeTag, std::string, AcceleratorMode);
-                WellContributions wellContribs(accelerator_mode);
+                WellContributions wellContribs(accelerator_mode, useWellConn_);
                 bdaBridge->initWellContributions(wellContribs);
 
+                // the WellContributions can only be applied separately with CUDA or OpenCL, not with an FPGA or amgcl
+#if HAVE_CUDA || HAVE_OPENCL
                 if (!useWellConn_) {
                     simulator_.problem().wellModel().getWellContributions(wellContribs);
                 }
+#endif
 
                 // Const_cast needed since the CUDA stuff overwrites values for better matrix condition..
                 bdaBridge->solve_system(const_cast<Matrix*>(&getMatrix()), *rhs_, wellContribs, result);
@@ -357,24 +364,28 @@ namespace Opm
                     if (useWellConn_) {
                         using ParOperatorType = Dune::OverlappingSchwarzOperator<Matrix, Vector, Vector, Comm>;
                         linearOperatorForFlexibleSolver_ = std::make_unique<ParOperatorType>(getMatrix(), *comm_);
-                        flexibleSolver_ = std::make_unique<FlexibleSolverType>(*linearOperatorForFlexibleSolver_, *comm_, prm_, weightsCalculator);
+                        flexibleSolver_ = std::make_unique<FlexibleSolverType>(*linearOperatorForFlexibleSolver_, *comm_, prm_, weightsCalculator,
+                                                                               pressureIndex);
                     } else {
                         using ParOperatorType = WellModelGhostLastMatrixAdapter<Matrix, Vector, Vector, true>;
                         wellOperator_ = std::make_unique<WellModelOperator>(simulator_.problem().wellModel());
                         linearOperatorForFlexibleSolver_ = std::make_unique<ParOperatorType>(getMatrix(), *wellOperator_, interiorCellNum_);
-                        flexibleSolver_ = std::make_unique<FlexibleSolverType>(*linearOperatorForFlexibleSolver_, *comm_, prm_, weightsCalculator);
+                        flexibleSolver_ = std::make_unique<FlexibleSolverType>(*linearOperatorForFlexibleSolver_, *comm_, prm_, weightsCalculator,
+                                                                               pressureIndex);
                     }
 #endif
                 } else {
                     if (useWellConn_) {
                         using SeqOperatorType = Dune::MatrixAdapter<Matrix, Vector, Vector>;
                         linearOperatorForFlexibleSolver_ = std::make_unique<SeqOperatorType>(getMatrix());
-                        flexibleSolver_ = std::make_unique<FlexibleSolverType>(*linearOperatorForFlexibleSolver_, prm_, weightsCalculator);
+                        flexibleSolver_ = std::make_unique<FlexibleSolverType>(*linearOperatorForFlexibleSolver_, prm_, weightsCalculator,
+                                                                               pressureIndex);
                     } else {
                         using SeqOperatorType = WellModelMatrixAdapter<Matrix, Vector, Vector, false>;
                         wellOperator_ = std::make_unique<WellModelOperator>(simulator_.problem().wellModel());
                         linearOperatorForFlexibleSolver_ = std::make_unique<SeqOperatorType>(getMatrix(), *wellOperator_);
-                        flexibleSolver_ = std::make_unique<FlexibleSolverType>(*linearOperatorForFlexibleSolver_, prm_, weightsCalculator);
+                        flexibleSolver_ = std::make_unique<FlexibleSolverType>(*linearOperatorForFlexibleSolver_, prm_, weightsCalculator,
+                                                                               pressureIndex);
                     }
                 }
             }
@@ -420,19 +431,24 @@ namespace Opm
         {
             std::function<Vector()> weightsCalculator;
 
-            auto preconditionerType = prm_.get("preconditioner.type", "cpr");
+            using namespace std::string_literals;
+
+            auto preconditionerType = prm_.get("preconditioner.type"s, "cpr"s);
             if (preconditionerType == "cpr" || preconditionerType == "cprt") {
                 const bool transpose = preconditionerType == "cprt";
-                const auto weightsType = prm_.get("preconditioner.weight_type", "quasiimpes");
-                const auto pressureIndex = this->prm_.get("preconditioner.pressure_var_index", 1);
+                const auto weightsType = prm_.get("preconditioner.weight_type"s, "quasiimpes"s);
                 if (weightsType == "quasiimpes") {
-                    // weighs will be created as default in the solver
-                    weightsCalculator = [this, transpose, pressureIndex]() {
-                        return Amg::getQuasiImpesWeights<Matrix, Vector>(this->getMatrix(), pressureIndex, transpose);
+                    // weights will be created as default in the solver
+                    // assignment p = pressureIndex prevent compiler warning about
+                    // capturing variable with non-automatic storage duration
+                    weightsCalculator = [this, transpose, p = pressureIndex]() {
+                        return Amg::getQuasiImpesWeights<Matrix, Vector>(this->getMatrix(), p, transpose);
                     };
                 } else if (weightsType == "trueimpes") {
-                    weightsCalculator = [this, pressureIndex]() {
-                        return this->getTrueImpesWeights(pressureIndex);
+                    // assignment p = pressureIndex prevent compiler warning about
+                    // capturing variable with non-automatic storage duration
+                    weightsCalculator = [this, p = pressureIndex]() {
+                        return this->getTrueImpesWeights(p);
                     };
                 } else {
                     OPM_THROW(std::invalid_argument,
@@ -511,7 +527,7 @@ namespace Opm
         size_t interiorCellNum_;
 
         FlowLinearSolverParameters parameters_;
-        boost::property_tree::ptree prm_;
+        PropertyTree prm_;
         bool scale_variables_;
 
         std::shared_ptr< CommunicationType > comm_;

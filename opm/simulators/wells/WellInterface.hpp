@@ -30,13 +30,9 @@
 
 #include <opm/parser/eclipse/EclipseState/Schedule/Well/Well.hpp>
 #include <opm/parser/eclipse/EclipseState/Schedule/Well/WellTestState.hpp>
-#include <opm/parser/eclipse/EclipseState/Schedule/Group/GuideRate.hpp>
 
 #include <opm/core/props/BlackoilPhases.hpp>
 
-#include <opm/simulators/wells/VFPProperties.hpp>
-#include <opm/simulators/wells/WellHelpers.hpp>
-#include <opm/simulators/wells/WellGroupHelpers.hpp>
 #include <opm/simulators/wells/WellProdIndexCalculator.hpp>
 #include <opm/simulators/wells/WellState.hpp>
 // NOTE: GasLiftSingleWell.hpp includes StandardWell.hpp which includes ourself
@@ -46,7 +42,9 @@ namespace Opm {
     template<typename TypeTag> class GasLiftSingleWell;
     template<typename TypeTag> class BlackoilWellModel;
 }
+#include <opm/simulators/wells/GasLiftGroupInfo.hpp>
 #include <opm/simulators/wells/GasLiftSingleWell.hpp>
+#include <opm/simulators/wells/GasLiftSingleWellGeneric.hpp>
 #include <opm/simulators/wells/BlackoilWellModel.hpp>
 #include <opm/simulators/flow/BlackoilModelParametersEbos.hpp>
 
@@ -56,22 +54,20 @@ namespace Opm {
 #include<dune/istl/bcrsmatrix.hh>
 #include<dune/istl/matrixmatrix.hh>
 
-#include <opm/material/densead/Math.hpp>
 #include <opm/material/densead/Evaluation.hpp>
 
-#include <opm/simulators/wells/WellInterfaceFluidSystem.hpp>
+#include <opm/simulators/wells/WellInterfaceIndices.hpp>
 
-#include <array>
 #include <cassert>
-#include <memory>
-#include <string>
 #include <vector>
 
 namespace Opm
 {
 
 template<typename TypeTag>
-class WellInterface : public WellInterfaceFluidSystem<GetPropType<TypeTag, Properties::FluidSystem>>
+class WellInterface : public WellInterfaceIndices<GetPropType<TypeTag, Properties::FluidSystem>,
+                                                  GetPropType<TypeTag, Properties::Indices>,
+                                                  GetPropType<TypeTag, Properties::Scalar>>
 {
 public:
 
@@ -90,6 +86,7 @@ public:
     using GLiftProdWells = typename BlackoilWellModel<TypeTag>::GLiftProdWells;
     using GLiftWellStateMap =
         typename BlackoilWellModel<TypeTag>::GLiftWellStateMap;
+    using GLiftSyncGroups = typename GasLiftSingleWellGeneric::GLiftSyncGroups;
 
     static const int numEq = Indices::numEq;
     static const int numPhases = Indices::numPhases;
@@ -124,9 +121,9 @@ public:
     static const int contiPolymerMWEqIdx = Indices::contiPolymerMWEqIdx;
     static const int contiFoamEqIdx = Indices::contiFoamEqIdx;
     static const int contiBrineEqIdx = Indices::contiBrineEqIdx;
+    static const bool compositionSwitchEnabled = Indices::compositionSwitchIdx >= 0;
 
-    // For the conversion between the surface volume rate and reservoir voidage rate
-    static const bool compositionSwitchEnabled = Indices::gasEnabled;
+    // For the conversion between the surface volume rate and reservoir voidage rate 
     using FluidState = BlackOilFluidState<Eval,
                                           FluidSystem,
                                           has_temperature,
@@ -144,7 +141,6 @@ public:
                   const int num_components,
                   const int num_phases,
                   const int index_of_well,
-                  const int first_perf_index,
                   const std::vector<PerforationData>& perf_data);
 
     /// Virtual destructor
@@ -170,11 +166,14 @@ public:
 
     virtual void gasLiftOptimizationStage1 (
         WellState& well_state,
+        const GroupState& group_state,
         const Simulator& ebosSimulator,
         DeferredLogger& deferred_logger,
         GLiftProdWells& prod_wells,
         GLiftOptWells& glift_wells,
-        GLiftWellStateMap& state_map
+        GLiftWellStateMap& state_map,
+        GasLiftGroupInfo &group_info,
+        GLiftSyncGroups &sync_groups
     ) const = 0;
 
     /// using the solution x to recover the solution xw for wells and applying
@@ -195,9 +194,10 @@ public:
                                        std::vector<double>& well_potentials,
                                        DeferredLogger& deferred_logger) = 0;
 
-    void updateWellStateWithTarget(const Simulator& ebos_simulator,
-                                   WellState& well_state,
-                                   DeferredLogger& deferred_logger) const;
+    virtual void updateWellStateWithTarget(const Simulator& ebos_simulator,
+                                           const GroupState& group_state,
+                                           WellState& well_state,
+                                           DeferredLogger& deferred_logger) const;
 
     enum class IndividualOrGroup { Individual, Group, Both };
     bool updateWellControl(const Simulator& ebos_simulator,
@@ -229,7 +229,6 @@ public:
     void addCellRates(RateVector& rates, int cellIdx) const;
 
     Scalar volumetricSurfaceRateForConnection(int cellIdx, int phaseIdx) const;
-
 
     template <class EvalWell>
     Eval restrictEval(const EvalWell& in) const
@@ -279,8 +278,6 @@ public:
                            const GroupState& group_state,
                            DeferredLogger& deferred_logger);
 
-    virtual bool useInnerIterations() const = 0;
-
 protected:
 
     // simulation parameters
@@ -292,29 +289,18 @@ protected:
 
     bool changed_to_stopped_this_step_ = false;
 
-    int flowPhaseToEbosCompIdx( const int phaseIdx ) const;
-
-    int flowPhaseToEbosPhaseIdx( const int phaseIdx ) const;
-
-    int ebosCompIdxToFlowCompIdx( const unsigned compIdx ) const;
-
     double wpolymer() const;
 
     double wfoam() const;
 
     double wsalt() const;
 
-    template <class ValueType>
-    ValueType calculateBhpFromThp(const WellState& well_state, const std::vector<ValueType>& rates, const Well& well, const SummaryState& summaryState, DeferredLogger& deferred_logger) const;
-
     virtual double getRefDensity() const = 0;
 
     // Component fractions for each phase for the well
     const std::vector<double>& compFrac() const;
 
-    double scalingFactor(const int comp_idx) const;
-
-    std::vector<double> initialWellRateFractions(const Simulator& ebosSimulator, const std::vector<double>& potentials) const;
+    std::vector<double> initialWellRateFractions(const Simulator& ebosSimulator, const WellState& well_state) const;
 
     // check whether the well is operable under BHP limit with current reservoir condition
     virtual void checkOperabilityUnderBHPLimitProducer(const WellState& well_state, const Simulator& ebos_simulator, DeferredLogger& deferred_logger) =0;
@@ -326,7 +312,7 @@ protected:
 
 
     void wellTestingEconomic(const Simulator& simulator,
-                             const double simulation_time, const WellState& well_state, const GroupState& group_state,
+                             const double simulation_time, WellState& well_state, const GroupState& group_state,
                              WellTestState& welltest_state, DeferredLogger& deferred_logger);
 
     void wellTestingPhysical(const Simulator& simulator,
@@ -362,53 +348,7 @@ protected:
     void solveWellForTesting(const Simulator& ebosSimulator, WellState& well_state, const GroupState& group_state,
                              DeferredLogger& deferred_logger);
 
-    template <class EvalWell>
-    void getGroupInjectionControl(const Group& group,
-                                  const WellState& well_state,
-                                  const GroupState& group_state,
-                                  const Schedule& schedule,
-                                  const SummaryState& summaryState,
-                                  const InjectorType& injectorType,
-                                  const EvalWell& bhp,
-                                  const EvalWell& injection_rate,
-                                  EvalWell& control_eq,
-                                  double efficiencyFactor,
-                                  DeferredLogger& deferred_logger);
-
-    template <class EvalWell>
-    void getGroupProductionControl(const Group& group,
-                                   const WellState& well_state,
-                                   const GroupState& group_state,
-                                   const Schedule& schedule,
-                                   const SummaryState& summaryState,
-                                   const EvalWell& bhp,
-                                   const std::vector<EvalWell>& rates,
-                                   EvalWell& control_eq,
-                                   double efficiencyFactor);
-
-    template <class EvalWell, class BhpFromThpFunc>
-    void assembleControlEqInj(const WellState& well_state,
-                              const GroupState& group_state,
-                              const Schedule& schedule,
-                              const SummaryState& summaryState,
-                              const Well::InjectionControls& controls,
-                              const EvalWell& bhp,
-                              const EvalWell& injection_rate,
-                              BhpFromThpFunc bhp_from_thp,
-                              EvalWell& control_eq,
-                              DeferredLogger& deferred_logger);
-
-    template <class EvalWell, class BhpFromThpFunc>
-    void assembleControlEqProd(const WellState& well_state,
-                               const GroupState& group_state,
-                               const Schedule& schedule,
-                               const SummaryState& summaryState,
-                               const Well::ProductionControls& controls,
-                               const EvalWell& bhp,
-                               const std::vector<EvalWell>& rates, // Always 3 canonical rates.
-                               BhpFromThpFunc bhp_from_thp,
-                               EvalWell& control_eq,
-                               DeferredLogger& deferred_logger);
+    bool shutUnsolvableWells() const;
 };
 
 }

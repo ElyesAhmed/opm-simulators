@@ -437,6 +437,11 @@ template<class TypeTag>
 struct EnableAsyncEclOutput<TypeTag, TTag::EclBaseProblem> {
     static constexpr bool value = true;
 };
+// Write ESMRY file for fast loading of summary data
+template<class TypeTag>
+struct EnableEsmry<TypeTag, TTag::EclBaseProblem> {
+    static constexpr bool value = false;
+};
 
 // By default, use single precision for the ECL formated results
 template<class TypeTag>
@@ -541,7 +546,7 @@ struct EnableThermalFluxBoundaries<TypeTag, TTag::EclBaseProblem> {
 
 template<class TypeTag>
 struct EnableTracerModel<TypeTag, TTag::EclBaseProblem> {
-    static constexpr bool value = false;
+    static constexpr bool value = true;
 };
 
 // By default, simulators derived from the EclBaseProblem are production simulators,
@@ -2544,9 +2549,17 @@ private:
             if (FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx))
                 dofFluidState.setSaturation(FluidSystem::waterPhaseIdx,
                                             waterSaturationData[dofIdx]);
-            if (FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx))
-                dofFluidState.setSaturation(FluidSystem::gasPhaseIdx,
-                                            gasSaturationData[dofIdx]);
+
+            if (FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)){
+                if (!FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)){
+                    dofFluidState.setSaturation(FluidSystem::gasPhaseIdx,
+                                            1.0
+                                            - waterSaturationData[dofIdx]);
+                }
+                else
+                    dofFluidState.setSaturation(FluidSystem::gasPhaseIdx,
+                                                gasSaturationData[dofIdx]);
+            }
             if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx))
                 dofFluidState.setSaturation(FluidSystem::oilPhaseIdx,
                                             1.0

@@ -290,6 +290,9 @@ namespace WellGroupHelpers
                                  "Invalid GuideRateInjTarget in updateGuideRatesForInjectionGroups",
                                  deferred_logger);
             }
+
+            const UnitSystem& unit_system = schedule.getUnits();
+            guideRateValue = unit_system.from_si(UnitSystem::measure::rate, guideRateValue);
             guideRate->compute(group.name(), phase, reportStepIdx, guideRateValue);
         }
     }
@@ -421,6 +424,76 @@ namespace WellGroupHelpers
             group_state.update_injection_reduction_rates(group.name(), groupTargetReduction);
         else
             group_state.update_production_reduction_rates(group.name(), groupTargetReduction);
+    }
+
+    void updateWellRatesFromGroupTargetScale(const double scale,
+                                             const Group& group,
+                                             const Schedule& schedule,
+                                             const int reportStepIdx,
+                                             bool isInjector,
+                                             const GroupState& group_state,
+                                             WellState& wellState) {
+        for (const std::string& groupName : group.groups()) {
+            bool individual_control = false;
+            if (isInjector) {
+                const Phase all[] = {Phase::WATER, Phase::OIL, Phase::GAS};
+                for (Phase phase : all) {
+                    const Group::InjectionCMode& currentGroupControl
+                            = group_state.injection_control(groupName, phase);
+                    individual_control = individual_control || (currentGroupControl != Group::InjectionCMode::FLD
+                                                     && currentGroupControl != Group::InjectionCMode::NONE);
+                }
+            } else {
+                const Group::ProductionCMode& currentGroupControl = group_state.production_control(groupName);
+                individual_control = (currentGroupControl != Group::ProductionCMode::FLD
+                                                 && currentGroupControl != Group::ProductionCMode::NONE);
+            }
+            if (!individual_control) {
+                const Group& groupTmp = schedule.getGroup(groupName, reportStepIdx);
+                updateWellRatesFromGroupTargetScale(scale, groupTmp, schedule, reportStepIdx, isInjector, group_state, wellState);
+            }
+        }
+
+        const int np = wellState.numPhases();
+        for (const std::string& wellName : group.wells()) {
+            const auto& wellTmp = schedule.getWell(wellName, reportStepIdx);
+
+            if (wellTmp.isProducer() && isInjector)
+                continue;
+
+            if (wellTmp.isInjector() && !isInjector)
+                continue;
+
+            if (wellTmp.getStatus() == Well::Status::SHUT)
+                continue;
+
+            const auto& end = wellState.wellMap().end();
+            const auto& it = wellState.wellMap().find(wellName);
+            if (it == end) // the well is not found
+                continue;
+
+            int well_index = it->second[0];
+
+            if (! wellState.wellIsOwned(well_index, wellName) ) // Only sum once
+            {
+                continue;
+            }
+
+            // scale rates
+            if (isInjector) {
+                if (wellState.currentInjectionControl(well_index) == Well::InjectorCMode::GRUP)
+                    for (int phase = 0; phase < np; phase++) {
+                        wellState.wellRates(well_index)[phase] *= scale;
+                    }
+            } else {
+                if (wellState.currentProductionControl(well_index) == Well::ProducerCMode::GRUP)
+                    for (int phase = 0; phase < np; phase++) {
+                        wellState.wellRates(well_index)[phase] *= scale;
+                    }
+            }
+        }
+
+
     }
 
 
@@ -1100,7 +1173,10 @@ namespace WellGroupHelpers
         }
         // Avoid negative target rates comming from too large local reductions.
         const double target_rate = std::max(1e-12, target / efficiencyFactorInclGroup);
-        return std::make_pair(current_rate > target_rate, target_rate / current_rate);
+        double scale = 1.0;
+        if (current_rate > 1e-12)
+            scale = target_rate / current_rate;
+        return std::make_pair(current_rate > target_rate, scale);
     }
 
     std::pair<bool, double> checkGroupConstraintsInj(const std::string& name,
@@ -1224,7 +1300,31 @@ namespace WellGroupHelpers
         }
         // Avoid negative target rates comming from too large local reductions.
         const double target_rate = std::max(1e-12, target / efficiencyFactorInclGroup);
-        return std::make_pair(current_rate > target_rate, target_rate / current_rate);
+        double scale = 1.0;
+        if (current_rate > 1e-12)
+            scale = target_rate / current_rate;
+        return std::make_pair(current_rate > target_rate, scale);
+    }
+
+
+    template <class Comm>
+    void updateGuideRates(const Group& group,
+                          const Schedule& schedule,
+                          const SummaryState& summary_state,
+                          const PhaseUsage& pu,
+                          const int report_step,
+                          const double sim_time,
+                          WellState& well_state,
+                          const GroupState& group_state,
+                          const Comm& comm,
+                          GuideRate* guide_rate,
+                          std::vector<double>& pot,
+                          Opm::DeferredLogger& deferred_logger)
+    {
+        guide_rate->updateGuideRateExpiration(sim_time, report_step);
+        updateGuideRateForProductionGroups(group, schedule, pu, report_step, sim_time, well_state, group_state, comm, guide_rate, pot);
+        updateGuideRatesForInjectionGroups(group, schedule, summary_state, pu, report_step, well_state, group_state, guide_rate, deferred_logger);
+        updateGuideRatesForWells(schedule, pu, report_step, sim_time, well_state, comm, guide_rate);
     }
 
     template <class Comm>
@@ -1279,10 +1379,9 @@ namespace WellGroupHelpers
                 continue;
             }
 
-            const auto wellrate_index = well_index * wellState.numPhases();
             // add contribution from wells unconditionally
             for (int phase = 0; phase < np; phase++) {
-                pot[phase] += wefac * wellState.wellPotentials()[wellrate_index + phase];
+                pot[phase] += wefac * wellState.wellPotentials(well_index)[phase];
             }
         }
 
@@ -1308,6 +1407,10 @@ namespace WellGroupHelpers
         oilPot = comm.sum(oilPot);
         gasPot = comm.sum(gasPot);
         waterPot = comm.sum(waterPot);
+        const UnitSystem& unit_system = schedule.getUnits();
+        oilPot = unit_system.from_si(UnitSystem::measure::liquid_surface_rate, oilPot);
+        waterPot = unit_system.from_si(UnitSystem::measure::liquid_surface_rate, waterPot);
+        gasPot = unit_system.from_si(UnitSystem::measure::gas_surface_rate, gasPot);
         guideRate->compute(group.name(), reportStepIdx, simTime, oilPot, gasPot, waterPot);
     }
 
@@ -1332,7 +1435,7 @@ namespace WellGroupHelpers
                 // the well is found and owned
                 int well_index = it->second[0];
 
-                const auto wpot = wellState.wellPotentials().data() + well_index * wellState.numPhases();
+                const auto wpot = wellState.wellPotentials(well_index);
                 if (pu.phase_used[BlackoilPhases::Liquid] > 0)
                     oilpot = wpot[pu.phase_pos[BlackoilPhases::Liquid]];
 
@@ -1345,6 +1448,10 @@ namespace WellGroupHelpers
             oilpot = comm.sum(oilpot);
             gaspot = comm.sum(gaspot);
             waterpot = comm.sum(waterpot);
+            const UnitSystem& unit_system = schedule.getUnits();
+            oilpot = unit_system.from_si(UnitSystem::measure::liquid_surface_rate, oilpot);
+            waterpot = unit_system.from_si(UnitSystem::measure::liquid_surface_rate, waterpot);
+            gaspot = unit_system.from_si(UnitSystem::measure::gas_surface_rate, gaspot);
             guideRate->compute(well.name(), reportStepIdx, simTime, oilpot, gaspot, waterpot);
         }
     }
@@ -1368,7 +1475,20 @@ namespace WellGroupHelpers
                                                               const double& simTime, \
                                                               const WellState& wellState, \
                                                               const Dune::CollectiveCommunication<__VA_ARGS__>& comm, \
-                                                              GuideRate* guideRate);
+                                                              GuideRate* guideRate); \
+    template \
+    void updateGuideRates<Dune::CollectiveCommunication<__VA_ARGS__>>(const Group& group, \
+                                                                      const Schedule& schedule, \
+                                                                      const SummaryState& summary_state, \
+                                                                      const PhaseUsage& pu, \
+                                                                      const int report_step, \
+                                                                      const double sim_time, \
+                                                                      WellState& well_state, \
+                                                                      const GroupState& group_state, \
+                                                                      const Dune::CollectiveCommunication<__VA_ARGS__>& comm,\
+                                                                      GuideRate* guide_rate, \
+                                                                      std::vector<double>& pot,\
+                                                                      Opm::DeferredLogger& deferred_logger);
 
 #if HAVE_MPI
     INSTANCE_WELLGROUP_HELPERS(MPI_Comm)

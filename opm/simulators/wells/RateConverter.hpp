@@ -496,20 +496,36 @@ namespace Opm {
                     if (hydrocarbonPV > 0.) {
                         auto& attr = attributes_hpv[reg];
                         attr.pv += hydrocarbonPV;
-                        attr.pressure += fs.pressure(FluidSystem::oilPhaseIdx).value() * hydrocarbonPV;
-                        attr.rs += fs.Rs().value() * hydrocarbonPV;
-                        attr.rv += fs.Rv().value() * hydrocarbonPV;
-                        attr.temperature += fs.temperature(FluidSystem::oilPhaseIdx).value() * hydrocarbonPV;
+                        if (Details::PhaseUsed::oil(pu) && Details::PhaseUsed::gas(pu)) {
+                            attr.rs += fs.Rs().value() * hydrocarbonPV;
+                            attr.rv += fs.Rv().value() * hydrocarbonPV;
+                        }
+                        if (Details::PhaseUsed::oil(pu)) {
+                            attr.pressure += fs.pressure(FluidSystem::oilPhaseIdx).value() * hydrocarbonPV;
+                            attr.temperature += fs.temperature(FluidSystem::oilPhaseIdx).value() * hydrocarbonPV;
+                        } else {
+                            assert(Details::PhaseUsed::gas(pu));
+                            attr.pressure += fs.pressure(FluidSystem::gasPhaseIdx).value() * hydrocarbonPV;
+                            attr.temperature += fs.temperature(FluidSystem::gasPhaseIdx).value() * hydrocarbonPV;
+                        }
                         attr.saltConcentration += fs.saltConcentration().value() * hydrocarbonPV;
                     }
 
                     if (pv_cell > 0.) {
                         auto& attr = attributes_pv[reg];
                         attr.pv += pv_cell;
-                        attr.pressure += fs.pressure(FluidSystem::oilPhaseIdx).value() * pv_cell;
-                        attr.rs += fs.Rs().value() * pv_cell;
-                        attr.rv += fs.Rv().value() * pv_cell;
-                        attr.temperature += fs.temperature(FluidSystem::oilPhaseIdx).value() * pv_cell;
+                        if (Details::PhaseUsed::oil(pu) && Details::PhaseUsed::gas(pu)) {
+                            attr.rs += fs.Rs().value() * pv_cell;
+                            attr.rv += fs.Rv().value() * pv_cell;
+                        }
+                        if (Details::PhaseUsed::oil(pu)) {
+                            attr.pressure += fs.pressure(FluidSystem::oilPhaseIdx).value() * pv_cell;
+                            attr.temperature += fs.temperature(FluidSystem::oilPhaseIdx).value() * pv_cell;
+                        } else {
+                             assert(Details::PhaseUsed::gas(pu));
+                             attr.pressure += fs.pressure(FluidSystem::gasPhaseIdx).value() * pv_cell;
+                             attr.temperature += fs.temperature(FluidSystem::gasPhaseIdx).value() * pv_cell;
+                        }
                         attr.saltConcentration += fs.saltConcentration().value() * pv_cell;
                     }
                 }
@@ -642,6 +658,41 @@ namespace Opm {
                     if (Details::PhaseUsed::oil(pu)) {
                         coeff[io] -= ra.rs / den;
                     }
+                }
+            }
+
+            template <class Coeff>
+            void
+            calcInjCoeff(const RegionId r, const int pvtRegionIdx, Coeff& coeff) const
+            {
+                const auto& pu = phaseUsage_;
+                const auto& ra = attr_.attributes(r);
+                const double p = ra.pressure;
+                const double T = ra.temperature;
+                const double saltConcentration = ra.saltConcentration;
+
+                const int   iw = Details::PhasePos::water(pu);
+                const int   io = Details::PhasePos::oil  (pu);
+                const int   ig = Details::PhasePos::gas  (pu);
+
+                std::fill(& coeff[0], & coeff[0] + phaseUsage_.num_phases, 0.0);
+
+                if (Details::PhaseUsed::water(pu)) {
+                    // q[w]_r = q[w]_s / bw
+
+                    const double bw = FluidSystem::waterPvt().inverseFormationVolumeFactor(pvtRegionIdx, T, p, saltConcentration);
+
+                    coeff[iw] = 1.0 / bw;
+                }
+
+                if (Details::PhaseUsed::oil(pu)) {
+                    const double bo = FluidSystem::oilPvt().inverseFormationVolumeFactor(pvtRegionIdx, T, p, 0.0);
+                    coeff[io] += 1.0 / bo;
+                }
+
+                if (Details::PhaseUsed::gas(pu)) {
+                    const double bg = FluidSystem::gasPvt().inverseFormationVolumeFactor(pvtRegionIdx, T, p, 0.0);
+                    coeff[ig] += 1.0 / bg;
                 }
             }
 

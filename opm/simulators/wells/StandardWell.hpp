@@ -23,18 +23,16 @@
 #ifndef OPM_STANDARDWELL_HEADER_INCLUDED
 #define OPM_STANDARDWELL_HEADER_INCLUDED
 
-#if HAVE_CUDA || HAVE_OPENCL
-#include <opm/simulators/linalg/bda/WellContributions.hpp>
-#endif
-
 #include <opm/simulators/timestepping/ConvergenceReport.hpp>
 #include <opm/simulators/wells/RateConverter.hpp>
+#include <opm/simulators/wells/StandardWellGeneric.hpp>
 #include <opm/simulators/wells/VFPInjProperties.hpp>
 #include <opm/simulators/wells/VFPProdProperties.hpp>
 #include <opm/simulators/wells/WellInterface.hpp>
 #include <opm/simulators/wells/WellProdIndexCalculator.hpp>
 #include <opm/simulators/wells/ParallelWellInfo.hpp>
 #include <opm/simulators/wells/GasLiftSingleWell.hpp>
+#include <opm/simulators/wells/GasLiftGroupInfo.hpp>
 
 #include <opm/models/blackoil/blackoilpolymermodules.hh>
 #include <opm/models/blackoil/blackoilsolventmodules.hh>
@@ -45,6 +43,8 @@
 #include <opm/material/densead/DynamicEvaluation.hpp>
 #include <opm/parser/eclipse/EclipseState/Runspec.hpp>
 #include <opm/parser/eclipse/EclipseState/Schedule/ScheduleTypes.hpp>
+
+#include <opm/simulators/wells/StandardWellEval.hpp>
 
 #include <dune/common/dynvector.hh>
 #include <dune/common/dynmatrix.hh>
@@ -57,11 +57,17 @@ namespace Opm
 {
 
     template<typename TypeTag>
-    class StandardWell: public WellInterface<TypeTag>
+    class StandardWell : public WellInterface<TypeTag>
+                       , public StandardWellEval<GetPropType<TypeTag, Properties::FluidSystem>,
+                                                 GetPropType<TypeTag, Properties::Indices>,
+                                                 GetPropType<TypeTag, Properties::Scalar>>
     {
 
     public:
         typedef WellInterface<TypeTag> Base;
+        using StdWellEval = StandardWellEval<GetPropType<TypeTag, Properties::FluidSystem>,
+                                             GetPropType<TypeTag, Properties::Indices>,
+                                             GetPropType<TypeTag, Properties::Scalar>>;
 
         // TODO: some functions working with AD variables handles only with values (double) without
         // dealing with derivatives. It can be beneficial to make functions can work with either AD or scalar value.
@@ -80,6 +86,7 @@ namespace Opm
         using typename Base::GLiftOptWells;
         using typename Base::GLiftProdWells;
         using typename Base::GLiftWellStateMap;
+        using typename Base::GLiftSyncGroups;
 
         using Base::numEq;
         using Base::numPhases;
@@ -87,6 +94,7 @@ namespace Opm
         using Base::has_solvent;
         using Base::has_zFraction;
         using Base::has_polymer;
+        using Base::has_polymermw;
         using Base::has_foam;
         using Base::has_brine;
         using Base::has_energy;
@@ -105,20 +113,6 @@ namespace Opm
         // based on the solution strategy, there might be other well equations be introduced
         static const int numStaticWellEq = numWellConservationEq + numWellControlEq;
 
-        // the positions of the primary variables for StandardWell
-        // the first one is the weighted total rate (WQ_t), the second and the third ones are F_w and F_g,
-        // which represent the fraction of Water and Gas based on the weighted total rate, the last one is BHP.
-        // correspondingly, we have four well equations for blackoil model, the first three are mass
-        // converstation equations, and the last one is the well control equation.
-        // primary variables related to other components, will be before the Bhp and after F_g.
-        // well control equation is always the last well equation.
-        // TODO: in the current implementation, we use the well rate as the first primary variables for injectors,
-        // instead of G_t.
-        static const bool gasoil = numPhases == 2 && (Indices::compositionSwitchIdx >= 0);
-        static const int WQTotal = 0;
-        static const int WFrac = gasoil? -1000: 1;
-        static const int GFrac = gasoil? 1: 2;
-        static const int SFrac = !has_solvent ? -1000 : 3;
         // the index for Bhp in primary variables and also the index of well control equation
         // they both will be the last one in their respective system.
         // TODO: we should have indices for the well equations and well primary variables separately
@@ -133,25 +127,10 @@ namespace Opm
         using Base::Gas;
 
         using typename Base::BVector;
-        using typename Base::Eval;
 
-        // sparsity pattern for the matrices
-        //[A C^T    [x       =  [ res
-        // B  D ]   x_well]      res_well]
-
-        // the vector type for the res_well and x_well
-        typedef Dune::DynamicVector<Scalar> VectorBlockWellType;
-        typedef Dune::BlockVector<VectorBlockWellType> BVectorWell;
-
-        // the matrix type for the diagonal matrix D
-        typedef Dune::DynamicMatrix<Scalar> DiagMatrixBlockWellType;
-        typedef Dune::BCRSMatrix <DiagMatrixBlockWellType> DiagMatWell;
-
-        // the matrix type for the non-diagonal matrix B and C^T
-        typedef Dune::DynamicMatrix<Scalar> OffDiagMatrixBlockWellType;
-        typedef Dune::BCRSMatrix<OffDiagMatrixBlockWellType> OffDiagMatWell;
-
-        typedef DenseAd::DynamicEvaluation<Scalar, numStaticWellEq + numEq + 1> EvalWell;
+        using Eval = typename StdWellEval::Eval;
+        using EvalWell = typename StdWellEval::EvalWell;
+        using BVectorWell = typename StdWellEval::BVectorWell;
 
         using Base::contiSolventEqIdx;
         using Base::contiZfracEqIdx;
@@ -169,7 +148,6 @@ namespace Opm
                      const int num_components,
                      const int num_phases,
                      const int index_of_well,
-                     const int first_perf_index,
                      const std::vector<PerforationData>& perf_data);
 
         virtual void init(const PhaseUsage* phase_usage_arg,
@@ -181,10 +159,6 @@ namespace Opm
 
         virtual void initPrimaryVariablesEvaluation() const override;
 
-        void updateWellStateWithTarget(const Simulator& ebos_simulator,
-                                       WellState& well_state,
-                                       DeferredLogger& deferred_logger) const;
-
         /// check whether the well equations get converged for this well
         virtual ConvergenceReport getWellConvergence(const WellState& well_state,
                                                      const std::vector<double>& B_avg,
@@ -195,14 +169,6 @@ namespace Opm
         virtual void apply(const BVector& x, BVector& Ax) const override;
         /// r = r - C D^-1 Rw
         virtual void apply(BVector& r) const override;
-
-#if HAVE_CUDA || HAVE_OPENCL
-        /// add the contribution (C, D^-1, B matrices) of this Well to the WellContributions object
-        void addWellContribution(WellContributions& wellContribs) const;
-
-        /// get the number of blocks of the C and B matrices, used to allocate memory in a WellContributions object
-        void getNumBlocks(unsigned int& _nnzs) const;
-#endif
 
         /// using the solution x to recover the solution xw for wells and applying
         /// xw to update Well State
@@ -246,29 +212,17 @@ namespace Opm
             return param_.matrix_add_well_contributions_;
         }
 
-        bool doGasLiftOptimize(
-            const WellState& well_state,
-            const Simulator& ebosSimulator,
-            DeferredLogger& deferred_logger
-        ) const;
-
         virtual void gasLiftOptimizationStage1 (
             WellState& well_state,
+            const GroupState& group_state,
             const Simulator& ebosSimulator,
             DeferredLogger& deferred_logger,
             GLiftProdWells &prod_wells,
             GLiftOptWells &glift_wells,
-            GLiftWellStateMap &state_map
+            GLiftWellStateMap &state_map,
+            GasLiftGroupInfo &group_info,
+            GLiftSyncGroups &sync_groups
         ) const override;
-
-        bool checkGliftNewtonIterationIdxOk(
-            const Simulator& ebosSimulator,
-            DeferredLogger& deferred_logger
-        ) const;
-
-        void gliftDebug(
-            const std::string &msg,
-            DeferredLogger& deferred_logger) const;
 
         /* returns BHP */
         double computeWellRatesAndBhpWithThpAlqProd(const Simulator &ebos_simulator,
@@ -317,9 +271,6 @@ namespace Opm
                                     double* connII,
                                     DeferredLogger& deferred_logger) const;
 
-        virtual bool useInnerIterations() const override {
-            return param_.use_inner_iterations_wells_;
-        }
 
     protected:
         // protected functions from the Base class
@@ -345,7 +296,6 @@ namespace Opm
         using Base::gravity_;
         using Base::param_;
         using Base::well_efficiency_factor_;
-        using Base::first_perf_;
         using Base::ref_depth_;
         using Base::perf_depth_;
         using Base::well_cells_;
@@ -363,62 +313,6 @@ namespace Opm
         using Base::ipr_a_;
         using Base::ipr_b_;
         using Base::changed_to_stopped_this_step_;
-
-
-        // total number of the well equations and primary variables
-        // there might be extra equations be used, numWellEq will be updated during the initialization
-        int numWellEq_ = numStaticWellEq;
-
-        // densities of the fluid in each perforation
-        std::vector<double> perf_densities_;
-        // pressure drop between different perforations
-        std::vector<double> perf_pressure_diffs_;
-
-        // residuals of the well equations
-        BVectorWell resWell_;
-
-        // two off-diagonal matrices
-        OffDiagMatWell duneB_;
-        OffDiagMatWell duneC_;
-        // diagonal matrix for the well
-        DiagMatWell invDuneD_;
-
-        // Wrapper for the parallel application of B for distributed wells
-        wellhelpers::ParallelStandardWellB<Scalar> parallelB_;
-
-        // several vector used in the matrix calculation
-        mutable BVectorWell Bx_;
-        mutable BVectorWell invDrw_;
-
-        // the values for the primary varibles
-        // based on different solutioin strategies, the wells can have different primary variables
-        mutable std::vector<double> primary_variables_;
-
-        // the Evaluation for the well primary variables, which contain derivativles and are used in AD calculation
-        mutable std::vector<EvalWell> primary_variables_evaluation_;
-
-        // the saturations in the well bore under surface conditions at the beginning of the time step
-        std::vector<double> F0_;
-
-        // Enable GLIFT debug mode. This will enable output of logging messages.
-        bool glift_debug = false;
-
-        // Optimize only wells under THP control
-        bool glift_optimize_only_thp_wells = true;
-
-        const EvalWell& getBhp() const;
-
-        EvalWell getQs(const int comp_idx) const;
-
-        const EvalWell& getWQTotal() const;
-
-        EvalWell wellVolumeFractionScaled(const int phase) const;
-
-        EvalWell wellVolumeFraction(const unsigned compIdx) const;
-
-        EvalWell wellSurfaceVolumeFraction(const int phase) const;
-
-        EvalWell extendEval(const Eval& in) const;
 
         Eval getPerfCellPressure(const FluidState& fs) const;
 
@@ -439,16 +333,6 @@ namespace Opm
                                                          std::vector<double>& rvmax_perf,
                                                          std::vector<double>& surf_dens_perf) const;
 
-        // TODO: not total sure whether it is a good idea to put this function here
-        // the major reason to put here is to avoid the usage of Wells struct
-        void computeConnectionDensities(const std::vector<double>& perfComponentRates,
-                                        const std::vector<double>& b_perf,
-                                        const std::vector<double>& rsmax_perf,
-                                        const std::vector<double>& rvmax_perf,
-                                        const std::vector<double>& surf_dens_perf);
-
-        void computeConnectionPressureDelta();
-
         void computeWellConnectionDensitesPressures(const Simulator& ebosSimulator,
                                                     const WellState& well_state,
                                                     const std::vector<double>& b_perf,
@@ -456,19 +340,42 @@ namespace Opm
                                                     const std::vector<double>& rvmax_perf,
                                                     const std::vector<double>& surf_dens_perf);
 
-        // computing the accumulation term for later use in well mass equations
-        void computeAccumWell();
-
         void computeWellConnectionPressures(const Simulator& ebosSimulator,
                                             const WellState& well_state);
 
-        void computePerfRate(const IntensiveQuantities& intQuants,
-                             const std::vector<EvalWell>& mob,
-                             const EvalWell& bhp,
+        void computePerfRateEval(const IntensiveQuantities& intQuants,
+                                 const std::vector<EvalWell>& mob,
+                                 const EvalWell& bhp,
+                                 const double Tw,
+                                 const int perf,
+                                 const bool allow_cf,
+                                 std::vector<EvalWell>& cq_s,
+                                 double& perf_dis_gas_rate,
+                                 double& perf_vap_oil_rate,
+                                 DeferredLogger& deferred_logger) const;
+
+        void computePerfRateScalar(const IntensiveQuantities& intQuants,
+                                   const std::vector<Scalar>& mob,
+                                   const Scalar& bhp,
+                                   const double Tw,
+                                   const int perf,
+                                   const bool allow_cf,
+                                   std::vector<Scalar>& cq_s,
+                                   DeferredLogger& deferred_logger) const;
+
+        template<class Value>
+        void computePerfRate(const std::vector<Value>& mob,
+                             const Value& pressure,
+                             const Value& bhp,
+                             const Value& rs,
+                             const Value& rv,
+                             std::vector<Value>& b_perfcells_dense,
                              const double Tw,
                              const int perf,
                              const bool allow_cf,
-                             std::vector<EvalWell>& cq_s,
+                             const Value& skin_pressure,
+                             const std::vector<Value>& cmix_s,
+                             std::vector<Value>& cq_s,
                              double& perf_dis_gas_rate,
                              double& perf_vap_oil_rate,
                              DeferredLogger& deferred_logger) const;
@@ -484,15 +391,20 @@ namespace Opm
             const WellState &well_state) const;
 
 
-        double calculateThpFromBhp(const WellState &well_state, const std::vector<double>& rates, const double bhp, DeferredLogger& deferred_logger) const;
-
         virtual double getRefDensity() const override;
 
         // get the mobility for specific perforation
-        void getMobility(const Simulator& ebosSimulator,
-                         const int perf,
-                         std::vector<EvalWell>& mob,
-                         DeferredLogger& deferred_logger) const;
+        void getMobilityEval(const Simulator& ebosSimulator,
+                             const int perf,
+                             std::vector<EvalWell>& mob,
+                             DeferredLogger& deferred_logger) const;
+
+        // get the mobility for specific perforation
+        void getMobilityScalar(const Simulator& ebosSimulator,
+                               const int perf,
+                               std::vector<Scalar>& mob,
+                               DeferredLogger& deferred_logger) const;
+
 
         void updateWaterMobilityWithPolymer(const Simulator& ebos_simulator,
                                             const int perf,
@@ -507,19 +419,6 @@ namespace Opm
 
 
         void updateWellStateFromPrimaryVariables(WellState& well_state, DeferredLogger& deferred_logger) const;
-
-        void updateThp(WellState& well_state, DeferredLogger& deferred_logger) const;
-
-
-        void assembleControlEq(const WellState& well_state,
-                               const GroupState& group_state,
-                               const Schedule& schedule,
-                               const SummaryState& summaryState,
-                               DeferredLogger& deferred_logger);
-
-        // handle the non reasonable fractions due to numerical overshoot
-        void processFractions() const;
-
 
         virtual void assembleWellEqWithoutIteration(const Simulator& ebosSimulator,
                                                     const double dt,
@@ -569,19 +468,6 @@ namespace Opm
         // TODO: looking for better alternative to avoid wrong-signed well rates
         bool openCrossFlowAvoidSingularity(const Simulator& ebos_simulator) const;
 
-        // relaxation factor considering only one fraction value
-        static double relaxationFactorFraction(const double old_value,
-                                               const double dx);
-
-        // calculate a relaxation factor to avoid overshoot of the fractions for producers
-        // which might result in negative rates
-        static double relaxationFactorFractionsProducer(const std::vector<double>& primary_variables,
-                                                        const BVectorWell& dwells);
-
-        // calculate a relaxation factor to avoid overshoot of total rates
-        static double relaxationFactorRate(const std::vector<double>& primary_variables,
-                                           const BVectorWell& dwells);
-
         // calculate the skin pressure based on water velocity, throughput and polymer concentration.
         // throughput is used to describe the formation damage during water/polymer injection.
         // calculated skin pressure will be applied to the drawdown during perforation rate calculation
@@ -614,11 +500,6 @@ namespace Opm
                                         DeferredLogger& deferred_logger);
 
         virtual void updateWaterThroughput(const double dt, WellState& well_state) const override;
-
-        // checking the convergence of the well control equations
-        void checkConvergenceControlEq(const WellState& well_state,
-                                       ConvergenceReport& report,
-                                       DeferredLogger& deferred_logger) const;
 
         // checking convergence of extra equations, if there are any
         void checkConvergenceExtraEqs(const std::vector<double>& res,

@@ -43,6 +43,12 @@ class WellState;
 
 template<class FluidSystem>
 class WellInterfaceFluidSystem : public WellInterfaceGeneric {
+protected:
+    using RateConverterType = RateConverter::
+    SurfaceToReservoirVoidage<FluidSystem, std::vector<int>>;
+    // to indicate a invalid completion
+    static constexpr int INVALIDCOMPLETION = std::numeric_limits<int>::max();
+
 public:
     void updateWellTestState(const WellState& well_state,
                              const double& simulationTime,
@@ -50,17 +56,18 @@ public:
                              WellTestState& wellTestState,
                              DeferredLogger& deferred_logger) const;
 
-protected:
-    using RateConverterType = RateConverter::
-    SurfaceToReservoirVoidage<FluidSystem, std::vector<int>>;
+    int flowPhaseToEbosPhaseIdx(const int phaseIdx) const;
 
     static constexpr int Water = BlackoilPhases::Aqua;
     static constexpr int Oil = BlackoilPhases::Liquid;
     static constexpr int Gas = BlackoilPhases::Vapour;
 
-    // to indicate a invalid completion
-    static constexpr int INVALIDCOMPLETION = std::numeric_limits<int>::max();
+    const RateConverterType& rateConverter() const
+    {
+        return rateConverter_;
+    }
 
+protected:
     WellInterfaceFluidSystem(const Well& well,
                              const ParallelWellInfo& parallel_well_info,
                              const int time_step,
@@ -69,7 +76,6 @@ protected:
                              const int num_components,
                              const int num_phases,
                              const int index_of_well,
-                             const int first_perf_index,
                              const std::vector<PerforationData>& perf_data);
 
     // updating the voidage rates in well_state when requested
@@ -77,6 +83,12 @@ protected:
 
     bool checkIndividualConstraints(WellState& well_state,
                                     const SummaryState& summaryState) const;
+
+    Well::InjectorCMode activeInjectionConstraint(const WellState& well_state,
+                                                  const SummaryState& summaryState) const;
+
+    Well::ProducerCMode activeProductionConstraint(const WellState& well_state,
+                                                   const SummaryState& summaryState) const;
 
     std::pair<bool, double> checkGroupConstraintsInj(const Group& group,
                                                      const WellState& well_state,
@@ -138,6 +150,24 @@ protected:
                                      const bool write_message_to_opmlog,
                                      WellTestState& well_test_state,
                                      DeferredLogger& deferred_logger) const;
+
+    std::optional<double>
+    getGroupInjectionTargetRate(const Group& group,
+                                const WellState& well_state,
+                                const GroupState& group_state,
+                                const Schedule& schedule,
+                                const SummaryState& summaryState,
+                                const InjectorType& injectorType,
+                                double efficiencyFactor,
+                                DeferredLogger& deferred_logger) const;
+
+    double
+    getGroupProductionTargetRate(const Group& group,
+                                 const WellState& well_state,
+                                 const GroupState& group_state,
+                                 const Schedule& schedule,
+                                 const SummaryState& summaryState,
+                                 double efficiencyFactor) const;
 
     // For the conversion between the surface volume rate and reservoir voidage rate
     const RateConverterType& rateConverter_;

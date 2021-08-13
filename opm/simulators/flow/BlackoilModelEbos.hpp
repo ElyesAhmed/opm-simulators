@@ -401,7 +401,7 @@ namespace Opm {
         /// Called once after each time step.
         /// In this class, this function does nothing.
         /// \param[in] timer                  simulation timer
-        SimulatorReportSingle afterStep(const SimulatorTimerInterface& timer OPM_UNUSED)
+        SimulatorReportSingle afterStep(const SimulatorTimerInterface&)
         {
             SimulatorReportSingle report;
             Dune::Timer perfTimer;
@@ -455,7 +455,10 @@ namespace Opm {
                     oilSaturationNew -= saturationsNew[FluidSystem::waterPhaseIdx];
                 }
 
-                if (FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx) && priVarsNew.primaryVarsMeaning() == PrimaryVariables::Sw_po_Sg) {
+                if (FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx) && 
+                    FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx) && 
+                    priVarsNew.primaryVarsMeaning() == PrimaryVariables::Sw_po_Sg) {
+                    assert(Indices::compositionSwitchIdx >= 0 );
                     saturationsNew[FluidSystem::gasPhaseIdx] = priVarsNew[Indices::compositionSwitchIdx];
                     oilSaturationNew -= saturationsNew[FluidSystem::gasPhaseIdx];
                 }
@@ -484,8 +487,10 @@ namespace Opm {
                     }
 
                     if (FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx) &&
+                        FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx) && 
                         priVarsOld.primaryVarsMeaning() == PrimaryVariables::Sw_po_Sg)
                     {
+                        assert(Indices::compositionSwitchIdx >= 0 );
                         saturationsOld[FluidSystem::gasPhaseIdx] = priVarsOld[Indices::compositionSwitchIdx];
                         oilSaturationOld -= saturationsOld[FluidSystem::gasPhaseIdx];
                     }

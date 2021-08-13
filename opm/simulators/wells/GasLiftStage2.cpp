@@ -97,7 +97,7 @@ runOptimize()
 //   saved in "grad_map")
 void
 GasLiftStage2::
-addOrRemoveALQincrement_(GradMap &grad_map, const std::string well_name, bool add)
+addOrRemoveALQincrement_(GradMap &grad_map, const std::string& well_name, bool add)
 {
     // only applies to wells in the well_state_map (i.e. wells on this rank)
     auto it = this->well_state_map_.find(well_name);
@@ -458,7 +458,7 @@ mpiSyncGlobalGradVector_(std::vector<GradPair> &grads_global) const
 
     std::vector<GradPair> grads_local;
     for (auto itr = grads_global.begin(); itr != grads_global.end(); itr++) {
-        if (well_state_map_.count(itr->first) > 0) {
+        if (this->well_state_map_.count(itr->first) > 0) {
             grads_local.push_back(*itr);
         }
     }
@@ -640,15 +640,18 @@ redistributeALQ_(std::vector<GasLiftSingleWell *> &wells,  const Group &group,
     std::vector<GradPair> &inc_grads, std::vector<GradPair> &dec_grads)
 {
     OptimizeState state {*this, group};
-    // NOTE: 'inc_grads' and 'dec_grads' can never grow larger than wells.size()
-    //   By reserving space here, we can ensure that any push_back() on these
-    //   will never reallocate memory and invalidate any iterators.
-    inc_grads.reserve(wells.size());
-    dec_grads.reserve(wells.size());
     if (this->comm_.size() == 1) {
+        // NOTE: 'inc_grads' and 'dec_grads' can never grow larger than wells.size()
+        //   By reserving space here, we can ensure that any push_back() on these
+        //   will never reallocate memory and invalidate any iterators.
+        inc_grads.reserve(wells.size());
+        dec_grads.reserve(wells.size());
         state.calculateEcoGradients(wells, inc_grads, dec_grads);
     }
     else {
+        auto max_size = this->comm_.sum(wells.size());
+        inc_grads.reserve(max_size);
+        dec_grads.reserve(max_size);
         std::vector<GradPair> inc_grads_local;
         std::vector<GradPair> dec_grads_local;
         inc_grads_local.reserve(wells.size());
@@ -662,7 +665,7 @@ redistributeALQ_(std::vector<GasLiftSingleWell *> &wells,  const Group &group,
     if (!state.checkAtLeastTwoWells(wells)) {
         // NOTE: Even though we here in redistributeALQ_() do not use the
         //   economic gradient if there is only a single well, we still
-        //   need to calculate it since inc_grads and dec_grads are returned
+        //   need to calculate it (see above) since inc_grads and dec_grads are returned
         //   and will be used by removeSurplusALQ_() later.
         return;
     }
@@ -702,11 +705,11 @@ GasLiftStage2::
 removeSurplusALQ_(const Group &group,
     std::vector<GradPair> &inc_grads, std::vector<GradPair> &dec_grads)
 {
-    if (dec_grads.size() == 0) {
+    if (dec_grads.empty()) {
         displayDebugMessage2B_("no wells to remove ALQ from. Skipping");
         return;
     }
-    assert(dec_grads.size() > 0);
+    assert(!dec_grads.empty());
     const auto &gl_group = this->glo_.group(group.name());
     const auto &max_glift = gl_group.max_lift_gas();
     const auto controls = group.productionControls(this->summary_state_);
@@ -757,7 +760,7 @@ removeSurplusALQ_(const Group &group,
             // NOTE: recalculateGradientAndUpdateData_() will remove the current gradient
             //   from dec_grads if it cannot calculate a new decremental gradient.
             //   This will invalidate dec_grad_itr and well_name
-            if (dec_grads.size() == 0) stop_iteration = true;
+            if (dec_grads.empty()) stop_iteration = true;
             ++state.it;
         }
         else {
@@ -904,7 +907,7 @@ std::pair<std::optional<GasLiftStage2::GradPairItr>,
 GasLiftStage2::OptimizeState::
 getEcoGradients(std::vector<GradPair> &inc_grads, std::vector<GradPair> &dec_grads)
 {
-    if (inc_grads.size() > 0 && dec_grads.size() > 0) {
+    if (!inc_grads.empty() && !dec_grads.empty()) {
         this->parent.sortGradients_(inc_grads);
         this->parent.sortGradients_(dec_grads);
         // The largest incremental gradient is the last element
@@ -998,7 +1001,7 @@ displayWarning_(const std::string &msg)
 
 void
 GasLiftStage2::SurplusState::
-addOrRemoveALQincrement(GradMap &grad_map, const std::string well_name, bool add)
+addOrRemoveALQincrement(GradMap &grad_map, const std::string& well_name, bool add)
 {
     if (this->parent.debug_) {
         const std::string msg = fmt::format("group: {} : well {} : {} ALQ increment",

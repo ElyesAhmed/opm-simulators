@@ -28,6 +28,7 @@
 #include <opm/simulators/wells/WellState.hpp>
 #include <opm/simulators/wells/SegmentState.hpp>
 #include <opm/simulators/wells/WellContainer.hpp>
+#include <opm/simulators/wells/PerfData.hpp>
 #include <opm/parser/eclipse/Python/Python.hpp>
 
 #include <boost/test/unit_test.hpp>
@@ -288,6 +289,10 @@ BOOST_AUTO_TEST_CASE(Pressure)
             BOOST_CHECK_CLOSE(xseg.pressures[pres_idx], pressTop + 1.0*segID, 1.0e-10);
         }
     }
+
+
+    const auto& perf_data = wstate.perfData("PROD01");
+    (void) perf_data;
 }
 
 // ---------------------------------------------------------------------
@@ -353,7 +358,8 @@ BOOST_AUTO_TEST_CASE(STOP_well)
     std::vector<Opm::ParallelWellInfo> pinfos;
     auto wstate = buildWellState(setup, 0, pinfos);
     for (std::size_t well_index = 0; well_index < setup.sched.numWells(0); well_index++) {
-        for (const auto& p : wstate.perfPress(well_index))
+        const auto& perf_data = wstate.perfData(well_index);
+        for (const auto& p : perf_data.pressure)
             BOOST_CHECK(p > 0);
     }
 }
@@ -426,6 +432,10 @@ BOOST_AUTO_TEST_CASE(TESTWellContainer) {
     BOOST_CHECK_THROW(wc["INVALID_WELL"], std::exception);
     BOOST_CHECK_EQUAL(wc["W1"], 1);
     BOOST_CHECK_EQUAL(wc["W2"], 2);
+    BOOST_CHECK_EQUAL(wc.well_name(0), "W1");
+    BOOST_CHECK_EQUAL(wc.well_name(1), "W2");
+    BOOST_CHECK_THROW(wc.well_name(10), std::exception);
+
 
     Opm::WellContainer<int> wc2;
     wc2.copy_welldata(wc);
@@ -526,6 +536,42 @@ BOOST_AUTO_TEST_CASE(TESTSegmentState2) {
         BOOST_CHECK_EQUAL(segments.pressure[i], 2*(i+1));
 
     BOOST_CHECK_EQUAL( segments.size(), well.getSegments().size() );
+}
+
+
+BOOST_AUTO_TEST_CASE(TESTPerfData) {
+    const auto& deck_string = R"(
+RUNSPEC
+
+OIL
+WATER
+GAS
+)";
+    Opm::PhaseUsage pu = Opm::phaseUsageFromDeck(Opm::Parser{}.parseString(deck_string));
+
+    Opm::PerfData pd1(3, true, pu);
+    Opm::PerfData pd2(3, true, pu);
+    Opm::PerfData pd3(2, true, pu);
+    Opm::PerfData pd4(3, false, pu);
+
+
+    for (std::size_t i = 0; i < 3; i++) {
+        pd1.pressure[i] = i+1;
+        pd2.pressure[i] = 10*(i+1);
+    }
+
+    BOOST_CHECK(pd1.try_assign(pd2));
+    for (std::size_t i = 0; i < 3; i++) {
+        BOOST_CHECK(pd2.pressure[i] == 10*(i+1));
+        BOOST_CHECK(pd1.pressure[i] == 10*(i+1));
+    }
+
+    BOOST_CHECK(!pd1.try_assign(pd3));
+    for (std::size_t i = 0; i < 3; i++) {
+        BOOST_CHECK(pd1.pressure[i] == 10*(i+1));
+    }
+
+    BOOST_CHECK(!pd1.try_assign(pd4));
 }
 
 

@@ -43,6 +43,9 @@ class SummaryState;
 class VFPProperties;
 class WellTestState;
 class WellState;
+class GroupState;
+class Group;
+class Schedule;
 
 class WellInterfaceGeneric {
 public:
@@ -54,7 +57,6 @@ public:
                          const int num_components,
                          const int num_phases,
                          const int index_of_well,
-                         const int first_perf_index,
                          const std::vector<PerforationData>& perf_data);
 
     /// Well name.
@@ -107,25 +109,79 @@ public:
         return this->wellStatus_ == Well::Status::STOP;
     }
 
-protected:
+    int currentStep() const {
+        return this->current_step_;
+    }
+
+    int pvtRegionIdx() const {
+        return pvtRegionIdx_;
+    }
+
+    const GuideRate* guideRate() const {
+        return guide_rate_;
+    }
+
+    int numComponents() const {
+        return num_components_;
+    }
+
+    int numPhases() const {
+        return number_of_phases_;
+    }
+
+    int numPerfs() const {
+        return number_of_perforations_;
+    }
+
+    double refDepth() const {
+        return ref_depth_;
+    }
+
+    double gravity() const {
+        return gravity_;
+    }
+
+    const VFPProperties* vfpProperties() const {
+        return vfp_properties_;
+    }
+
+    const ParallelWellInfo& parallelWellInfo() const {
+        return parallel_well_info_;
+    }
+
+    const std::vector<double>& perfDepth() const {
+        return perf_depth_;
+    }
+
+    std::vector<double>& perfDepth() {
+        return perf_depth_;
+    }
+
+    const std::vector<double>& wellIndex() const {
+        return well_index_;
+    }
+
+    double getTHPConstraint(const SummaryState& summaryState) const;
+    double getALQ(const WellState& well_state) const;
+    double wsolvent() const;
+
     // whether a well is specified with a non-zero and valid VFP table number
     bool isVFPActive(DeferredLogger& deferred_logger) const;
 
+protected:
     bool getAllowCrossFlow() const;
-    double wsolvent() const;
     double mostStrictBhpFromBhpLimits(const SummaryState& summaryState) const;
-    double getTHPConstraint(const SummaryState& summaryState) const;
     void updateWellTestStatePhysical(const WellState& well_state,
                                      const double simulation_time,
                                      const bool write_message_to_opmlog,
                                      WellTestState& well_test_state,
                                      DeferredLogger& deferred_logger) const;
-    double getALQ(const WellState& well_state) const;
+
 
     // definition of the struct OperabilityStatus
     struct OperabilityStatus {
         bool isOperable() const {
-            if (!operable_under_only_bhp_limit) {
+            if (!operable_under_only_bhp_limit || !solvable) {
                 return false;
             } else {
                 return ( (isOperableUnderBHPLimit() || isOperableUnderTHPLimit()) );
@@ -145,6 +201,7 @@ protected:
             obey_thp_limit_under_bhp_limit = true;
             can_obtain_bhp_with_thp_limit = true;
             obey_bhp_limit_with_thp_limit = true;
+            solvable = true;
         }
 
         // whether the well can be operated under bhp limit
@@ -158,6 +215,8 @@ protected:
         bool can_obtain_bhp_with_thp_limit = true;
         // whether the well obey bhp limit when operated under thp limit
         bool obey_bhp_limit_with_thp_limit = true;
+        // the well is solveable
+        bool solvable = true;
     };
 
     OperabilityStatus operability_status_;
@@ -178,10 +237,6 @@ protected:
 
     // the index of well in Wells struct
     int index_of_well_;
-
-    // record the index of the first perforation
-    // of states of individual well.
-    int first_perf_;
 
     const std::vector<PerforationData>* perf_data_;
 

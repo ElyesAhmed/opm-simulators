@@ -32,18 +32,18 @@
 #include <dune/istl/owneroverlapcopy.hh>
 #include <dune/istl/paamg/pinfo.hh>
 
-#include <boost/property_tree/ptree.hpp>
-
 namespace Dune
 {
     /// Create a sequential solver.
     template <class MatrixType, class VectorType>
     FlexibleSolver<MatrixType, VectorType>::
     FlexibleSolver(AbstractOperatorType& op,
-                   const boost::property_tree::ptree& prm,
-                   const std::function<VectorType()>& weightsCalculator)
+                   const Opm::PropertyTree& prm,
+                   const std::function<VectorType()>& weightsCalculator,
+                   std::size_t pressureIndex)
     {
-        init(op, Dune::Amg::SequentialInformation(), prm, weightsCalculator);
+        init(op, Dune::Amg::SequentialInformation(), prm, weightsCalculator,
+             pressureIndex);
     }
 
     /// Create a parallel solver (if Comm is e.g. OwnerOverlapCommunication).
@@ -52,10 +52,11 @@ namespace Dune
     FlexibleSolver<MatrixType, VectorType>::
     FlexibleSolver(AbstractOperatorType& op,
                    const Comm& comm,
-                   const boost::property_tree::ptree& prm,
-                   const std::function<VectorType()>& weightsCalculator)
+                   const Opm::PropertyTree& prm,
+                   const std::function<VectorType()>& weightsCalculator,
+                   std::size_t pressureIndex)
     {
-        init(op, comm, prm, weightsCalculator);
+        init(op, comm, prm, weightsCalculator, pressureIndex);
     }
 
     template <class MatrixType, class VectorType>
@@ -97,20 +98,21 @@ namespace Dune
     void
     FlexibleSolver<MatrixType, VectorType>::
     initOpPrecSp(AbstractOperatorType& op,
-                 const boost::property_tree::ptree& prm,
+                 const Opm::PropertyTree& prm,
                  const std::function<VectorType()> weightsCalculator,
-                 const Comm& comm)
+                 const Comm& comm,
+                 std::size_t pressureIndex)
     {
         // Parallel case.
-        using pt = const boost::property_tree::ptree;
         using ParOperatorType = Dune::OverlappingSchwarzOperator<MatrixType, VectorType, VectorType, Comm>;
         linearoperator_for_solver_ = &op;
         auto op_prec = std::make_shared<ParOperatorType>(op.getmat(), comm);
         auto child = prm.get_child_optional("preconditioner");
         preconditioner_ = Opm::PreconditionerFactory<ParOperatorType, Comm>::create(*op_prec,
-                                                                                    child ? *child : pt(),
+                                                                                    child ? *child : Opm::PropertyTree(),
                                                                                     weightsCalculator,
-                                                                                    comm);
+                                                                                    comm,
+                                                                                    pressureIndex);
         scalarproduct_ = Dune::createScalarProduct<VectorType, Comm>(comm, op.category());
         linearoperator_for_precond_ = op_prec;
     }
@@ -119,19 +121,20 @@ namespace Dune
     void
     FlexibleSolver<MatrixType, VectorType>::
     initOpPrecSp(AbstractOperatorType& op,
-                 const boost::property_tree::ptree& prm,
+                 const Opm::PropertyTree& prm,
                  const std::function<VectorType()> weightsCalculator,
-                 const Dune::Amg::SequentialInformation&)
+                 const Dune::Amg::SequentialInformation&,
+                 std::size_t pressureIndex)
     {
         // Sequential case.
-        using pt = const boost::property_tree::ptree;
         using SeqOperatorType = Dune::MatrixAdapter<MatrixType, VectorType, VectorType>;
         linearoperator_for_solver_ = &op;
         auto op_prec = std::make_shared<SeqOperatorType>(op.getmat());
         auto child = prm.get_child_optional("preconditioner");
         preconditioner_ = Opm::PreconditionerFactory<SeqOperatorType>::create(*op_prec,
-                                                                              child ? *child : pt(),
-                                                                              weightsCalculator);
+                                                                              child ? *child : Opm::PropertyTree(),
+                                                                              weightsCalculator,
+                                                                              pressureIndex);
         scalarproduct_ = std::make_shared<Dune::SeqScalarProduct<VectorType>>();
         linearoperator_for_precond_ = op_prec;
     }
@@ -139,7 +142,7 @@ namespace Dune
     template <class MatrixType, class VectorType>
     void
     FlexibleSolver<MatrixType, VectorType>::
-    initSolver(const boost::property_tree::ptree& prm, const bool is_iorank)
+    initSolver(const Opm::PropertyTree& prm, const bool is_iorank)
     {
         const double tol = prm.get<double>("tol", 1e-2);
         const int maxiter = prm.get<int>("maxiter", 200);
@@ -187,10 +190,11 @@ namespace Dune
     FlexibleSolver<MatrixType, VectorType>::
     init(AbstractOperatorType& op,
          const Comm& comm,
-         const boost::property_tree::ptree& prm,
-         const std::function<VectorType()> weightsCalculator)
+         const Opm::PropertyTree& prm,
+         const std::function<VectorType()> weightsCalculator,
+         std::size_t pressureIndex)
     {
-        initOpPrecSp(op, prm, weightsCalculator, comm);
+        initOpPrecSp(op, prm, weightsCalculator, comm, pressureIndex);
         initSolver(prm, comm.communicator().rank() == 0);
     }
 
@@ -219,12 +223,14 @@ template class Dune::FlexibleSolver<BM<N>, BV<N>>;     \
 template class Dune::FlexibleSolver<OBM<N>, BV<N>>;    \
 template Dune::FlexibleSolver<BM<N>, BV<N>>::FlexibleSolver(AbstractOperatorType& op,                         \
                                                             const Comm& comm,                                 \
-                                                            const boost::property_tree::ptree& prm,           \
-                                                            const std::function<BV<N>()>& weightsCalculator); \
+                                                            const Opm::PropertyTree& prm,                     \
+                                                            const std::function<BV<N>()>& weightsCalculator, \
+std::size_t);                                                                 \
 template Dune::FlexibleSolver<OBM<N>, BV<N>>::FlexibleSolver(AbstractOperatorType& op,                        \
                                                              const Comm& comm,                                \
-                                                             const boost::property_tree::ptree& prm,          \
-                                                             const std::function<BV<N>()>& weightsCalculator);
+                                                             const Opm::PropertyTree& prm,                    \
+                                                             const std::function<BV<N>()>& weightsCalculator, \
+std::size_t);
 
 #else // HAVE_MPI
 

@@ -19,6 +19,7 @@
 
 #include "ParallelRestart.hpp"
 #include <cassert>
+#include <cstdint>
 #include <cstring>
 #include <ctime>
 #include <memory>
@@ -223,6 +224,13 @@ HANDLE_AS_POD(data::Rates)
 HANDLE_AS_POD(data::Segment)
 
 std::size_t packSize(const data::AquiferData& data, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm)
+
+{
+    return packSize(data.initPressure, comm);
+}
+
+std::size_t packSize(const data::AquiferData& data, Dune::MPIHelper::MPICommunicator comm)
+
 {
     const auto type = 0ull;
 
@@ -234,11 +242,20 @@ std::size_t packSize(const data::AquiferData& data, Dune::CollectiveCommunicatio
         + packSize(data.datumDepth, comm)
         + packSize(type, comm);
 
-    if (data.aquFet != nullptr) {
-        return base + packSize(*data.aquFet, comm);
+    if (auto const* aquFet = data.typeData.get<data::AquiferType::Fetkovich>();
+        aquFet != nullptr)
+    {
+        return base + packSize(*aquFet, comm);
     }
-    else if (data.aquCT != nullptr) {
-        return base + packSize(*data.aquCT, comm);
+    else if (auto const* aquCT = data.typeData.get<data::AquiferType::CarterTracy>();
+             aquCT != nullptr)
+    {
+        return base + packSize(*aquCT, comm);
+    }
+    else if (auto const* aquNum = data.typeData.get<data::AquiferType::Numerical>();
+             aquNum != nullptr)
+    {
+        return base + packSize(*aquNum, comm);
     }
 
     return base;
@@ -300,7 +317,9 @@ std::size_t packSize(const data::GroupAndNetworkValues& data, Dune::CollectiveCo
         +  packSize(data.nodeData, comm);
 }
 
+<<<<<<< HEAD
 std::size_t packSize(const data::Wells& data, Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm)
+
 {
     // Needs explicit conversion to a supported base type holding the data
     // to prevent throwing.
@@ -509,12 +528,19 @@ void pack(const std::unordered_map<T1,T2,H,P,A>& data, std::vector<char>& buffer
     }
 }
 
+void pack(const data::NumericAquiferData& data, std::vector<char>& buffer, int& position,
+          Dune::MPIHelper::MPICommunicator comm)
+{
+    pack(data.initPressure, buffer, position, comm);
+}
+
 void pack(const data::AquiferData& data, std::vector<char>& buffer, int& position,
           Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm)
 {
     const auto type =
-          (data.aquFet != nullptr)*(1ull << 0)
-        + (data.aquCT  != nullptr)*(1ull << 1);
+          (data.typeData.is<data::AquiferType::Fetkovich>()   * (1ull << 0))
+        + (data.typeData.is<data::AquiferType::CarterTracy>() * (1ull << 1))
+        + (data.typeData.is<data::AquiferType::Numerical>()   * (1ull << 2));
 
     pack(data.aquiferID, buffer, position, comm);
     pack(data.pressure, buffer, position, comm);
@@ -524,11 +550,20 @@ void pack(const data::AquiferData& data, std::vector<char>& buffer, int& positio
     pack(data.datumDepth, buffer, position, comm);
     pack(type, buffer, position, comm);
 
-    if (data.aquFet != nullptr) {
-        pack(*data.aquFet, buffer, position, comm);
+    if (auto const* aquFet = data.typeData.get<data::AquiferType::Fetkovich>();
+        aquFet != nullptr)
+    {
+        pack(*aquFet, buffer, position, comm);
     }
-    else if (data.aquCT != nullptr) {
-        pack(*data.aquCT, buffer, position, comm);
+    else if (auto const* aquCT = data.typeData.get<data::AquiferType::CarterTracy>();
+             aquCT != nullptr)
+    {
+        pack(*aquCT, buffer, position, comm);
+    }
+    else if (auto const* aquNum = data.typeData.get<data::AquiferType::Numerical>();
+             aquNum != nullptr)
+    {
+        pack(*aquNum, buffer, position, comm);
     }
 }
 
@@ -608,7 +643,7 @@ void pack(const data::Solution& data, std::vector<char>& buffer, int& position,
 }
 
 void pack(const data::Wells& data, std::vector<char>& buffer, int& position,
-          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm)
+          Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 {
     // Needs explicit conversion to a supported base type holding the data
     // to prevent throwing.
@@ -861,6 +896,12 @@ void unpack(data::Well& data, std::vector<char>& buffer, int& position,
     unpack(data.guide_rates, buffer, position, comm);
 }
 
+void unpack(data::NumericAquiferData& data, std::vector<char>& buffer, int& position,
+            Dune::MPIHelper::MPICommunicator comm)
+{
+    unpack(data.initPressure, buffer, position, comm);
+}
+
 void unpack(data::AquiferData& data, std::vector<char>& buffer, int& position,
             Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm)
 {
@@ -874,15 +915,17 @@ void unpack(data::AquiferData& data, std::vector<char>& buffer, int& position,
     unpack(data.datumDepth, buffer, position, comm);
     unpack(type, buffer, position, comm);
 
-    if (type == 1ull) {
-        data.type = data::AquiferType::Fetkovich;
-        data.aquFet = std::make_shared<data::FetkovichData>();
-        unpack(*data.aquFet, buffer, position, comm);
+    if (type == (1ull << 0)) {
+        auto* aquFet = data.typeData.create<data::AquiferType::Fetkovich>();
+        unpack(*aquFet, buffer, position, comm);
     }
-    else if (type == 2ull) {
-        data.type = data::AquiferType::CarterTracy;
-        data.aquCT = std::make_shared<data::CarterTracyData>();
-        unpack(*data.aquCT, buffer, position, comm);
+    else if (type == (1ull << 1)) {
+        auto* aquCT = data.typeData.create<data::AquiferType::CarterTracy>();
+        unpack(*aquCT, buffer, position, comm);
+    }
+    else if (type == (1ull << 2)) {
+        auto* aquNum = data.typeData.create<data::AquiferType::Numerical>();
+        unpack(*aquNum, buffer, position, comm);
     }
 }
 
@@ -945,7 +988,10 @@ void unpack(data::Solution& data, std::vector<char>& buffer, int& position,
 }
 
 void unpack(data::Wells& data, std::vector<char>& buffer, int& position,
-            Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm)
+            Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
+
+
+>>>>>>> upstream/master
 {
     // Needs explicit conversion to a supported base type holding the data
     // to prevent throwing.
@@ -991,12 +1037,16 @@ template void unpack(std::vector<__VA_ARGS__>& data, \
                      std::vector<char>& buffer, int& position, \
                      Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
+INSTANTIATE_PACK_VECTOR(float)
 INSTANTIATE_PACK_VECTOR(double)
 INSTANTIATE_PACK_VECTOR(std::vector<double>)
 INSTANTIATE_PACK_VECTOR(bool)
 INSTANTIATE_PACK_VECTOR(char)
 INSTANTIATE_PACK_VECTOR(int)
-INSTANTIATE_PACK_VECTOR(size_t)
+INSTANTIATE_PACK_VECTOR(unsigned char)
+INSTANTIATE_PACK_VECTOR(unsigned int)
+INSTANTIATE_PACK_VECTOR(unsigned long int)
+INSTANTIATE_PACK_VECTOR(unsigned long long int)
 INSTANTIATE_PACK_VECTOR(std::time_t)
 INSTANTIATE_PACK_VECTOR(std::array<double, 3>)
 INSTANTIATE_PACK_VECTOR(std::pair<bool,double>)
@@ -1020,14 +1070,17 @@ template void unpack(__VA_ARGS__& data, \
                      std::vector<char>& buffer, int& position, \
                      Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> comm);
 
+INSTANTIATE_PACK(float)
 INSTANTIATE_PACK(double)
-INSTANTIATE_PACK(std::size_t)
 INSTANTIATE_PACK(bool)
 INSTANTIATE_PACK(int)
+INSTANTIATE_PACK(unsigned char)
+INSTANTIATE_PACK(unsigned int)
+INSTANTIATE_PACK(unsigned long int)
+INSTANTIATE_PACK(unsigned long long int)
 INSTANTIATE_PACK(std::array<short,3>)
 INSTANTIATE_PACK(std::array<bool,3>)
 INSTANTIATE_PACK(std::array<int,3>)
-INSTANTIATE_PACK(unsigned char)
 INSTANTIATE_PACK(std::map<std::pair<int,int>,std::pair<bool,double>>)
 INSTANTIATE_PACK(std::optional<double>)
 INSTANTIATE_PACK(std::optional<std::string>)

@@ -101,6 +101,20 @@ namespace WellGroupHelpers
                                     std::vector<double>& groupTargetReduction);
 
     template <class Comm>
+    void updateGuideRates(const Group& group,
+                          const Schedule& schedule,
+                          const SummaryState& summary_state,
+                          const PhaseUsage& pu,
+                          int report_step,
+                          double sim_time,
+                          WellState& well_state,
+                          const GroupState& group_state,
+                          const Comm& comm,
+                          GuideRate* guide_rate,
+                          std::vector<double>& pot,
+                          Opm::DeferredLogger& deferred_logge);
+
+    template <class Comm>
     void updateGuideRateForProductionGroups(const Group& group,
                                             const Schedule& schedule,
                                             const PhaseUsage& pu,
@@ -157,6 +171,14 @@ namespace WellGroupHelpers
                                     const WellState& wellStateNupcol,
                                     WellState& wellState,
                                     GroupState& group_state);
+
+    void updateWellRatesFromGroupTargetScale(const double scale,
+                                             const Group& group,
+                                             const Schedule& schedule,
+                                             const int reportStepIdx,
+                                             bool isInjector,
+                                             const GroupState& group_state,
+                                             WellState& wellState);
 
     void updateREINForGroups(const Group& group,
                              const Schedule& schedule,

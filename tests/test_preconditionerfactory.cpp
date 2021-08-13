@@ -29,6 +29,7 @@
     BOOST_VERSION / 100 % 1000 > 48
 
 #include <opm/simulators/linalg/PreconditionerFactory.hpp>
+#include <opm/simulators/linalg/PropertyTree.hpp>
 #include <opm/simulators/linalg/FlexibleSolver.hpp>
 
 #include <dune/common/fvector.hh>
@@ -36,9 +37,6 @@
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/matrixmarket.hh>
 #include <dune/istl/solvers.hh>
-
-#include <boost/property_tree/json_parser.hpp>
-#include <boost/property_tree/ptree.hpp>
 
 #include <fstream>
 #include <iostream>
@@ -70,7 +68,7 @@ public:
 
 template <int bz>
 Dune::BlockVector<Dune::FieldVector<double, bz>>
-testPrec(const boost::property_tree::ptree& prm, const std::string& matrix_filename, const std::string& rhs_filename)
+testPrec(const Opm::PropertyTree& prm, const std::string& matrix_filename, const std::string& rhs_filename)
 {
     using Matrix = Dune::BCRSMatrix<Dune::FieldMatrix<double, bz, bz>>;
     using Vector = Dune::BlockVector<Dune::FieldVector<double, bz>>;
@@ -98,14 +96,12 @@ testPrec(const boost::property_tree::ptree& prm, const std::string& matrix_filen
     if(prm.get<std::string>("preconditioner.type") == "cprt"){
         transpose = true;
     }
-    auto wc = [&matrix, &prm, transpose]()
-                    {
-                        return Opm::Amg::getQuasiImpesWeights<Matrix,
-                                                              Vector>(matrix,
-                                                                      prm.get<int>("preconditioner.pressure_var_index"),
-                                                                      transpose);
-                    };
-    auto prec = PrecFactory::create(op, prm.get_child("preconditioner"), wc);
+    auto wc = [&matrix, transpose]()
+    {
+        return Opm::Amg::getQuasiImpesWeights<Matrix, Vector>(matrix, 1, transpose);
+    };
+
+    auto prec = PrecFactory::create(op, prm.get_child("preconditioner"), wc, 1);
     Dune::BiCGSTABSolver<Vector> solver(op, *prec, prm.get<double>("tol"), prm.get<int>("maxiter"), prm.get<int>("verbosity"));
     Vector x(rhs.size());
     Dune::InverseOperatorResult res;
@@ -113,9 +109,7 @@ testPrec(const boost::property_tree::ptree& prm, const std::string& matrix_filen
     return x;
 }
 
-namespace pt = boost::property_tree;
-
-void test1(const pt::ptree& prm)
+void test1(const Opm::PropertyTree& prm)
 {
     const int bz = 1;
     auto sol = testPrec<bz>(prm, "matr33.txt", "rhs3.txt");
@@ -136,7 +130,7 @@ void test1(const pt::ptree& prm)
     }
 }
 
-void test3(const pt::ptree& prm)
+void test3(const Opm::PropertyTree& prm)
 {
     const int bz = 3;
     auto sol = testPrec<bz>(prm, "matr33.txt", "rhs3.txt");
@@ -155,13 +149,8 @@ void test3(const pt::ptree& prm)
 
 BOOST_AUTO_TEST_CASE(TestDefaultPreconditionerFactory)
 {
-    pt::ptree prm;
-
     // Read parameters.
-    {
-        std::ifstream file("options_flexiblesolver.json");
-        pt::read_json(file, prm);
-    }
+    Opm::PropertyTree prm("options_flexiblesolver.json");
 
     // Test with 1x1 block solvers.
     test1(prm);
@@ -183,14 +172,8 @@ using PF = Opm::PreconditionerFactory<O<bz>>;
 
 BOOST_AUTO_TEST_CASE(TestAddingPreconditioner)
 {
-    namespace pt = boost::property_tree;
-    pt::ptree prm;
-
     // Read parameters.
-    {
-        std::ifstream file("options_flexiblesolver_simple.json"); // Requests "nothing" for preconditioner type.
-        pt::read_json(file, prm);
-    }
+    Opm::PropertyTree prm("options_flexiblesolver_simple.json");
 
     // Test with 1x1 block solvers.
     {
@@ -206,7 +189,8 @@ BOOST_AUTO_TEST_CASE(TestAddingPreconditioner)
 
 
     // Add preconditioner to factory for block size 1.
-    PF<1>::addCreator("nothing", [](const O<1>&, const pt::ptree&, const std::function<V<1>()>&) {
+    PF<1>::addCreator("nothing", [](const O<1>&, const Opm::PropertyTree&, const std::function<V<1>()>&,
+                                    std::size_t) {
             return Dune::wrapPreconditioner<NothingPreconditioner<V<1>>>();
         });
 
@@ -221,7 +205,8 @@ BOOST_AUTO_TEST_CASE(TestAddingPreconditioner)
     }
 
     // Add preconditioner to factory for block size 3.
-    PF<3>::addCreator("nothing", [](const O<3>&, const pt::ptree&, const std::function<V<3>()>&) {
+    PF<3>::addCreator("nothing", [](const O<3>&, const Opm::PropertyTree&, const std::function<V<3>()>&,
+                                    std::size_t) {
             return Dune::wrapPreconditioner<NothingPreconditioner<V<3>>>();
         });
 
@@ -288,7 +273,7 @@ protected:
 
 template <int bz>
 Dune::BlockVector<Dune::FieldVector<double, bz>>
-testPrecRepeating(const boost::property_tree::ptree& prm, const std::string& matrix_filename, const std::string& rhs_filename)
+testPrecRepeating(const Opm::PropertyTree& prm, const std::string& matrix_filename, const std::string& rhs_filename)
 {
     using Matrix = Dune::BCRSMatrix<Dune::FieldMatrix<double, bz, bz>>;
     using Vector = Dune::BlockVector<Dune::FieldVector<double, bz>>;
@@ -313,7 +298,8 @@ testPrecRepeating(const boost::property_tree::ptree& prm, const std::string& mat
     using PrecFactory = Opm::PreconditionerFactory<Operator>;
 
     // Add no-oppreconditioner to factory for block size 1.
-    PrecFactory::addCreator("nothing", [](const Operator&, const pt::ptree&, const std::function<Vector()>&) {
+    PrecFactory::addCreator("nothing", [](const Operator&, const Opm::PropertyTree&, const std::function<Vector()>&,
+                                          std::size_t) {
         return Dune::wrapPreconditioner<NothingPreconditioner<Vector>>();
     });
 
@@ -325,7 +311,7 @@ testPrecRepeating(const boost::property_tree::ptree& prm, const std::string& mat
     return x;
 }
 
-void test1rep(const pt::ptree& prm)
+void test1rep(const Opm::PropertyTree& prm)
 {
     const int bz = 1;
     auto sol = testPrecRepeating<bz>(prm, "matr33rep.txt", "rhs3rep.txt");
@@ -346,7 +332,7 @@ void test1rep(const pt::ptree& prm)
     }
 }
 
-void test3rep(const pt::ptree& prm)
+void test3rep(const Opm::PropertyTree& prm)
 {
     const int bz = 3;
     auto sol = testPrecRepeating<bz>(prm, "matr33rep.txt", "rhs3rep.txt");
@@ -366,13 +352,8 @@ void test3rep(const pt::ptree& prm)
 
 BOOST_AUTO_TEST_CASE(TestWithRepeatingOperator)
 {
-    pt::ptree prm;
-
     // Read parameters.
-    {
-        std::ifstream file("options_flexiblesolver_simple.json");
-        pt::read_json(file, prm);
-    }
+    Opm::PropertyTree prm("options_flexiblesolver_simple.json");
 
     // Test with 1x1 block solvers.
     test1rep(prm);

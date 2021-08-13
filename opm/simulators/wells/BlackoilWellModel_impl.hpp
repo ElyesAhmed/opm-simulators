@@ -25,6 +25,8 @@
 
 #include <opm/parser/eclipse/Units/UnitSystem.hpp>
 
+#include <opm/simulators/wells/VFPProperties.hpp>
+
 #include <algorithm>
 #include <utility>
 
@@ -34,17 +36,15 @@ namespace Opm {
     template<typename TypeTag>
     BlackoilWellModel<TypeTag>::
     BlackoilWellModel(Simulator& ebosSimulator, const PhaseUsage& phase_usage)
-        : ebosSimulator_(ebosSimulator)
-        , terminal_output_((ebosSimulator.gridView().comm().rank() == 0) &&
-                           EWOMS_GET_PARAM(TypeTag, bool, EnableTerminalOutput))
-        , phase_usage_(phase_usage)
-        , active_wgstate_(phase_usage)
-        , last_valid_wgstate_(phase_usage)
-        , nupcol_wgstate_(phase_usage)
+        : BlackoilWellModelGeneric(ebosSimulator.vanguard().schedule(),
+                                   ebosSimulator.vanguard().summaryState(),
+                                   ebosSimulator.vanguard().eclState(),
+                                   phase_usage,
+                                   ebosSimulator.gridView().comm())
+        , ebosSimulator_(ebosSimulator)
     {
-        // Create the guide rate container.
-        this->guideRate_ =
-            std::make_unique<GuideRate>(ebosSimulator_.vanguard().schedule());
+        terminal_output_ = ((ebosSimulator.gridView().comm().rank() == 0) &&
+                           EWOMS_GET_PARAM(TypeTag, bool, EnableTerminalOutput));
 
         local_num_cells_ = ebosSimulator_.gridView().size(0);
 
@@ -62,21 +62,6 @@ namespace Opm {
             this->parallel_well_info_.assign(parallel_wells.begin(),
                                              parallel_wells.end());
         }
-
-        const auto numProcs = ebosSimulator.gridView().comm().size();
-        this->not_on_process_ = [this, numProcs](const Well& well) {
-            if (numProcs == decltype(numProcs){1})
-                return false;
-
-            // Recall: false indicates NOT active!
-            const auto value = std::make_pair(well.name(), true);
-            auto candidate = std::lower_bound(this->parallel_well_info_.begin(),
-                                              this->parallel_well_info_.end(),
-                                              value);
-
-            return (candidate == this->parallel_well_info_.end())
-                || (*candidate != value);
-        };
 
         this->alternative_well_rate_init_ =
             EWOMS_GET_PARAM(TypeTag, bool, AlternativeWellRateInit);
@@ -105,6 +90,18 @@ namespace Opm {
         ebosSimulator_.model().addAuxiliaryModule(this);
 
         is_cell_perforated_.resize(local_num_cells_, false);
+    }
+
+
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    initWellContainer()
+    {
+        for (auto& wellPtr : this->well_container_) {
+            wellPtr->init(&this->phase_usage_, this->depth_, this->gravity_,
+                          this->local_num_cells_, this->B_avg_);
+        }
     }
 
     template<typename TypeTag>
@@ -173,88 +170,6 @@ namespace Opm {
     }
 
 
-    /// Return true if any well has a THP constraint.
-    template<typename TypeTag>
-    bool
-    BlackoilWellModel<TypeTag>::
-    hasTHPConstraints() const
-    {
-        int local_result = false;
-        const auto& summaryState = ebosSimulator_.vanguard().summaryState();
-        for (const auto& well : well_container_) {
-            if (well->wellHasTHPConstraints(summaryState)) {
-                local_result=true;
-            }
-        }
-        return grid().comm().max(local_result);
-    }
-
-
-
-
-    /// Return true if the well was found and shut.
-    template<typename TypeTag>
-    bool
-    BlackoilWellModel<TypeTag>::
-    forceShutWellByNameIfPredictionMode(const std::string& wellname,
-                                        const double simulation_time)
-    {
-        // Only add the well to the closed list on the
-        // process that owns it.
-        int well_was_shut = 0;
-        for (const auto& well : well_container_) {
-            if (well->name() == wellname && !well->wellIsStopped()) {
-                if (well->underPredictionMode()) {
-                    wellTestState_.closeWell(wellname, WellTestConfig::Reason::PHYSICAL, simulation_time);
-                    well_was_shut = 1;
-                }
-                break;
-            }
-        }
-
-        // Communicate across processes if a well was shut.
-        well_was_shut = ebosSimulator_.vanguard().grid().comm().max(well_was_shut);
-
-        // Only log a message on the output rank.
-        if (terminal_output_ && well_was_shut) {
-            const std::string msg = "Well " + wellname
-                + " will be shut because it cannot get converged.";
-            OpmLog::info(msg);
-        }
-
-        return (well_was_shut == 1);
-    }
-
-
-    template<typename TypeTag>
-    std::vector< Well >
-    BlackoilWellModel<TypeTag>::
-    getLocalWells(const int timeStepIdx) const
-    {
-        auto w = schedule().getWells(timeStepIdx);
-        w.erase(std::remove_if(w.begin(), w.end(), not_on_process_), w.end());
-        return w;
-    }
-
-    template<typename TypeTag>
-    std::vector< ParallelWellInfo* >
-    BlackoilWellModel<TypeTag>::createLocalParallelWellInfo(const std::vector<Well>& wells)
-    {
-        std::vector< ParallelWellInfo* > local_parallel_well_info;
-        local_parallel_well_info.reserve(wells.size());
-        for (const auto& well : wells)
-        {
-            auto wellPair = std::make_pair(well.name(), true);
-            auto pwell = std::lower_bound(parallel_well_info_.begin(),
-                                          parallel_well_info_.end(),
-                                          wellPair);
-            assert(pwell != parallel_well_info_.end() &&
-                   *pwell == wellPair);
-            local_parallel_well_info.push_back(&(*pwell));
-        }
-        return local_parallel_well_info;
-    }
-
     template<typename TypeTag>
     void
     BlackoilWellModel<TypeTag>::
@@ -318,9 +233,10 @@ namespace Opm {
         DeferredLogger local_deferredLogger;
 
         this->resetWGState();
-        updateAndCommunicateGroupData();
-        this->wellState().gliftTimeStepInit();
         const int reportStepIdx = ebosSimulator_.episodeIndex();
+        updateAndCommunicateGroupData(reportStepIdx,
+                                      ebosSimulator_.model().newtonMethod().numIterations());
+        this->wellState().gliftTimeStepInit();
         const double simulationTime = ebosSimulator_.time();
         std::string exc_msg;
         auto exc_type = ExceptionType::NONE;
@@ -329,14 +245,12 @@ namespace Opm {
             wellTesting(reportStepIdx, simulationTime, local_deferredLogger);
 
             // create the well container
-            well_container_ = createWellContainer(reportStepIdx);
+            createWellContainer(reportStepIdx);
 
             // do the initialization for all the wells
             // TODO: to see whether we can postpone of the intialization of the well containers to
             // optimize the usage of the following several member variables
-            for (auto& well : well_container_) {
-                well->init(&phase_usage_, depth_, gravity_, local_num_cells_, B_avg_);
-            }
+            this->initWellContainer();
 
             // update the updated cell flag
             std::fill(is_cell_perforated_.begin(), is_cell_perforated_.end(), false);
@@ -371,7 +285,7 @@ namespace Opm {
 
         for (auto& well : well_container_) {
             well->setVFPProperties(vfp_properties_.get());
-            well->setGuideRate(guideRate_.get());
+            well->setGuideRate(&guideRate_);
         }
 
         // Close completions due to economical reasons
@@ -381,7 +295,10 @@ namespace Opm {
 
         // calculate the well potentials
         try {
-            updateWellPotentials(reportStepIdx, /*onlyAfterEvent*/true, local_deferredLogger);
+            updateWellPotentials(reportStepIdx,
+                                 /*onlyAfterEvent*/true,
+                                 ebosSimulator_.vanguard().summaryConfig(),
+                                 local_deferredLogger);
         } catch ( std::runtime_error& e ) {
             const std::string msg = "A zero well potential is returned for output purposes. ";
             local_deferredLogger.warning("WELL_POTENTIAL_CALCULATION_FAILED", msg);
@@ -404,10 +321,8 @@ namespace Opm {
         const auto& summaryState = ebosSimulator_.vanguard().summaryState();
         std::vector<double> pot(numPhases(), 0.0);
         const Group& fieldGroup = schedule().getGroup("FIELD", reportStepIdx);
-        WellGroupHelpers::updateGuideRateForProductionGroups(fieldGroup, schedule(), phase_usage_, reportStepIdx, simulationTime, this->wellState(), this->groupState(), comm, guideRate_.get(), pot);
-        WellGroupHelpers::updateGuideRatesForInjectionGroups(fieldGroup, schedule(), summaryState, phase_usage_, reportStepIdx, this->wellState(), this->groupState(), guideRate_.get(), local_deferredLogger);
-        WellGroupHelpers::updateGuideRatesForWells(schedule(), phase_usage_, reportStepIdx, simulationTime, this->wellState(), comm, guideRate_.get());
-
+        WellGroupHelpers::updateGuideRates(fieldGroup, schedule(), summaryState, this->phase_usage_, reportStepIdx, simulationTime,
+                                           this->wellState(), this->groupState(), comm, &this->guideRate_, pot, local_deferredLogger);
         try {
             // Compute initial well solution for new wells and injectors that change injection type i.e. WAG.
             for (auto& well : well_container_) {
@@ -420,7 +335,7 @@ namespace Opm {
                 const bool event = report_step_starts_ && events.hasEvent(well->name(), effective_events_mask);
                 if (event) {
                     try {
-                        well->updateWellStateWithTarget(ebosSimulator_, this->wellState(), local_deferredLogger);
+                        well->updateWellStateWithTarget(ebosSimulator_, this->groupState(), this->wellState(), local_deferredLogger);
                         well->calculateExplicitQuantities(ebosSimulator_, this->wellState(), local_deferredLogger);
                         well->solveWellEquation(ebosSimulator_, this->wellState(), this->groupState(), local_deferredLogger);
                     } catch (const std::exception& e) {
@@ -455,18 +370,6 @@ namespace Opm {
 
     template<typename TypeTag>
     void
-    BlackoilWellModel<TypeTag>::gliftDebug(
-        const std::string &msg, DeferredLogger &deferred_logger) const
-    {
-        if (this->glift_debug) {
-            const std::string message = fmt::format(
-                "  GLIFT (DEBUG) : BlackoilWellModel : {}", msg);
-            deferred_logger.info(message);
-        }
-    }
-
-    template<typename TypeTag>
-    void
     BlackoilWellModel<TypeTag>::wellTesting(const int timeStepIdx,
                                             const double simulationTime,
                                             DeferredLogger& deferred_logger)
@@ -491,7 +394,7 @@ namespace Opm {
 
                 well->setWellEfficiencyFactor(well_efficiency_factor);
                 well->setVFPProperties(vfp_properties_.get());
-                well->setGuideRate(guideRate_.get());
+                well->setGuideRate(&guideRate_);
 
                 const WellTestConfig::Reason testing_reason = testWell.second;
 
@@ -550,22 +453,27 @@ namespace Opm {
                 well->updateWaterThroughput(dt, this->wellState());
             }
         }
-        updateWellTestState(simulationTime, wellTestState_);
 
         // update the rate converter with current averages pressures etc in
         rateConverter_->template defineState<ElementContext>(ebosSimulator_);
 
         // calculate the well potentials
         try {
-            updateWellPotentials(reportStepIdx, /*onlyAfterEvent*/false, local_deferredLogger);
+            updateWellPotentials(reportStepIdx,
+                                 /*onlyAfterEvent*/false,
+                                 ebosSimulator_.vanguard().summaryConfig(),
+                                 local_deferredLogger);
         } catch ( std::runtime_error& e ) {
             const std::string msg = "A zero well potential is returned for output purposes. ";
             local_deferredLogger.warning("WELL_POTENTIAL_CALCULATION_FAILED", msg);
         }
 
+        updateWellTestState(simulationTime, wellTestState_);
+
         // check group sales limits at the end of the timestep
         const Group& fieldGroup = schedule().getGroup("FIELD", reportStepIdx);
-        checkGconsaleLimits(fieldGroup, this->wellState(), local_deferredLogger);
+        checkGconsaleLimits(fieldGroup, this->wellState(),
+                            ebosSimulator_.episodeIndex(), local_deferredLogger);
 
         this->calculateProductivityIndexValues(local_deferredLogger);
 
@@ -617,119 +525,6 @@ namespace Opm {
         return nullptr;
     }
 
-    template<typename TypeTag>
-    void
-    BlackoilWellModel<TypeTag>::
-    initFromRestartFile(const RestartValue& restartValues)
-    {
-        // The restart step value is used to identify wells present at the given
-        // time step. Wells that are added at the same time step as RESTART is initiated
-        // will not be present in a restart file. Use the previous time step to retrieve
-        // wells that have information written to the restart file.
-        const int report_step = std::max(eclState().getInitConfig().getRestartStep() - 1, 0);
-        const auto& summaryState = ebosSimulator_.vanguard().summaryState();
-        // wells_ecl_ should only contain wells on this processor.
-        wells_ecl_ = getLocalWells(report_step);
-        local_parallel_well_info_ = createLocalParallelWellInfo(wells_ecl_);
-
-        this->initializeWellProdIndCalculators();
-        initializeWellPerfData();
-
-        const int nw = wells_ecl_.size();
-        if (nw > 0) {
-            const auto phaseUsage = phaseUsageFromDeck(eclState());
-            const size_t numCells = UgGridHelpers::numCells(grid());
-            const bool handle_ms_well = (param_.use_multisegment_well_ && anyMSWellOpenLocal());
-            this->wellState().resize(wells_ecl_, local_parallel_well_info_, schedule(), handle_ms_well, numCells, well_perf_data_, summaryState); // Resize for restart step
-            loadRestartData(restartValues.wells, restartValues.grp_nwrk, phaseUsage, handle_ms_well, this->wellState());
-        }
-
-        this->commitWGState();
-        initial_step_ = false;
-    }
-
-
-
-
-
-    template<typename TypeTag>
-    void
-    BlackoilWellModel<TypeTag>::
-    initializeWellProdIndCalculators()
-    {
-        this->prod_index_calc_.clear();
-        this->prod_index_calc_.reserve(this->wells_ecl_.size());
-        for (const auto& well : this->wells_ecl_) {
-            this->prod_index_calc_.emplace_back(well);
-        }
-    }
-
-
-
-
-
-    template<typename TypeTag>
-    void
-    BlackoilWellModel<TypeTag>::
-    initializeWellPerfData()
-    {
-        well_perf_data_.resize(wells_ecl_.size());
-        int well_index = 0;
-        for (const auto& well : wells_ecl_) {
-            int completion_index = 0;
-            // INVALID_ECL_INDEX marks no above perf available
-            int completion_index_above = ParallelWellInfo::INVALID_ECL_INDEX;
-            well_perf_data_[well_index].clear();
-            well_perf_data_[well_index].reserve(well.getConnections().size());
-            CheckDistributedWellConnections checker(well, *local_parallel_well_info_[well_index]);
-            bool hasFirstPerforation = false;
-            bool firstOpenCompletion = true;
-            auto& parallelWellInfo = *local_parallel_well_info_[well_index];
-            parallelWellInfo.beginReset();
-
-            for (const auto& completion : well.getConnections()) {
-                const int active_index =
-                    cartesian_to_compressed_[completion.global_index()];
-                if (completion.state() == Connection::State::OPEN) {
-                    if (active_index >= 0) {
-                        if (firstOpenCompletion)
-                        {
-                            hasFirstPerforation = true;
-                        }
-                        checker.connectionFound(completion_index);
-                        PerforationData pd;
-                        pd.cell_index = active_index;
-                        pd.connection_transmissibility_factor = completion.CF();
-                        pd.satnum_id = completion.satTableId();
-                        pd.ecl_index = completion_index;
-                        well_perf_data_[well_index].push_back(pd);
-                        parallelWellInfo.pushBackEclIndex(completion_index_above,
-                                                          completion_index);
-                    }
-                    firstOpenCompletion = false;
-                    // Next time this index is the one above as each open completion is
-                    // is stored somehwere.
-                    completion_index_above = completion_index;
-                } else {
-                    checker.connectionFound(completion_index);
-                    if (completion.state() != Connection::State::SHUT) {
-                        OPM_THROW(std::runtime_error,
-                                  "Completion state: " << Connection::State2String(completion.state()) << " not handled");
-                    }
-                }
-                // Note: we rely on the connections being filtered! I.e. there are only connections
-                // to active cells in the global grid.
-                ++completion_index;
-            }
-            parallelWellInfo.endReset();
-            checker.checkAllConnectionsFound();
-            parallelWellInfo.communicateFirstPerforation(hasFirstPerforation);
-            ++well_index;
-        }
-    }
-
-
-
 
 
     template<typename TypeTag>
@@ -776,21 +571,27 @@ namespace Opm {
 
 
     template<typename TypeTag>
-    std::vector<typename BlackoilWellModel<TypeTag>::WellInterfacePtr >
+    void
     BlackoilWellModel<TypeTag>::
     createWellContainer(const int time_step)
     {
-        std::vector<WellInterfacePtr> well_container;
-
         DeferredLogger local_deferredLogger;
 
         const int nw = numLocalWells();
 
+        well_container_.clear();
+
         if (nw > 0) {
-            well_container.reserve(nw);
+            well_container_.reserve(nw);
 
             for (int w = 0; w < nw; ++w) {
                 const Well& well_ecl = wells_ecl_[w];
+
+                if (well_ecl.getConnections().empty()) {
+                    // No connections in this well.  Nothing to do.
+                    continue;
+                }
+
                 const std::string& well_name = well_ecl.name();
                 const auto well_status = this->schedule()
                     .getWell(well_name, time_step).getStatus();
@@ -894,10 +695,10 @@ namespace Opm {
                     wellIsStopped = true;
                 }
 
-                well_container.emplace_back(this->createWellPointer(w, time_step));
+                well_container_.emplace_back(this->createWellPointer(w, time_step));
 
                 if (wellIsStopped)
-                    well_container.back()->stopWell();
+                    well_container_.back()->stopWell();
             }
         }
 
@@ -908,31 +709,9 @@ namespace Opm {
             global_deferredLogger.logMessages();
         }
 
-        return well_container;
-    }
-
-
-
-
-
-    template <typename TypeTag>
-    void BlackoilWellModel<TypeTag>::
-    inferLocalShutWells()
-    {
-        this->local_shut_wells_.clear();
-
-        const auto nw = this->numLocalWells();
-
-        auto used = std::vector<bool>(nw, false);
-        for (const auto& wellPtr : this->well_container_) {
-            used[wellPtr->indexOfWell()] = true;
-        }
-
-        for (auto wellID = 0; wellID < nw; ++wellID) {
-            if (! used[wellID]) {
-                this->local_shut_wells_.push_back(wellID);
-            }
-        }
+        well_container_generic_.clear();
+        for (auto& w : well_container_)
+          well_container_generic_.push_back(w.get());
     }
 
 
@@ -983,7 +762,6 @@ namespace Opm {
                                           this->numComponents(),
                                           this->numPhases(),
                                           wellID,
-                                          this->wellState().firstPerfIndex()[wellID],
                                           perf_data);
     }
 
@@ -1080,58 +858,166 @@ namespace Opm {
     BlackoilWellModel<TypeTag>::
     maybeDoGasLiftOptimize(DeferredLogger& deferred_logger)
     {
-        this->wellState().enableGliftOptimization();
-        GLiftOptWells glift_wells;
-        GLiftProdWells prod_wells;
-        GLiftWellStateMap state_map;
-        // Stage1: Optimize single wells not checking any group limits
-        for (auto& well : well_container_) {
-            well->gasLiftOptimizationStage1(
-                this->wellState(), ebosSimulator_, deferred_logger,
-                prod_wells, glift_wells, state_map);
+        if (checkDoGasLiftOptimization(deferred_logger)) {
+            GLiftOptWells glift_wells;
+            GLiftProdWells prod_wells;
+            GLiftWellStateMap state_map;
+            // NOTE: To make GasLiftGroupInfo (see below) independent of the TypeTag
+            //  associated with *this (i.e. BlackoilWellModel<TypeTag>) we observe
+            //  that GasLiftGroupInfo's only dependence on *this is that it needs to
+            //  access the eclipse Wells in the well container (the eclipse Wells
+            //  themselves are independent of the TypeTag).
+            //  Hence, we extract them from the well container such that we can pass
+            //  them to the GasLiftGroupInfo constructor.
+            GLiftEclWells ecl_well_map;
+            initGliftEclWellMap(ecl_well_map);
+            GasLiftGroupInfo group_info {
+                ecl_well_map,
+                ebosSimulator_.vanguard().schedule(),
+                ebosSimulator_.vanguard().summaryState(),
+                ebosSimulator_.episodeIndex(),
+                ebosSimulator_.model().newtonMethod().numIterations(),
+                phase_usage_,
+                deferred_logger,
+                this->wellState(),
+                ebosSimulator_.vanguard().grid().comm()
+            };
+            group_info.initialize();
+            gasLiftOptimizationStage1(
+                deferred_logger, prod_wells, glift_wells, group_info, state_map);
+            gasLiftOptimizationStage2(
+                deferred_logger, prod_wells, glift_wells, state_map,
+                ebosSimulator_.episodeIndex());
+            if (this->glift_debug) gliftDebugShowALQ(deferred_logger);
         }
-        gasLiftOptimizationStage2(deferred_logger, prod_wells, glift_wells, state_map);
-        if (this->glift_debug) gliftDebugShowALQ(deferred_logger);
-        this->wellState().disableGliftOptimization();
     }
 
-    // If a group has any production rate constraints, and/or a limit
-    // on its total rate of lift gas supply,  allocate lift gas
-    // preferentially to the wells that gain the most benefit from
-    // it. Lift gas increments are allocated in turn to the well that
-    // currently has the largest weighted incremental gradient. The
-    // procedure takes account of any limits on the group production
-    // rate or lift gas supply applied to any level of group.
     template<typename TypeTag>
     void
     BlackoilWellModel<TypeTag>::
-    gasLiftOptimizationStage2(DeferredLogger& deferred_logger,
+    gasLiftOptimizationStage1(DeferredLogger& deferred_logger,
         GLiftProdWells &prod_wells, GLiftOptWells &glift_wells,
-        GLiftWellStateMap &glift_well_state_map)
+        GasLiftGroupInfo &group_info, GLiftWellStateMap &state_map)
     {
+        auto comm = ebosSimulator_.vanguard().grid().comm();
+        int num_procs = comm.size();
+        // NOTE: Gas lift optimization stage 1 seems to be difficult
+        //  to do in parallel since the wells are optimized on different
+        //  processes and each process needs to know the current ALQ allocated
+        //  to each group it is a memeber of in order to check group limits and avoid
+        //  allocating more ALQ than necessary.  (Surplus ALQ is removed in
+        //  stage 2). In stage1, as each well is adding ALQ, the current group ALQ needs
+        //  to be communicated to the other processes.  But there is no common
+        //  synchronization point that all process will reach in the
+        //  runOptimizeLoop_() in GasLiftSingleWell.cpp.
+        //
+        //  TODO: Maybe a better solution could be invented by distributing
+        //    wells according to certain parent groups. Then updated group rates
+        //    might not have to be communicated to the other processors.
 
-        GasLiftStage2 glift {this->ebosSimulator_.episodeIndex(),
-                             this->ebosSimulator_.vanguard().grid().comm(),
-                             ebosSimulator_.vanguard().schedule(),
-                             ebosSimulator_.vanguard().summaryState(),
-                             deferred_logger, this->wellState(),
-                             prod_wells, glift_wells, glift_well_state_map};
-        glift.runOptimize();
-    }
-
-    template<typename TypeTag>
-    void
-    BlackoilWellModel<TypeTag>::
-    gliftDebugShowALQ(DeferredLogger& deferred_logger)
-    {
-        for (auto& well : this->well_container_) {
-            if (well->isProducer()) {
-                auto alq = this->wellState().getALQ(well->name());
-                const std::string msg = fmt::format("ALQ_REPORT : {} : {}",
-                    well->name(), alq);
-                gliftDebug(msg, deferred_logger);
+        //  Currently, the best option seems to be to run this part sequentially
+        //    (not in parallel).
+        //
+        //  TODO: The simplest approach seems to be if a) one process could take
+        //    ownership of all the wells (the union of all the wells in the
+        //    well_container_ of each process) then this process could do the
+        //    optimization, while the other processes could wait for it to
+        //    finish (e.g. comm.barrier()), or alternatively, b) if all
+        //    processes could take ownership of all the wells.  Then there
+        //    would be no need for synchronization here..
+        //
+        for (int i = 0; i< num_procs; i++) {
+            int num_rates_to_sync = 0;  // communication variable
+            GLiftSyncGroups groups_to_sync;
+            if (comm.rank() ==  i) {
+                // Run stage1: Optimize single wells while also checking group limits
+                for (const auto& well : well_container_) {
+                    // NOTE: Only the wells in "group_info" needs to be optimized
+                    if (group_info.hasWell(well->name())) {
+                        well->gasLiftOptimizationStage1(
+                            this->wellState(), this->groupState(), ebosSimulator_, deferred_logger,
+                            prod_wells, glift_wells, state_map,
+                            group_info, groups_to_sync);
+                    }
+                }
+                num_rates_to_sync = groups_to_sync.size();
+            }
+            // Since "group_info" is not used in stage2, there is no need to
+            //   communicate rates if this is the last iteration...
+            if (i == (num_procs - 1))
+                break;
+            num_rates_to_sync = comm.sum(num_rates_to_sync);
+            if (num_rates_to_sync > 0) {
+                std::vector<int> group_indexes;
+                group_indexes.reserve(num_rates_to_sync);
+                std::vector<double> group_alq_rates;
+                group_alq_rates.reserve(num_rates_to_sync);
+                std::vector<double> group_oil_rates;
+                group_oil_rates.reserve(num_rates_to_sync);
+                std::vector<double> group_gas_rates;
+                group_gas_rates.reserve(num_rates_to_sync);
+                if (comm.rank() == i) {
+                    for (auto idx : groups_to_sync) {
+                        auto [oil_rate, gas_rate, alq] = group_info.getRates(idx);
+                        group_indexes.push_back(idx);
+                        group_oil_rates.push_back(oil_rate);
+                        group_gas_rates.push_back(gas_rate);
+                        group_alq_rates.push_back(alq);
+                    }
+                }
+                // TODO: We only need to broadcast to processors with index
+                //   j > i since we do not use the "group_info" in stage 2. In
+                //   this case we should use comm.send() and comm.receive()
+                //   instead of comm.broadcast() to communicate with specific
+                //   processes, and these processes only need to receive the
+                //   data if they are going to check the group rates in stage1
+                //   Another similar idea is to only communicate the rates to
+                //   process j = i + 1
+                comm.broadcast(group_indexes.data(), num_rates_to_sync, i);
+                comm.broadcast(group_oil_rates.data(), num_rates_to_sync, i);
+                comm.broadcast(group_gas_rates.data(), num_rates_to_sync, i);
+                comm.broadcast(group_alq_rates.data(), num_rates_to_sync, i);
+                if (comm.rank() != i) {
+                    for (int j=0; j<num_rates_to_sync; j++) {
+                        group_info.updateRate(group_indexes[j],
+                            group_oil_rates[j], group_gas_rates[j], group_alq_rates[j]);
+                    }
+                }
             }
         }
+    }
+
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    initGliftEclWellMap(GLiftEclWells &ecl_well_map)
+    {
+        for ( const auto& well: well_container_ ) {
+            ecl_well_map.try_emplace(
+                well->name(), &(well->wellEcl()), well->indexOfWell());
+        }
+    }
+
+    template<typename TypeTag>
+    bool
+    BlackoilWellModel<TypeTag>::
+    checkDoGasLiftOptimization(Opm::DeferredLogger& deferred_logger)
+    {
+        gliftDebug("checking if GLIFT should be done..", deferred_logger);
+        /*
+        std::size_t num_procs = ebosSimulator_.gridView().comm().size();
+        if (num_procs > 1u) {
+            const std::string msg = fmt::format("  GLIFT: skipping optimization. "
+                "Parallel run not supported yet: num procs = {}", num_procs);
+            deferred_logger.warning(msg);
+            return false;
+        }
+        */
+        if (!(this->wellState().gliftOptimizationEnabled())) {
+            gliftDebug("Optimization disabled in WellState", deferred_logger);
+            return false;
+        }
+        return true;
     }
 
     template<typename TypeTag>
@@ -1276,42 +1162,6 @@ namespace Opm {
 
 
     template<typename TypeTag>
-    bool
-    BlackoilWellModel<TypeTag>::
-    wellsActive() const
-    {
-        return wells_active_;
-    }
-
-
-
-
-
-    template<typename TypeTag>
-    void
-    BlackoilWellModel<TypeTag>::
-    setWellsActive(const bool wells_active)
-    {
-        wells_active_ = wells_active;
-    }
-
-
-
-
-
-    template<typename TypeTag>
-    bool
-    BlackoilWellModel<TypeTag>::
-    localWellsActive() const
-    {
-        return numLocalWells() > 0;
-    }
-
-
-
-
-
-    template<typename TypeTag>
     void
     BlackoilWellModel<TypeTag>::
     initPrimaryVariablesEvaluation() const
@@ -1362,7 +1212,9 @@ namespace Opm {
         if (checkGroupConvergence) {
             const int reportStepIdx = ebosSimulator_.episodeIndex();
             const Group& fieldGroup = schedule().getGroup("FIELD", reportStepIdx);
-            bool violated = checkGroupConstraints(fieldGroup, global_deferredLogger);
+            bool violated = checkGroupConstraints(fieldGroup,
+                                                  ebosSimulator_.episodeIndex(),
+                                                  global_deferredLogger);
             report.setGroupConverged(!violated);
         }
         return report;
@@ -1397,21 +1249,26 @@ namespace Opm {
         // For no well active globally we simply return.
         if( !wellsActive() ) return ;
 
-        updateAndCommunicateGroupData();
+        const int episodeIdx = ebosSimulator_.episodeIndex();
+        const int iterationIdx = ebosSimulator_.model().newtonMethod().numIterations();
+        updateAndCommunicateGroupData(episodeIdx, iterationIdx);
 
-        updateNetworkPressures();
+        updateNetworkPressures(episodeIdx);
 
         std::set<std::string> switched_wells;
         std::set<std::string> switched_groups;
 
         if (checkGroupControls) {
             // Check group individual constraints.
-            updateGroupIndividualControls(deferred_logger, switched_groups);
+            updateGroupIndividualControls(deferred_logger, switched_groups,
+                                          episodeIdx, iterationIdx);
 
             // Check group's constraints from higher levels.
-            updateGroupHigherControls(deferred_logger, switched_groups);
+            updateGroupHigherControls(deferred_logger,
+                                      episodeIdx,
+                                      switched_groups);
 
-            updateAndCommunicateGroupData();
+            updateAndCommunicateGroupData(episodeIdx, iterationIdx);
 
             // Check wells' group constraints and communicate.
             for (const auto& well : well_container_) {
@@ -1421,7 +1278,7 @@ namespace Opm {
                     switched_wells.insert(well->name());
                 }
             }
-            updateAndCommunicateGroupData();
+            updateAndCommunicateGroupData(episodeIdx, iterationIdx);
         }
 
         // Check individual well constraints and communicate.
@@ -1432,99 +1289,8 @@ namespace Opm {
             const auto mode = WellInterface<TypeTag>::IndividualOrGroup::Individual;
             well->updateWellControl(ebosSimulator_, mode, this->wellState(), this->groupState(), deferred_logger);
         }
-        updateAndCommunicateGroupData();
-
+        updateAndCommunicateGroupData(episodeIdx, iterationIdx);
     }
-
-
-
-
-    template<typename TypeTag>
-    void
-    BlackoilWellModel<TypeTag>::
-    updateNetworkPressures()
-    {
-        // Get the network and return if inactive.
-        const int reportStepIdx = ebosSimulator_.episodeIndex();
-        const auto& network = schedule()[reportStepIdx].network();
-        if (!network.active()) {
-            return;
-        }
-        node_pressures_ = WellGroupHelpers::computeNetworkPressures(network, this->wellState(), this->groupState(), *(vfp_properties_->getProd()), schedule(), reportStepIdx);
-
-        // Set the thp limits of wells
-        for (auto& well : well_container_) {
-            // Producers only, since we so far only support the
-            // "extended" network model (properties defined by
-            // BRANPROP and NODEPROP) which only applies to producers.
-            if (well->isProducer()) {
-                const auto it = node_pressures_.find(well->wellEcl().groupName());
-                if (it != node_pressures_.end()) {
-                    // The well belongs to a group with has a network pressure constraint,
-                    // set the dynamic THP constraint of the well accordingly.
-                    well->setDynamicThpLimit(it->second);
-                }
-            }
-        }
-    }
-
-
-
-
-    template<typename TypeTag>
-    void
-    BlackoilWellModel<TypeTag>::
-    updateAndCommunicateGroupData()
-    {
-        const int reportStepIdx = ebosSimulator_.episodeIndex();
-        const Group& fieldGroup = schedule().getGroup("FIELD", reportStepIdx);
-        const int nupcol = schedule()[reportStepIdx].nupcol();
-        const int iterationIdx = ebosSimulator_.model().newtonMethod().numIterations();
-
-        // This builds some necessary lookup structures, so it must be called
-        // before we copy to well_state_nupcol_.
-        const auto& comm = ebosSimulator_.vanguard().grid().comm();
-        this->wellState().updateGlobalIsGrup(comm);
-
-        if (iterationIdx < nupcol) {
-            this->updateNupcolWGState();
-        }
-
-        auto& well_state = this->wellState();
-        const auto& well_state_nupcol = this->nupcolWellState();
-        const auto& summaryState = ebosSimulator_.vanguard().summaryState();
-        // the group target reduction rates needs to be update since wells may have swicthed to/from GRUP control
-        // Currently the group target reduction does not honor NUPCOL. TODO: is that true?
-        std::vector<double> groupTargetReduction(numPhases(), 0.0);
-        WellGroupHelpers::updateGroupTargetReduction(fieldGroup, schedule(), reportStepIdx, /*isInjector*/ false, phase_usage_, *guideRate_, well_state_nupcol, well_state, this->groupState(), groupTargetReduction);
-        std::vector<double> groupTargetReductionInj(numPhases(), 0.0);
-        WellGroupHelpers::updateGroupTargetReduction(fieldGroup, schedule(), reportStepIdx, /*isInjector*/ true, phase_usage_, *guideRate_, well_state_nupcol, well_state, this->groupState(), groupTargetReductionInj);
-
-        WellGroupHelpers::updateREINForGroups(fieldGroup, schedule(), reportStepIdx, phase_usage_, summaryState, well_state_nupcol, well_state, this->groupState());
-        WellGroupHelpers::updateVREPForGroups(fieldGroup, schedule(), reportStepIdx, well_state_nupcol, well_state, this->groupState());
-
-        WellGroupHelpers::updateReservoirRatesInjectionGroups(fieldGroup, schedule(), reportStepIdx, well_state_nupcol, well_state, this->groupState());
-        WellGroupHelpers::updateGroupProductionRates(fieldGroup, schedule(), reportStepIdx, well_state_nupcol, well_state, this->groupState());
-
-        // We use the rates from the privious time-step to reduce oscilations
-        WellGroupHelpers::updateWellRates(fieldGroup, schedule(), reportStepIdx, this->prevWellState(), well_state);
-
-        // Set ALQ for off-process wells to zero
-        for (const auto& wname : schedule().wellNames(reportStepIdx)) {
-            const bool is_producer = schedule().getWell(wname, reportStepIdx).isProducer();
-            const bool not_on_this_process = well_state.wellMap().count(wname) == 0;
-            if (is_producer && not_on_this_process) {
-                well_state.setALQ(wname, 0.0);
-            }
-        }
-
-        well_state.communicateGroupRates(comm);
-        this->groupState().communicate_rates(comm);
-        // compute wsolvent fraction for REIN wells
-        updateWsolvent(fieldGroup, schedule(), reportStepIdx,  well_state_nupcol);
-
-    }
-
 
 
 
@@ -1552,91 +1318,45 @@ namespace Opm {
     }
 
 
-
     template<typename TypeTag>
     void
-    BlackoilWellModel<TypeTag>::
-    updateWellPotentials(const int reportStepIdx, const bool onlyAfterEvent, DeferredLogger& deferred_logger)
+    BlackoilWellModel<TypeTag>::computePotentials(const std::size_t widx,
+                                                  const WellState& well_state_copy,
+                                                  std::string& exc_msg,
+                                                  ExceptionType::ExcEnum& exc_type,
+                                                  DeferredLogger& deferred_logger)
     {
         const int np = numPhases();
-
-        auto well_state_copy = this->wellState();
-
-        const SummaryConfig& summaryConfig = ebosSimulator_.vanguard().summaryConfig();
-        const bool write_restart_file = ebosSimulator_.vanguard().schedule().write_rst_file(reportStepIdx);
-        auto exc_type = ExceptionType::NONE;
-        std::string exc_msg;
-        for (const auto& well : well_container_) {
-            const bool needed_for_summary =
-                    ((summaryConfig.hasSummaryKey( "WWPI:" + well->name()) ||
-                      summaryConfig.hasSummaryKey( "WOPI:" + well->name()) ||
-                      summaryConfig.hasSummaryKey( "WGPI:" + well->name())) && well->isInjector()) ||
-                    ((summaryConfig.hasKeyword( "GWPI") ||
-                      summaryConfig.hasKeyword( "GOPI") ||
-                      summaryConfig.hasKeyword( "GGPI")) && well->isInjector()) ||
-                    ((summaryConfig.hasKeyword( "FWPI") ||
-                      summaryConfig.hasKeyword( "FOPI") ||
-                      summaryConfig.hasKeyword( "FGPI")) && well->isInjector()) ||
-                    ((summaryConfig.hasSummaryKey( "WWPP:" + well->name()) ||
-                      summaryConfig.hasSummaryKey( "WOPP:" + well->name()) ||
-                      summaryConfig.hasSummaryKey( "WGPP:" + well->name())) && well->isProducer()) ||
-                    ((summaryConfig.hasKeyword( "GWPP") ||
-                      summaryConfig.hasKeyword( "GOPP") ||
-                      summaryConfig.hasKeyword( "GGPP")) && well->isProducer()) ||
-                    ((summaryConfig.hasKeyword( "FWPP") ||
-                      summaryConfig.hasKeyword( "FOPP") ||
-                      summaryConfig.hasKeyword( "FGPP")) && well->isProducer());
-
-            // At the moment, the following events are considered
-            // for potentials update
-            const uint64_t effective_events_mask = ScheduleEvents::WELL_STATUS_CHANGE
-                                                 + ScheduleEvents::COMPLETION_CHANGE
-                                                 + ScheduleEvents::WELL_PRODUCTIVITY_INDEX
-                                                 + ScheduleEvents::WELL_WELSPECS_UPDATE
-                                                 + ScheduleEvents::WELLGROUP_EFFICIENCY_UPDATE
-                                                 + ScheduleEvents::NEW_WELL
-                                                 + ScheduleEvents::PRODUCTION_UPDATE
-                                                 + ScheduleEvents::INJECTION_UPDATE;
-            const auto& events = schedule()[reportStepIdx].wellgroup_events();
-            const bool event = events.hasEvent(well->name(), ScheduleEvents::ACTIONX_WELL_EVENT) || (report_step_starts_ && events.hasEvent(well->name(), effective_events_mask));
-            const bool needPotentialsForGuideRates = well->underPredictionMode() && (!onlyAfterEvent || event);
-            const bool needPotentialsForOutput = !onlyAfterEvent && (needed_for_summary || write_restart_file);
-            const bool compute_potential = needPotentialsForOutput || needPotentialsForGuideRates;
-            if (compute_potential)
-            {
-                std::vector<double> potentials;
-                try {
-                    well->computeWellPotentials(ebosSimulator_, well_state_copy, potentials, deferred_logger);
-                 } catch (const std::runtime_error& e) {
-                    exc_type = ExceptionType::RUNTIME_ERROR;
-                    exc_msg = e.what();
-                } catch (const std::invalid_argument& e) {
-                    exc_type = ExceptionType::INVALID_ARGUMENT;
-                    exc_msg = e.what();
-                } catch (const std::logic_error& e) {
-                    exc_type = ExceptionType::LOGIC_ERROR;
-                    exc_msg = e.what();
-                } catch (const std::exception& e) {
-                    exc_type = ExceptionType::DEFAULT;
-                    exc_msg = e.what();
-                }
-                // Store it in the well state
-                // potentials is resized and set to zero in the beginning of well->ComputeWellPotentials
-                // and updated only if sucessfull. i.e. the potentials are zero for exceptions
-                for (int p = 0; p < np; ++p) {
-                    this->wellState().wellPotentials()[well->indexOfWell() * np + p] = std::abs(potentials[p]);
-                }
-            }
+        std::vector<double> potentials;
+        const auto& well= well_container_[widx];
+        try {
+            well->computeWellPotentials(ebosSimulator_, well_state_copy, potentials, deferred_logger);
+        } catch (const std::runtime_error& e) {
+            exc_type = ExceptionType::RUNTIME_ERROR;
+            exc_msg = e.what();
+        } catch (const std::invalid_argument& e) {
+            exc_type = ExceptionType::INVALID_ARGUMENT;
+            exc_msg = e.what();
+        } catch (const std::logic_error& e) {
+            exc_type = ExceptionType::LOGIC_ERROR;
+            exc_msg = e.what();
+        } catch (const std::exception& e) {
+            exc_type = ExceptionType::DEFAULT;
+            exc_msg = e.what();
         }
+        // Store it in the well state
+        // potentials is resized and set to zero in the beginning of well->ComputeWellPotentials
+        // and updated only if sucessfull. i.e. the potentials are zero for exceptions
+        for (int p = 0; p < np; ++p) {
+            this->wellState().wellPotentials(well->indexOfWell())[p] = std::abs(potentials[p]);
+        }
+
         const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
         logAndCheckForExceptionsAndThrow(deferred_logger, exc_type,
                                          "computeWellPotentials() failed: " + exc_msg,
                                          terminal_output_, cc);
 
     }
-
-
-
 
 
 
@@ -1666,6 +1386,11 @@ namespace Opm {
         // corresponding "this->wells_ecl_[shutWell]".
 
         for (const auto& shutWell : this->local_shut_wells_) {
+            if (this->wells_ecl_[shutWell].getConnections().empty()) {
+                // No connections in this well.  Nothing to do.
+                continue;
+            }
+
             auto wellPtr = this->template createTypedWellPointer
                 <StandardWell<TypeTag>>(shutWell, reportStepIdx);
 
@@ -1705,13 +1430,14 @@ namespace Opm {
         std::string exc_msg;
         try {
             for (const auto& well : well_container_) {
+                const bool old_well_operable = well->isOperable();
                 well->checkWellOperability(ebosSimulator_, this->wellState(), deferred_logger);
 
                 if (!well->isOperable() ) continue;
 
                 auto& events = this->wellState().events(well->indexOfWell());
                 if (events.hasEvent(WellState::event_mask)) {
-                    well->updateWellStateWithTarget(ebosSimulator_, this->wellState(), deferred_logger);
+                    well->updateWellStateWithTarget(ebosSimulator_, this->groupState(), this->wellState(), deferred_logger);
                     // There is no new well control change input within a report step,
                     // so next time step, the well does not consider to have effective events anymore.
                     events.clearEvent(WellState::event_mask);
@@ -1720,6 +1446,22 @@ namespace Opm {
                 // solve the well equation initially to improve the initial solution of the well model
                 if (param_.solve_welleq_initially_) {
                     well->solveWellEquation(ebosSimulator_, this->wellState(), this->groupState(), deferred_logger);
+                }
+
+                const bool well_operable = well->isOperable();
+                if (!well_operable && old_well_operable) {
+                    const Well& well_ecl = getWellEcl(well->name());
+                    if (well_ecl.getAutomaticShutIn()) {
+                        deferred_logger.info(" well " + well->name() + " gets SHUT at the beginning of the time step ");
+                    } else {
+                        if (!well->wellIsStopped()) {
+                            deferred_logger.info(" well " + well->name() + " gets STOPPED at the beginning of the time step ");
+                            well->stopWell();
+                        }
+                    }
+                } else if (well_operable && !old_well_operable) {
+                    deferred_logger.info(" well " + well->name() + " gets REVIVED at the beginning of the time step ");
+                    well->openWell();
                 }
 
              }  // end of for (const auto& well : well_container_)
@@ -1748,25 +1490,6 @@ namespace Opm {
     template<typename TypeTag>
     void
     BlackoilWellModel<TypeTag>::
-    calculateEfficiencyFactors(const int reportStepIdx)
-    {
-        if ( !localWellsActive() ) {
-            return;
-        }
-
-        for (auto& well : well_container_) {
-            const Well& wellEcl = well->wellEcl();
-            double well_efficiency_factor = wellEcl.getEfficiencyFactor();
-            WellGroupHelpers::accumulateGroupEfficiencyFactor(schedule().getGroup(wellEcl.groupName(), reportStepIdx), schedule(), reportStepIdx, well_efficiency_factor);
-            well->setWellEfficiencyFactor(well_efficiency_factor);
-        }
-    }
-
-
-
-    template<typename TypeTag>
-    void
-    BlackoilWellModel<TypeTag>::
     setupCartesianToCompressed_(const int* global_cell, int number_of_cartesian_cells)
     {
         cartesian_to_compressed_.resize(number_of_cartesian_cells, -1);
@@ -1789,20 +1512,6 @@ namespace Opm {
         }
 
     }
-
-    template<typename TypeTag>
-    void
-    BlackoilWellModel<TypeTag>::
-    setRepRadiusPerfLength()
-    {
-        for (const auto& well : well_container_) {
-            well->setRepRadiusPerfLength(cartesian_to_compressed_);
-        }
-    }
-
-
-
-
 
     template<typename TypeTag>
     void
@@ -1896,20 +1605,6 @@ namespace Opm {
     }
 
     template<typename TypeTag>
-    int
-    BlackoilWellModel<TypeTag>:: numLocalWells() const
-    {
-        return wells_ecl_.size();
-    }
-
-    template<typename TypeTag>
-    int
-    BlackoilWellModel<TypeTag>::numPhases() const
-    {
-        return phase_usage_.num_phases;
-    }
-
-    template<typename TypeTag>
     void
     BlackoilWellModel<TypeTag>::extractLegacyDepth_()
     {
@@ -1946,164 +1641,6 @@ namespace Opm {
 
 
     template<typename TypeTag>
-    bool
-    BlackoilWellModel<TypeTag>::
-    hasWell(const std::string& wname) {
-        auto iter = std::find_if( this->wells_ecl_.begin(), this->wells_ecl_.end(), [&wname](const Well& well) { return well.name() == wname; });
-        return (iter != this->wells_ecl_.end());
-    }
-
-
-    // convert well data from opm-common to well state from opm-core
-    template<typename TypeTag>
-    void
-    BlackoilWellModel<TypeTag>::
-    loadRestartData( const data::Wells& rst_wells,
-                     const data::GroupAndNetworkValues& grpNwrkValues,
-                     const PhaseUsage& phases,
-                     const bool handle_ms_well,
-                     WellState& well_state)
-    {
-        using GPMode = Group::ProductionCMode;
-        using GIMode = Group::InjectionCMode;
-
-        using rt = data::Rates::opt;
-        const auto np = phases.num_phases;
-
-        std::vector< rt > phs( np );
-        if( phases.phase_used[BlackoilPhases::Aqua] ) {
-            phs.at( phases.phase_pos[BlackoilPhases::Aqua] ) = rt::wat;
-        }
-
-        if( phases.phase_used[BlackoilPhases::Liquid] ) {
-            phs.at( phases.phase_pos[BlackoilPhases::Liquid] ) = rt::oil;
-        }
-
-        if( phases.phase_used[BlackoilPhases::Vapour] ) {
-            phs.at( phases.phase_pos[BlackoilPhases::Vapour] ) = rt::gas;
-        }
-
-        for( const auto& wm : well_state.wellMap() ) {
-            const auto well_index = wm.second[ 0 ];
-            const auto& rst_well = rst_wells.at( wm.first );
-            well_state.update_bhp( well_index, rst_well.bhp);
-            well_state.update_temperature( well_index,  rst_well.temperature);
-
-            if (rst_well.current_control.isProducer) {
-                well_state.currentProductionControl( well_index, rst_well.current_control.prod);
-            }
-            else {
-                well_state.currentInjectionControl( well_index, rst_well.current_control.inj);
-            }
-
-            for( size_t i = 0; i < phs.size(); ++i ) {
-                assert( rst_well.rates.has( phs[ i ] ) );
-                well_state.wellRates(well_index)[ i ] = rst_well.rates.get( phs[ i ] );
-            }
-
-            auto& perf_pressure = well_state.perfPress(well_index);
-            auto& perf_rates = well_state.perfRates(well_index);
-            auto * perf_phase_rates = well_state.perfPhaseRates(well_index);
-            const auto& perf_data = this->well_perf_data_[well_index];
-
-            for (std::size_t perf_index = 0; perf_index < perf_data.size(); perf_index++) {
-                const auto& pd = perf_data[perf_index];
-                const auto& rst_connection = rst_well.connections[pd.ecl_index];
-                perf_pressure[perf_index] = rst_connection.pressure;
-                perf_rates[perf_index] = rst_connection.reservoir_rate;
-                for (int phase_index = 0; phase_index < np; ++phase_index)
-                    perf_phase_rates[perf_index*np + phase_index] = rst_connection.rates.get(phs[phase_index]);
-            }
-
-            if (handle_ms_well && !rst_well.segments.empty()) {
-                // we need the well_ecl_ information
-                const std::string& well_name = wm.first;
-                const Well& well_ecl = getWellEcl(well_name);
-
-                const WellSegments& segment_set = well_ecl.getSegments();
-
-                const auto& rst_segments = rst_well.segments;
-
-                // \Note: eventually we need to hanlde the situations that some segments are shut
-                assert(0u + segment_set.size() == rst_segments.size());
-
-                auto& segments = well_state.segments(well_index);
-                auto& segment_pressure = segments.pressure;
-                auto& segment_rates  = segments.rates;
-                for (const auto& rst_segment : rst_segments) {
-                    const int segment_index = segment_set.segmentNumberToIndex(rst_segment.first);
-
-                    // recovering segment rates and pressure from the restart values
-                    const auto pres_idx = data::SegmentPressures::Value::Pressure;
-                    segment_pressure[segment_index] = rst_segment.second.pressures[pres_idx];
-
-                    const auto& rst_segment_rates = rst_segment.second.rates;
-                    for (int p = 0; p < np; ++p) {
-                        segment_rates[segment_index * np + p] = rst_segment_rates.get(phs[p]);
-                    }
-                }
-            }
-        }
-
-        for (const auto& [group, value] : grpNwrkValues.groupData) {
-            const auto cpc = value.currentControl.currentProdConstraint;
-            const auto cgi = value.currentControl.currentGasInjectionConstraint;
-            const auto cwi = value.currentControl.currentWaterInjectionConstraint;
-
-            if (cpc != GPMode::NONE) {
-                this->groupState().production_control(group, cpc);
-            }
-
-            if (cgi != GIMode::NONE) {
-                this->groupState().injection_control(group, Phase::GAS, cgi);
-            }
-
-            if (cwi != GIMode::NONE) {
-                this->groupState().injection_control(group, Phase::WATER, cwi);
-            }
-        }
-    }
-
-
-
-
-
-    template<typename TypeTag>
-    bool
-    BlackoilWellModel<TypeTag>::
-    anyMSWellOpenLocal() const
-    {
-        for (const auto& well : wells_ecl_) {
-            if (well.isMultiSegment()) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-
-
-
-
-    template<typename TypeTag>
-    const Well&
-    BlackoilWellModel<TypeTag>::
-    getWellEcl(const std::string& well_name) const
-    {
-        // finding the iterator of the well in wells_ecl
-        auto well_ecl = std::find_if(wells_ecl_.begin(),
-                                     wells_ecl_.end(),
-                                     [&well_name](const Well& elem)->bool {
-                                         return elem.name() == well_name;
-                                     });
-
-        assert(well_ecl != wells_ecl_.end());
-
-        return *well_ecl;
-    }
-
-
-    template<typename TypeTag>
     typename BlackoilWellModel<TypeTag>::WellInterfacePtr
     BlackoilWellModel<TypeTag>::
     getWell(const std::string& well_name) const
@@ -2123,254 +1660,123 @@ namespace Opm {
 
 
 
+    template <typename TypeTag>
+    int
+    BlackoilWellModel<TypeTag>::
+    reportStepIndex() const
+    {
+        return std::max(this->ebosSimulator_.episodeIndex(), 0);
+    }
+
+
+
+
+
     template<typename TypeTag>
     void
     BlackoilWellModel<TypeTag>::
-    updateGroupIndividualControls(DeferredLogger& deferred_logger, std::set<std::string>& switched_groups)
+    calcRates(const int fipnum,
+              const int pvtreg,
+              std::vector<double>& resv_coeff)
     {
-        const int reportStepIdx = ebosSimulator_.episodeIndex();
+        rateConverter_->calcCoeff(fipnum, pvtreg, resv_coeff);
+    }
 
-        const int nupcol = schedule()[reportStepIdx].nupcol();
-        const int iterationIdx = ebosSimulator_.model().newtonMethod().numIterations();
-        // don't switch group control when iterationIdx > nupcol
-        // to avoid oscilations between group controls
-        if (iterationIdx > nupcol)
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    calcInjRates(const int fipnum,
+              const int pvtreg,
+              std::vector<double>& resv_coeff)
+    {
+        rateConverter_->calcInjCoeff(fipnum, pvtreg, resv_coeff);
+    }
+
+
+    template <typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    computeWellTemperature()
+    {
+        if (!has_energy_)
             return;
 
-        const Group& fieldGroup = schedule().getGroup("FIELD", reportStepIdx);
-        updateGroupIndividualControl(fieldGroup, deferred_logger, switched_groups);
+        int np = numPhases();
+        double cellInternalEnergy;
+        double cellBinv;
+        double cellDensity;
+        double perfPhaseRate;
+        const int nw = numLocalWells();
+        for (auto wellID = 0*nw; wellID < nw; ++wellID) {
+            const Well& well = wells_ecl_[wellID];
+            if (well.isInjector())
+                continue;
+
+            int connpos = 0;
+            for (int i = 0; i < wellID; ++i) {
+                connpos += well_perf_data_[i].size();
+            }
+            connpos *= np;
+            double weighted_temperature = 0.0;
+            double total_weight = 0.0;
+
+            auto& well_info = *local_parallel_well_info_[wellID];
+            const int num_perf_this_well = well_info.communication().sum(well_perf_data_[wellID].size());
+            auto& perf_data = this->wellState().perfData(wellID);
+            auto& perf_phase_rate = perf_data.phase_rates;
+
+            for (int perf = 0; perf < num_perf_this_well; ++perf) {
+                const int cell_idx = well_perf_data_[wellID][perf].cell_index;
+                const auto& intQuants = *(ebosSimulator_.model().cachedIntensiveQuantities(cell_idx, /*timeIdx=*/0));
+                const auto& fs = intQuants.fluidState();
+
+                double cellTemperatures = fs.temperature(/*phaseIdx*/0).value();
+                double weight_factor = 0.0;
+                for (int phaseIdx = 0; phaseIdx  < np; ++phaseIdx) {
+                    cellInternalEnergy = fs.enthalpy(phaseIdx).value() - fs.pressure(phaseIdx).value() / fs.density(phaseIdx).value();
+                    cellBinv = fs.invB(phaseIdx).value();
+                    cellDensity = fs.density(phaseIdx).value();
+                    perfPhaseRate = perf_phase_rate[ perf*np + phaseIdx ];
+                    weight_factor += cellDensity  * perfPhaseRate/cellBinv * cellInternalEnergy/cellTemperatures;
+                }
+                total_weight += weight_factor;
+                weighted_temperature += weight_factor * cellTemperatures;
+            }
+            weighted_temperature = well_info.communication().sum(weighted_temperature);
+            total_weight = well_info.communication().sum(total_weight);
+            this->wellState().update_temperature(wellID, weighted_temperature/total_weight);
+        }
     }
 
 
 
-    template<typename TypeTag>
+    template <typename TypeTag>
     void
     BlackoilWellModel<TypeTag>::
-    updateGroupIndividualControl(const Group& group, DeferredLogger& deferred_logger, std::set<std::string>& switched_groups) {
+    assignWellTracerRates(data::Wells& wsrpt) const
+    {
+        const auto & wellTracerRates = ebosSimulator_.problem().tracerModel().getWellTracerRates();
 
-        const int reportStepIdx = ebosSimulator_.episodeIndex();
-        const bool skip = switched_groups.count(group.name());
-        if (!skip && group.isInjectionGroup())
-        {
-            const Phase all[] = {Phase::WATER, Phase::OIL, Phase::GAS};
-            for (Phase phase : all) {
-                if (!group.hasInjectionControl(phase)) {
-                    continue;
-                }
-                Group::InjectionCMode newControl = checkGroupInjectionConstraints(group, phase);
-                if (newControl != Group::InjectionCMode::NONE)
-                {
-                    switched_groups.insert(group.name());
-                    actionOnBrokenConstraints(group, newControl, phase, deferred_logger);
-                }
+        if (wellTracerRates.empty())
+            return; // no tracers
+
+        for (const auto& wTR : wellTracerRates) {
+            std::string wellName = wTR.first.first;
+            auto xwPos = wsrpt.find(wellName);
+            if (xwPos == wsrpt.end()) { // No well results.
+                continue;
             }
+            std::string tracerName = wTR.first.second;
+            double rate = wTR.second;
+            xwPos->second.rates.set(data::Rates::opt::tracer, rate, tracerName);
         }
-        if (!skip && group.isProductionGroup()) {
-            Group::ProductionCMode newControl = checkGroupProductionConstraints(group, deferred_logger);
-            const auto& summaryState = ebosSimulator_.vanguard().summaryState();
-            const auto controls = group.productionControls(summaryState);
-            if (newControl != Group::ProductionCMode::NONE)
-            {
-                switched_groups.insert(group.name());
-                actionOnBrokenConstraints(group, controls.exceed_action, newControl, deferred_logger);
-            }
-        }
-
-        // call recursively down the group hiearchy
-        for (const std::string& groupName : group.groups()) {
-            updateGroupIndividualControl( schedule().getGroup(groupName, reportStepIdx), deferred_logger, switched_groups);
-        }
-    }
-
-    template<typename TypeTag>
-    bool
-    BlackoilWellModel<TypeTag>::
-    checkGroupConstraints(const Group& group, DeferredLogger& deferred_logger) const {
-
-        const int reportStepIdx = ebosSimulator_.episodeIndex();
-        if (group.isInjectionGroup()) {
-            const Phase all[] = {Phase::WATER, Phase::OIL, Phase::GAS};
-            for (Phase phase : all) {
-                if (!group.hasInjectionControl(phase)) {
-                    continue;
-                }
-                Group::InjectionCMode newControl = checkGroupInjectionConstraints(group, phase);
-                if (newControl != Group::InjectionCMode::NONE) {
-                    return true;
-                }
-            }
-        }
-        if (group.isProductionGroup()) {
-            Group::ProductionCMode newControl = checkGroupProductionConstraints(group, deferred_logger);
-            if (newControl != Group::ProductionCMode::NONE)
-            {
-                return true;
-            }
-        }
-
-        // call recursively down the group hiearchy
-        bool violated = false;
-        for (const std::string& groupName : group.groups()) {
-            violated = violated || checkGroupConstraints( schedule().getGroup(groupName, reportStepIdx), deferred_logger);
-        }
-        return violated;
     }
 
 
 
-    template<typename TypeTag>
-    Group::ProductionCMode
-    BlackoilWellModel<TypeTag>::
-    checkGroupProductionConstraints(const Group& group, DeferredLogger& deferred_logger) const {
-
-        const int reportStepIdx = ebosSimulator_.episodeIndex();
-        const auto& summaryState = ebosSimulator_.vanguard().summaryState();
-        const auto& comm = ebosSimulator_.vanguard().grid().comm();
-        const auto& well_state = this->wellState();
-
-        const auto controls = group.productionControls(summaryState);
-        const Group::ProductionCMode& currentControl = this->groupState().production_control(group.name());
-
-        if (group.has_control(Group::ProductionCMode::ORAT))
-        {
-            if (currentControl != Group::ProductionCMode::ORAT)
-            {
-                double current_rate = 0.0;
-                current_rate += WellGroupHelpers::sumWellRates(group, schedule(), well_state, reportStepIdx, phase_usage_.phase_pos[BlackoilPhases::Liquid], false);
-
-                // sum over all nodes
-                current_rate = comm.sum(current_rate);
-
-                if (controls.oil_target < current_rate  ) {
-                    return Group::ProductionCMode::ORAT;
-                }
-            }
-        }
-
-        if (group.has_control(Group::ProductionCMode::WRAT))
-        {
-            if (currentControl != Group::ProductionCMode::WRAT)
-            {
-
-                double current_rate = 0.0;
-                current_rate += WellGroupHelpers::sumWellRates(group, schedule(), well_state, reportStepIdx, phase_usage_.phase_pos[BlackoilPhases::Aqua], false);
-
-                // sum over all nodes
-                current_rate = comm.sum(current_rate);
-
-                if (controls.water_target < current_rate  ) {
-                    return Group::ProductionCMode::WRAT;
-                }
-            }
-        }
-        if (group.has_control(Group::ProductionCMode::GRAT))
-        {
-            if (currentControl != Group::ProductionCMode::GRAT)
-            {
-                double current_rate = 0.0;
-                current_rate += WellGroupHelpers::sumWellRates(group, schedule(), well_state, reportStepIdx, phase_usage_.phase_pos[BlackoilPhases::Vapour], false);
-
-                // sum over all nodes
-                current_rate = comm.sum(current_rate);
-                if (controls.gas_target < current_rate  ) {
-                    return Group::ProductionCMode::GRAT;
-                }
-            }
-        }
-        if (group.has_control(Group::ProductionCMode::LRAT))
-        {
-            if (currentControl != Group::ProductionCMode::LRAT)
-            {
-                double current_rate = 0.0;
-                current_rate += WellGroupHelpers::sumWellRates(group, schedule(), well_state, reportStepIdx, phase_usage_.phase_pos[BlackoilPhases::Liquid], false);
-                current_rate += WellGroupHelpers::sumWellRates(group, schedule(), well_state, reportStepIdx, phase_usage_.phase_pos[BlackoilPhases::Aqua], false);
-
-                // sum over all nodes
-                current_rate = comm.sum(current_rate);
-
-                if (controls.liquid_target < current_rate  ) {
-                     return Group::ProductionCMode::LRAT;
-                }
-            }
-        }
-
-        if (group.has_control(Group::ProductionCMode::CRAT))
-        {
-            OPM_DEFLOG_THROW(std::runtime_error, "Group " + group.name() + "CRAT control for production groups not implemented" , deferred_logger);
-        }
-        if (group.has_control(Group::ProductionCMode::RESV))
-        {
-            if (currentControl != Group::ProductionCMode::RESV)
-            {
-                double current_rate = 0.0;
-                current_rate += WellGroupHelpers::sumWellResRates(group, schedule(), well_state, reportStepIdx, phase_usage_.phase_pos[BlackoilPhases::Aqua], true);
-                current_rate += WellGroupHelpers::sumWellResRates(group, schedule(), well_state, reportStepIdx, phase_usage_.phase_pos[BlackoilPhases::Liquid], true);
-                current_rate += WellGroupHelpers::sumWellResRates(group, schedule(), well_state, reportStepIdx, phase_usage_.phase_pos[BlackoilPhases::Vapour], true);
-
-                // sum over all nodes
-                current_rate = comm.sum(current_rate);
-
-                if (controls.resv_target < current_rate  ) {
-                    return Group::ProductionCMode::RESV;
-                }
-            }
-
-        }
-        if (group.has_control(Group::ProductionCMode::PRBL))
-        {
-            OPM_DEFLOG_THROW(std::runtime_error, "Group " + group.name() + "PRBL control for production groups not implemented", deferred_logger);
-        }
-        return Group::ProductionCMode::NONE;
-    }
 
 
-    template<typename TypeTag>
-    Group::InjectionCMode
-    BlackoilWellModel<TypeTag>::
-    checkGroupInjectionConstraints(const Group& group, const Phase& phase) const {
-
-        const int reportStepIdx = ebosSimulator_.episodeIndex();
-        const auto& summaryState = ebosSimulator_.vanguard().summaryState();
-        const auto& comm = ebosSimulator_.vanguard().grid().comm();
-        const auto& well_state = this->wellState();
-
-        int phasePos;
-        if (phase == Phase::GAS && phase_usage_.phase_used[BlackoilPhases::Vapour] )
-            phasePos = phase_usage_.phase_pos[BlackoilPhases::Vapour];
-        else if (phase == Phase::OIL && phase_usage_.phase_used[BlackoilPhases::Liquid])
-            phasePos = phase_usage_.phase_pos[BlackoilPhases::Liquid];
-        else if (phase == Phase::WATER && phase_usage_.phase_used[BlackoilPhases::Aqua] )
-            phasePos = phase_usage_.phase_pos[BlackoilPhases::Aqua];
-        else
-            OPM_THROW(std::runtime_error, "Unknown phase" );
-
-        const auto& controls = group.injectionControls(phase, summaryState);
-        auto currentControl = this->groupState().injection_control(group.name(), phase);
-
-        if (controls.has_control(Group::InjectionCMode::RATE))
-        {
-            if (currentControl != Group::InjectionCMode::RATE)
-            {
-                double current_rate = 0.0;
-                current_rate += WellGroupHelpers::sumWellRates(group, schedule(), well_state, reportStepIdx, phasePos, /*isInjector*/true);
-
-                // sum over all nodes
-                current_rate = comm.sum(current_rate);
-
-                if (controls.surface_max_rate < current_rate) {
-                    return Group::InjectionCMode::RATE;
-                }
-            }
-        }
-        if (controls.has_control(Group::InjectionCMode::RESV))
-        {
-            if (currentControl != Group::InjectionCMode::RESV)
-            {
-                double current_rate = 0.0;
-                current_rate += WellGroupHelpers::sumWellResRates(group, schedule(), well_state, reportStepIdx, phasePos, /*isInjector*/true);
-                // sum over all nodes
-                current_rate = comm.sum(current_rate);
-
+<<<<<<< HEAD
                 if (controls.resv_max_rate < current_rate) {
                     return Group::InjectionCMode::RESV;
                 }
