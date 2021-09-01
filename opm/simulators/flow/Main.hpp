@@ -500,7 +500,7 @@ namespace Opm
                 if (output_param >= 0)
                     outputInterval = output_param;
 
-                readDeck(mpiRank, deckFilename, deck_, eclipseState_, schedule_, udqState_, actionState_,
+                readDeck(EclGenericVanguard::comm(), deckFilename, deck_, eclipseState_, schedule_, udqState_, actionState_,
                          summaryConfig_, nullptr, python, std::move(parseContext),
                          init_from_restart_file, outputCout_, outputInterval);
 
