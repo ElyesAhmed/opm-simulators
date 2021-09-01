@@ -186,7 +186,7 @@ void setupMessageLimiter(const Opm::MessageLimits msgLimits,  const std::string&
 }
 
 
-void readDeck(int rank, std::string& deckFilename, std::unique_ptr<Opm::Deck>& deck, std::unique_ptr<Opm::EclipseState>& eclipseState,
+void readDeck(CollCommType comm, std::string& deckFilename, std::unique_ptr<Opm::Deck>& deck, std::unique_ptr<Opm::EclipseState>& eclipseState,
               std::unique_ptr<Opm::Schedule>& schedule, std::unique_ptr<UDQState>& udqState, std::unique_ptr<Opm::SummaryConfig>& summaryConfig,
               std::unique_ptr<ErrorGuard> errorGuard, std::shared_ptr<Opm::Python>& python, std::unique_ptr<ParseContext> parseContext,
               bool initFromRestart, bool checkDeck, const std::optional<int>& outputInterval)
@@ -198,6 +198,7 @@ void readDeck(int rank, std::string& deckFilename, std::unique_ptr<Opm::Deck>& d
 
     int parseSuccess = 1; // > 0 is success
     std::string failureMessage;
+    int rank = comm.rank();
 
     if (rank==0) {
         try
@@ -304,7 +305,6 @@ void readDeck(int rank, std::string& deckFilename, std::unique_ptr<Opm::Deck>& d
     }
 
 
-    auto comm = Dune::MPIHelper::getCollectiveCommunication();
     parseSuccess = comm.min(parseSuccess);
 
     if (!parseSuccess)
