@@ -226,7 +226,7 @@ void readDeck(CollCommType comm, std::string& deckFilename, std::unique_ptr<Opm:
 
             if (!eclipseState) {
 #if HAVE_MPI
-                eclipseState = std::make_unique<Opm::ParallelEclipseState>(*deck);
+                eclipseState = std::make_unique<Opm::ParallelEclipseState>(*deck,comm);
 #else
                 eclipseState = std::make_unique<Opm::EclipseState>(*deck);
 #endif
@@ -281,7 +281,7 @@ void readDeck(CollCommType comm, std::string& deckFilename, std::unique_ptr<Opm:
         if (!schedule)
             schedule = std::make_unique<Opm::Schedule>(python);
         if (!eclipseState)
-            eclipseState = std::make_unique<Opm::ParallelEclipseState>();
+            eclipseState = std::make_unique<Opm::ParallelEclipseState>(comm);
     }
 
     try
