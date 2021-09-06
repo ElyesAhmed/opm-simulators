@@ -340,7 +340,7 @@ void readDeck(CollCommType comm, std::string& deckFilename, std::shared_ptr<Opm:
     {
         if (parseSuccess)
         {
-            Opm::eclStateBroadcast(*eclipseState, *schedule, *summaryConfig, *udqState, *actionState);
+            Opm::eclStateBroadcast(comm, *eclipseState, *schedule, *summaryConfig, *udqState, *actionState);
         }
     }
     catch(const std::exception& broadcast_error)
