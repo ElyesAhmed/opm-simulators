@@ -286,10 +286,17 @@ namespace Opm {
             }
 
         }
-        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
+
+        using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+        #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
+            using Communication = Dune::Communication<MPIComm>;
+        #else
+            using Communication = Dune::CollectiveCommunication<MPIComm>;
+        #endif
+        
+        const Communication& cc = grid().comm();
         OPM_END_PARALLEL_TRY_CATCH_LOG(local_deferredLogger, "beginTimeStep() failed: ",
                                         terminal_output_, cc);
-
 
         for (auto& well : well_container_) {
             well->setVFPProperties(vfp_properties_.get());
@@ -484,7 +491,14 @@ namespace Opm {
 
         this->commitWGState();
  
-        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
+            using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+        #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
+            using Communication = Dune::Communication<MPIComm>;
+        #else
+            using Communication = Dune::CollectiveCommunication<MPIComm>;
+        #endif
+        
+        const Communication& cc = grid().comm();
         DeferredLogger global_deferredLogger = gatherDeferredLogger(local_deferredLogger,cc);
         if (terminal_output_) {
             global_deferredLogger.logMessages();
@@ -695,7 +709,14 @@ namespace Opm {
         }
 
         // Collect log messages and print.
-        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
+            using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+        #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
+            using Communication = Dune::Communication<MPIComm>;
+        #else
+            using Communication = Dune::CollectiveCommunication<MPIComm>;
+        #endif
+        
+        const Communication& cc = grid().comm();
         DeferredLogger global_deferredLogger = gatherDeferredLogger(local_deferredLogger,cc);
         if (terminal_output_) {
             global_deferredLogger.logMessages();
@@ -852,7 +873,15 @@ namespace Opm {
             exc_type = ExceptionType::DEFAULT;
             exc_msg = e.what();
         }
-        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
+         
+            using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+        #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
+            using Communication = Dune::Communication<MPIComm>;
+        #else
+            using Communication = Dune::CollectiveCommunication<MPIComm>;
+        #endif
+        
+        const Communication& cc = grid().comm();
         logAndCheckForExceptionsAndThrow(local_deferredLogger, exc_type, "assemble() failed: " + exc_msg, terminal_output_, cc);
 >>>>>>> 7d8406d07... Replacing use of MPI_COMM_WORLD with a variable communicator.
         last_report_.converged = true;
@@ -1145,7 +1174,14 @@ namespace Opm {
             exc_type = ExceptionType::DEFAULT;
             exc_msg = e.what();
         }
-        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
+            using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+        #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
+            using Communication = Dune::Communication<MPIComm>;
+        #else
+            using Communication = Dune::CollectiveCommunication<MPIComm>;
+        #endif
+        
+        const Communication& cc = grid().comm();
         logAndCheckForExceptionsAndThrow(local_deferredLogger, exc_type, "recoverWellSolutionAndUpdateWellState() failed: " + exc_msg, terminal_output_,cc);
 >>>>>>> 7d8406d07... Replacing use of MPI_COMM_WORLD with a variable communicator.
     }
@@ -1183,7 +1219,14 @@ namespace Opm {
                 local_report += well->getWellConvergence(this->wellState(), B_avg, local_deferredLogger, iterationIdx > param_.strict_outer_iter_wells_ );
             }
         }
-        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
+            using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+        #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
+            using Communication = Dune::Communication<MPIComm>;
+        #else
+            using Communication = Dune::CollectiveCommunication<MPIComm>;
+        #endif
+        
+        const Communication& cc = grid().comm();
         DeferredLogger global_deferredLogger = gatherDeferredLogger(local_deferredLogger, cc);
         if (terminal_output_) {
             global_deferredLogger.logMessages();
@@ -1336,7 +1379,14 @@ namespace Opm {
                 this->closed_this_step_.insert(wname);
             }
         }
-        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
+            using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+        #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
+            using Communication = Dune::Communication<MPIComm>;
+        #else
+            using Communication = Dune::CollectiveCommunication<MPIComm>;
+        #endif
+        
+        const Communication& cc = grid().comm();
         DeferredLogger global_deferredLogger = gatherDeferredLogger(local_deferredLogger, cc);
         if (terminal_output_) {
             global_deferredLogger.logMessages();
@@ -1491,7 +1541,14 @@ namespace Opm {
             exc_type = ExceptionType::DEFAULT;
             exc_msg = e.what();
         }
-        const Dune::MPIHelper::MPICommunicator& cc = grid().comm();
+            using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+        #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
+            using Communication = Dune::Communication<MPIComm>;
+        #else
+            using Communication = Dune::CollectiveCommunication<MPIComm>;
+        #endif
+        
+        const Communication& cc = grid().comm();
         logAndCheckForExceptionsAndThrow(deferred_logger, exc_type, "prepareTimestep() failed: " + exc_msg, terminal_output_, cc);
 >>>>>>> 7d8406d07... Replacing use of MPI_COMM_WORLD with a variable communicator.
     }
