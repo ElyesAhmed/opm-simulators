@@ -63,7 +63,7 @@ namespace {
 
 void _throw(Opm::ExceptionType::ExcEnum exc_type,
             const std::string& message,
-            Communication cc)
+            Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> cc)
 {
     auto global_exc = cc.max(exc_type);
 
@@ -94,7 +94,7 @@ void _throw(Opm::ExceptionType::ExcEnum exc_type,
 
 inline void checkForExceptionsAndThrow(Opm::ExceptionType::ExcEnum exc_type,
                                        const std::string& message,
-                                       Communication cc)
+                                       Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> cc)
 {
     _throw(exc_type, message, cc);
 }
@@ -103,7 +103,7 @@ inline void logAndCheckForExceptionsAndThrow(Opm::DeferredLogger& deferred_logge
                                              Opm::ExceptionType::ExcEnum exc_type,
                                              const std::string& message,
                                              const bool terminal_output,
-                                             Communication cc)
+                                             Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator> cc)
 {
     Opm::DeferredLogger global_deferredLogger = gatherDeferredLogger(deferred_logger, cc);
 
