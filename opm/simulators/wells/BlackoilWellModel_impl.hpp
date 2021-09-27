@@ -32,6 +32,7 @@
 
 #include <fmt/format.h>
 
+
 namespace Opm {
     template<typename TypeTag>
     BlackoilWellModel<TypeTag>::
@@ -293,7 +294,7 @@ namespace Opm {
         #else
             using Communication = Dune::CollectiveCommunication<MPIComm>;
         #endif
-        
+          
         const Communication& cc = grid().comm();
         OPM_END_PARALLEL_TRY_CATCH_LOG(local_deferredLogger, "beginTimeStep() failed: ",
                                         terminal_output_, cc);
@@ -491,7 +492,7 @@ namespace Opm {
 
         this->commitWGState();
  
-            using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+        using MPIComm = typename Dune::MPIHelper::MPICommunicator;
         #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
             using Communication = Dune::Communication<MPIComm>;
         #else
@@ -709,7 +710,7 @@ namespace Opm {
         }
 
         // Collect log messages and print.
-            using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+        using MPIComm = typename Dune::MPIHelper::MPICommunicator;
         #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
             using Communication = Dune::Communication<MPIComm>;
         #else
@@ -855,26 +856,9 @@ namespace Opm {
 
             maybeDoGasLiftOptimize(local_deferredLogger);
             assembleWellEq(dt, local_deferredLogger);
-<<<<<<< HEAD
         }
-        OPM_END_PARALLEL_TRY_CATCH_LOG(local_deferredLogger, "assemble() failed: ",
-                                       terminal_output_);
-=======
-        } catch (const std::runtime_error& e) {
-            exc_type = ExceptionType::RUNTIME_ERROR;
-            exc_msg = e.what();
-        } catch (const std::invalid_argument& e) {
-            exc_type = ExceptionType::INVALID_ARGUMENT;
-            exc_msg = e.what();
-        } catch (const std::logic_error& e) {
-            exc_type = ExceptionType::LOGIC_ERROR;
-            exc_msg = e.what();
-        } catch (const std::exception& e) {
-            exc_type = ExceptionType::DEFAULT;
-            exc_msg = e.what();
-        }
-         
-            using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+
+        using MPIComm = typename Dune::MPIHelper::MPICommunicator;
         #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
             using Communication = Dune::Communication<MPIComm>;
         #else
@@ -882,8 +866,8 @@ namespace Opm {
         #endif
         
         const Communication& cc = grid().comm();
-        logAndCheckForExceptionsAndThrow(local_deferredLogger, exc_type, "assemble() failed: " + exc_msg, terminal_output_, cc);
->>>>>>> 7d8406d07... Replacing use of MPI_COMM_WORLD with a variable communicator.
+        OPM_END_PARALLEL_TRY_CATCH_LOG(local_deferredLogger, "assemble() failed: ",
+                                       terminal_output_, cc);
         last_report_.converged = true;
         last_report_.assemble_time_well += perfTimer.stop();
     }
@@ -1174,7 +1158,8 @@ namespace Opm {
             exc_type = ExceptionType::DEFAULT;
             exc_msg = e.what();
         }
-            using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+
+        using MPIComm = typename Dune::MPIHelper::MPICommunicator;
         #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
             using Communication = Dune::Communication<MPIComm>;
         #else
@@ -1219,7 +1204,8 @@ namespace Opm {
                 local_report += well->getWellConvergence(this->wellState(), B_avg, local_deferredLogger, iterationIdx > param_.strict_outer_iter_wells_ );
             }
         }
-            using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+
+        using MPIComm = typename Dune::MPIHelper::MPICommunicator;
         #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
             using Communication = Dune::Communication<MPIComm>;
         #else
@@ -1379,7 +1365,8 @@ namespace Opm {
                 this->closed_this_step_.insert(wname);
             }
         }
-            using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+        
+        using MPIComm = typename Dune::MPIHelper::MPICommunicator;
         #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
             using Communication = Dune::Communication<MPIComm>;
         #else
@@ -1541,7 +1528,8 @@ namespace Opm {
             exc_type = ExceptionType::DEFAULT;
             exc_msg = e.what();
         }
-            using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+        
+        using MPIComm = typename Dune::MPIHelper::MPICommunicator;
         #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
             using Communication = Dune::Communication<MPIComm>;
         #else
