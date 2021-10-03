@@ -69,12 +69,6 @@ class BlackoilWellModelGeneric
 {
 public:
     // ---------      Types      ---------
-    using MPIComm = typename Dune::MPIHelper::MPICommunicator;
-    #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
-        using Communication = Dune::Communication<MPIComm>; 
-    #else
-        using Communication = Dune::CollectiveCommunication<MPIComm>;
-    #endif
     using GLiftOptWells = std::map<std::string,std::unique_ptr<GasLiftSingleWellGeneric>>;
     using GLiftProdWells = std::map<std::string,const WellInterfaceGeneric*>;
     using GLiftWellStateMap = std::map<std::string,std::unique_ptr<GasLiftWellState>>;
@@ -83,7 +77,7 @@ public:
                              const SummaryState& summaryState,
                              const EclipseState& eclState,
                              const PhaseUsage& phase_usage,
-                             const Communication& comm);
+                             const Parallel::Communication& comm);
 
     virtual ~BlackoilWellModelGeneric() = default;
 
@@ -382,7 +376,7 @@ protected:
     Schedule& schedule_;
     const SummaryState& summaryState_;
     const EclipseState& eclState_;
-    const Communication& comm_;
+    const Parallel::Communication& comm_;
 
     PhaseUsage phase_usage_;
     bool terminal_output_{false};

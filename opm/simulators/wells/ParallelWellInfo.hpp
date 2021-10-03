@@ -49,8 +49,7 @@ public:
       ownerAbove = 3,
       overlapAbove = 4
     };
-
-using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+    using MPIComm = typename Dune::MPIHelper::MPICommunicator;
 #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
     using Communication = Dune::Communication<MPIComm>;
 #else
@@ -256,7 +255,6 @@ public:
 #else
     using Communication = Dune::CollectiveCommunication<MPIComm>;
 #endif
-
     static constexpr int INVALID_ECL_INDEX = -1;
 
     /// \brief Constructs object using MPI_COMM_SELF

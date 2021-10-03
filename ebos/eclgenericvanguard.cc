@@ -48,13 +48,6 @@
 #include <mpi.h>
 #endif // HAVE_MPI
 
-using MPIComm = typename Dune::MPIHelper::MPICommunicator;
-#if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
-    using Communication = Dune::Communication<MPIComm>; 
-#else
-    using Communication = Dune::CollectiveCommunication<MPIComm>;
-#endif
-
 #include <stdexcept>
 
 namespace Opm {
@@ -69,7 +62,7 @@ std::shared_ptr<Schedule> EclGenericVanguard::externalEclSchedule_;
 std::shared_ptr<SummaryConfig> EclGenericVanguard::externalEclSummaryConfig_;
 std::unique_ptr<UDQState> EclGenericVanguard::externalUDQState_;
 std::unique_ptr<Action::State> EclGenericVanguard::externalActionState_;
-std::unique_ptr<EclGenericVanguard::Communication> EclGenericVanguard::comm_;
+std::unique_ptr<Parallel::Communication> EclGenericVanguard::comm_;
 
 EclGenericVanguard::EclGenericVanguard()
     : python(std::make_shared<Python>())
@@ -346,7 +339,7 @@ void EclGenericVanguard::init()
             }
         }
 
-        const auto& comm = Communication();
+        const auto& comm = Parallel::Communication();
         hasMsWell = comm.max(hasMsWell);
 
         if (hasMsWell)

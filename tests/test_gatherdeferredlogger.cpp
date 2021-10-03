@@ -36,13 +36,6 @@
 #include <opm/common/OpmLog/StreamLog.hpp>
 #include <opm/common/OpmLog/LogUtil.hpp>
 
-using MPIComm = typename Dune::MPIHelper::MPICommunicator;
-#if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
-    using Communication = Dune::Communication<MPIComm>; 
-#else
-    using Communication = Dune::CollectiveCommunication<MPIComm>;
-#endif
-
 using namespace Opm;
 
 #if HAVE_MPI
@@ -88,7 +81,7 @@ void initLogger(std::ostringstream& log_stream) {
 
 BOOST_AUTO_TEST_CASE(NoMessages)
 {
-    const Communication& cc = Dune::MPIHelper::getCollectiveCommunication();
+    const Opm::Parallel::Communication& cc = Dune::MPIHelper::getCollectiveCommunication();
 
     std::ostringstream log_stream;
     initLogger(log_stream);
@@ -111,7 +104,7 @@ BOOST_AUTO_TEST_CASE(NoMessages)
 
 BOOST_AUTO_TEST_CASE(VariableNumberOfMessages)
 {
-    const Communication& cc = Dune::MPIHelper::getCollectiveCommunication();
+    const Opm::Parallel::Communication& cc = Dune::MPIHelper::getCollectiveCommunication();
 
     std::ostringstream log_stream;
     initLogger(log_stream);
@@ -149,7 +142,7 @@ BOOST_AUTO_TEST_CASE(VariableNumberOfMessages)
 
 BOOST_AUTO_TEST_CASE(AllHaveOneMessage)
 {
-    const Communication& cc = Dune::MPIHelper::getCollectiveCommunication();
+    const Opm::Parallel::Communication& cc = Dune::MPIHelper::getCollectiveCommunication();
 
     std::ostringstream log_stream;
     initLogger(log_stream);

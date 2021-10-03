@@ -22,6 +22,15 @@
 #include <dune/common/version.hh>
 #include <dune/common/parallel/mpihelper.hh>
 
+namespace Opm::Parallel {   
+using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+#if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
+    using Communication = Dune::Communication<MPIComm>; 
+#else
+    using Communication = Dune::CollectiveCommunication<MPIComm>;
+#endif
+}
+
 namespace Opm {
 
 class EclipseState;
@@ -33,25 +42,19 @@ namespace Action {
 class State;
 }
 
-using MPIComm = typename Dune::MPIHelper::MPICommunicator;
-#if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
-    using Communication = Dune::Communication<MPIComm>; 
-#else
-    using Communication = Dune::CollectiveCommunication<MPIComm>;
-#endif
 
 /*! \brief Broadcasts an eclipse state from root node in parallel runs.
  *! \param eclState EclipseState to broadcast
  *! \param schedule Schedule to broadcast
  *! \param summaryConfig SummaryConfig to broadcast
 */
-void eclStateBroadcast(Communication comm, EclipseState& eclState, Schedule& schedule,
+void eclStateBroadcast(Parallel::Communication  comm, EclipseState& eclState, Schedule& schedule,
                        SummaryConfig& summaryConfig,
                        UDQState& udqState,
                        Action::State& actionState);
 
 /// \brief Broadcasts an schedule from root node in parallel runs.
-void eclScheduleBroadcast(Communication comm, Schedule& schedule);
+void eclScheduleBroadcast(Parallel::Communication comm, Schedule& schedule);
 
 } // end namespace Opm
 

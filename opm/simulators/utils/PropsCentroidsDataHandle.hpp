@@ -39,13 +39,6 @@
 namespace Opm
 {
 
-using MPIComm = typename Dune::MPIHelper::MPICommunicator;
-#if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
-    using Communication = Dune::Communication<MPIComm>; 
-#else
-    using Communication = Dune::CollectiveCommunication<MPIComm>;
-#endif
-
 /*!
  * \brief A Data handle to communicate the field properties and cell centroids during load balance.
  * \tparam Grid The type of grid where the load balancing is happening.
@@ -76,7 +69,7 @@ public:
           m_centroids(centroids)
     {
         // Scatter the keys
-        const Communication comm = m_grid.comm();
+        const Parallel::Communication comm = m_grid.comm();
         if (comm.rank() == 0)
         {
             const auto& globalProps = eclState.globalFieldProps();

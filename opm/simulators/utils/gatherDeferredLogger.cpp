@@ -32,7 +32,7 @@
 namespace
 {
 
-    void packMessages(const std::vector<Opm::DeferredLogger::Message>& local_messages, std::vector<char>& buf, int& offset, const Communication mpi_communicator)
+    void packMessages(const std::vector<Opm::DeferredLogger::Message>& local_messages, std::vector<char>& buf, int& offset, const Opm::Parallel::Communication mpi_communicator)
     {
 
         int messagesize = local_messages.size();
@@ -106,7 +106,7 @@ namespace Opm
 
     /// combine (per-process) messages
     Opm::DeferredLogger gatherDeferredLogger(const Opm::DeferredLogger& local_deferredlogger,
-                                             Communication mpi_communicator)
+                                             Opm::Parallel::Communication mpi_communicator)
     {
 
         int num_messages = local_deferredlogger.messages_.size();
@@ -166,7 +166,7 @@ namespace Opm
 namespace Opm
 {
     Opm::DeferredLogger gatherDeferredLogger(const Opm::DeferredLogger& local_deferredlogger,
-                                             Communication /* dummy communicator */)
+                                             Opm::Parallel::Communication /* dummy communicator */)
     {
         return local_deferredlogger;
     }

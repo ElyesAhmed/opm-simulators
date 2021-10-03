@@ -27,6 +27,15 @@
 #include <string>
 #include <vector>
 
+namespace Opm::Parallel {   
+using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+#if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
+    using Communication = Dune::Communication<MPIComm>; 
+#else
+    using Communication = Dune::CollectiveCommunication<MPIComm>;
+#endif
+}
+
 namespace Opm
 {
     /** This class implements a deferred logger:
@@ -90,14 +99,8 @@ enum ExcEnum {
 
     private:
         std::vector<Message> messages_;
-        using MPIComm = typename Dune::MPIHelper::MPICommunicator;
-        #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
-            using Communication = Dune::Communication<MPIComm>; 
-        #else
-            using Communication = Dune::CollectiveCommunication<MPIComm>;
-        #endif
         friend DeferredLogger gatherDeferredLogger(const DeferredLogger& local_deferredlogger,
-                                                   Communication mpi_communicator);
+                                                   Parallel::Communication mpi_communicator);
     };
 
 } // namespace Opm

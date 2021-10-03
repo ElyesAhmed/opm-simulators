@@ -29,13 +29,6 @@
 #include <opm/simulators/timestepping/gatherConvergenceReport.hpp>
 #include <dune/common/parallel/mpihelper.hh>
 
-using MPIComm = typename Dune::MPIHelper::MPICommunicator;
-#if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
-    using Communication = Dune::Communication<MPIComm>; 
-#else
-    using Communication = Dune::CollectiveCommunication<MPIComm>;
-#endif
-
 #if HAVE_MPI
 struct MPIError
 {

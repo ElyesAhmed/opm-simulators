@@ -26,13 +26,6 @@
 #include <optional>
 #include <variant>
 
-using MPIComm = typename Dune::MPIHelper::MPICommunicator;
-#if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
-    using Communication = Dune::Communication<MPIComm>; 
-#else
-    using Communication = Dune::CollectiveCommunication<MPIComm>;
-#endif
-
 namespace Opm {
 
 /*! \brief Class for (de-)serializing and broadcasting data in parallel.
@@ -44,7 +37,7 @@ class EclMpiSerializer {
 public:
     //! \brief Constructor.
     //! \param comm The global communicator to broadcast using
-    explicit EclMpiSerializer(Communication comm) :
+    explicit EclMpiSerializer(Opm::Parallel::Communication comm) :
         m_comm(comm)
     {}
 
@@ -522,7 +515,7 @@ protected:
         static constexpr bool value = sizeof(test<T>(0)) == sizeof(yes_type);
     };
 
-    Communication m_comm; //!< Communicator to broadcast using
+    Opm::Parallel::Communication m_comm; //!< Communicator to broadcast using
 
     Operation m_op = Operation::PACKSIZE; //!< Current operation
     size_t m_packSize = 0; //!< Required buffer size after PACKSIZE has been done

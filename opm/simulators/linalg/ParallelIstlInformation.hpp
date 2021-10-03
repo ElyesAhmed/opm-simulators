@@ -47,12 +47,14 @@
 #include <dune/common/version.hh>
 #include <dune/common/parallel/mpihelper.hh>
 
-using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+namespace Opm::Parallel { 
+using MPIComm = typename Dune::MPIHelper::MPICommunicator;  
 #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
-    using CommunicationType = Dune::Communication<MPIComm>; 
+    using Communication = Dune::Communication<MPIComm>; 
 #else
-    using CommunicationType = Dune::CollectiveCommunication<MPIComm>;
+    using Communication = Dune::CollectiveCommunication<MPIComm>;
 #endif
+} // end namespace Communication
 
 namespace Opm
 {
@@ -119,7 +121,7 @@ public:
         return remoteIndices_;
     }
     /// \brief Get the Collective MPI communicator that we use.
-    CommunicationType communicator() const
+    Parallel::Communication communicator() const
     {
         return communicator_;
     }

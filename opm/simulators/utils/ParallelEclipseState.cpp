@@ -27,12 +27,12 @@ namespace Opm {
 
 ParallelFieldPropsManager::ParallelFieldPropsManager(FieldPropsManager& manager)
     : m_manager(manager)
-    , m_comm(Communication())
+    , m_comm(Parallel::Communication())
 {
 }
 
 // EXPERIMENTAL FUNCTION TO ADD COMM AS INPUT
-ParallelFieldPropsManager::ParallelFieldPropsManager(FieldPropsManager& manager, Communication comm)
+ParallelFieldPropsManager::ParallelFieldPropsManager(FieldPropsManager& manager, Parallel::Communication comm)
     : m_manager(manager)
     , m_comm(comm)
 {
@@ -215,7 +215,7 @@ bool ParallelFieldPropsManager::has_double(const std::string& keyword) const
 }
 
 
-ParallelEclipseState::ParallelEclipseState(Communication comm)
+ParallelEclipseState::ParallelEclipseState(Parallel::Communication comm)
     : m_fieldProps(field_props, comm)
     , m_comm(comm)
 {
@@ -228,7 +228,7 @@ ParallelEclipseState::ParallelEclipseState(const Deck& deck)
 {
 }
 
-ParallelEclipseState::ParallelEclipseState(const Deck& deck, Communication comm)
+ParallelEclipseState::ParallelEclipseState(const Deck& deck, Parallel::Communication comm)
     : EclipseState(deck)
     , m_fieldProps(field_props, comm)
     , m_comm(comm)

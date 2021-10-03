@@ -49,7 +49,7 @@ BlackoilWellModelGeneric(Schedule& schedule,
                          const SummaryState& summaryState,
                          const EclipseState& eclState,
                          const PhaseUsage& phase_usage,
-                         const Communication& comm)
+                         const Parallel::Communication& comm)
     : schedule_(schedule)
     , summaryState_(summaryState)
     , eclState_(eclState)
@@ -1028,7 +1028,7 @@ actionOnBrokenConstraints(const Group& group,
         throw("Invalid procedure for maximum rate limit selected for group" + group.name());
     }
 
-    Communication cc = comm_;
+    Parallel::Communication cc = comm_;
     if (!ss.str().empty() && cc.rank() == 0)
         deferred_logger.info(ss.str());
 }
@@ -1051,7 +1051,7 @@ actionOnBrokenConstraints(const Group& group,
         this->groupState().injection_control(group.name(), controlPhase, newControl);
     }
 
-    Communication cc = comm_;
+    Parallel::Communication cc = comm_;
     if (!ss.str().empty() && cc.rank() == 0)
         deferred_logger.info(ss.str());
 }

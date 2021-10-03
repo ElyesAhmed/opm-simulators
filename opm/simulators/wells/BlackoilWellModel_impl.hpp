@@ -32,13 +32,6 @@
 
 #include <fmt/format.h>
 
-using MPIComm = typename Dune::MPIHelper::MPICommunicator;
-#if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
-    using Communication = Dune::Communication<MPIComm>;
-#else
-    using Communication = Dune::CollectiveCommunication<MPIComm>;
-#endif
-
 namespace Opm {
     template<typename TypeTag>
     BlackoilWellModel<TypeTag>::
@@ -241,7 +234,7 @@ namespace Opm {
             }
         }
         OPM_END_PARALLEL_TRY_CATCH_LOG(local_deferredLogger, "beginReportStep() failed: ",
-                                       terminal_output_);
+                                       terminal_output_, grid.comm());
         // Store the current well state, to be able to recover in the case of failed iterations
         this->commitWGState();
     }
@@ -293,10 +286,8 @@ namespace Opm {
             }
 
         }
-          
-        const Communication& cc = grid().comm();
         OPM_END_PARALLEL_TRY_CATCH_LOG(local_deferredLogger, "beginTimeStep() failed: ",
-                                        terminal_output_, cc);
+                                        terminal_output_, ebosSimulator_.vanguard().grid().comm());
 
         for (auto& well : well_container_) {
             well->setVFPProperties(vfp_properties_.get());
@@ -381,7 +372,7 @@ namespace Opm {
         }
 
         logAndCheckForExceptionsAndThrow(local_deferredLogger,
-            exc_type, "beginTimeStep() failed: " + exc_msg, terminal_output_, cc);
+            exc_type, "beginTimeStep() failed: " + exc_msg, terminal_output_, comm);
 
     }
 
@@ -491,8 +482,8 @@ namespace Opm {
 
         this->commitWGState();
  
-        const Communication& cc = grid().comm();
-        DeferredLogger global_deferredLogger = gatherDeferredLogger(local_deferredLogger,cc);
+        const Opm::Parallel::Communication& comm = grid().comm();
+        DeferredLogger global_deferredLogger = gatherDeferredLogger(local_deferredLogger, comm);
         if (terminal_output_) {
             global_deferredLogger.logMessages();
         }
@@ -558,7 +549,7 @@ namespace Opm {
                 perf_pressure = fs.pressure(FluidSystem::gasPhaseIdx).value();
             }
         }
-        OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel::initializeWellState() failed: ");
+        OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel::initializeWellState() failed: ", ebosSimulator_.vanguard().grid().comm());
 
         this->wellState().init(cellPressures, schedule(), wells_ecl_, local_parallel_well_info_, timeStepIdx,
                                &this->prevWellState(), well_perf_data_,
@@ -703,8 +694,8 @@ namespace Opm {
 
         // Collect log messages and print.
         
-        const Communication& cc = grid().comm();
-        DeferredLogger global_deferredLogger = gatherDeferredLogger(local_deferredLogger,cc);
+        const Opm::Parallel::Communication& comm = grid().comm();
+        DeferredLogger global_deferredLogger = gatherDeferredLogger(local_deferredLogger, comm);
         if (terminal_output_) {
             global_deferredLogger.logMessages();
         }
@@ -831,7 +822,7 @@ namespace Opm {
                 prepareTimeStep(local_deferredLogger);
             }
             OPM_END_PARALLEL_TRY_CATCH_LOG(local_deferredLogger, "assemble() failed (It=0): ",
-                                               terminal_output_);
+                                               terminal_output_, grid().comm());
         }
         updateWellControls(local_deferredLogger, /* check group controls */ true);
 
@@ -843,10 +834,8 @@ namespace Opm {
             maybeDoGasLiftOptimize(local_deferredLogger);
             assembleWellEq(dt, local_deferredLogger);
         }
-
-        const Communication& cc = grid().comm();
         OPM_END_PARALLEL_TRY_CATCH_LOG(local_deferredLogger, "assemble() failed: ",
-                                       terminal_output_, cc);
+                                       terminal_output_, grid().comm());
         last_report_.converged = true;
         last_report_.assemble_time_well += perfTimer.stop();
     }
@@ -1120,10 +1109,9 @@ namespace Opm {
             }
 
         }
-        const Communication& cc = grid().comm();
         OPM_END_PARALLEL_TRY_CATCH_LOG(local_deferredLogger,
                                        "recoverWellSolutionAndUpdateWellState() failed: ",
-                                       terminal_output_, cc);
+                                       terminal_output_, ebosSimulator_.vanguard().grid().comm());
 
     }
 
@@ -1161,13 +1149,13 @@ namespace Opm {
             }
         }
         
-        const Communication& cc = grid().comm();
-        DeferredLogger global_deferredLogger = gatherDeferredLogger(local_deferredLogger, cc);
+        const Opm::Parallel::Communication comm = grid().comm();
+        DeferredLogger global_deferredLogger = gatherDeferredLogger(local_deferredLogger, comm);
         if (terminal_output_) {
             global_deferredLogger.logMessages();
         }
 
-        ConvergenceReport report = gatherConvergenceReport(local_report, cc);
+        ConvergenceReport report = gatherConvergenceReport(local_report, comm);
 
         // Log debug messages for NaN or too large residuals.
         if (terminal_output_) {
@@ -1315,8 +1303,8 @@ namespace Opm {
             }
         }
                
-        const Communication& cc = grid().comm();
-        DeferredLogger global_deferredLogger = gatherDeferredLogger(local_deferredLogger, cc);
+        const Opm::Parallel::Communication comm = grid().comm();
+        DeferredLogger global_deferredLogger = gatherDeferredLogger(local_deferredLogger, comm);
         if (terminal_output_) {
             global_deferredLogger.logMessages();
         }
@@ -1523,7 +1511,7 @@ namespace Opm {
                 B += 1 / intQuants.solventInverseFormationVolumeFactor().value();
             }
         }
-        OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel::updateAverageFormationFactor() failed: ")
+        OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel::updateAverageFormationFactor() failed: ", grid.comm())
 
         // compute global average
         grid.comm().sum(B_avg.data(), B_avg.size());
@@ -1613,7 +1601,7 @@ namespace Opm {
             }
             elemCtx.updatePrimaryIntensiveQuantities(/*timeIdx=*/0);
         }
-        OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel::updatePerforationIntensiveQuantities() failed: ");
+        OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel::updatePerforationIntensiveQuantities() failed: ", ebosSimulator_.vanguard().grid().comm());
     }
 
 

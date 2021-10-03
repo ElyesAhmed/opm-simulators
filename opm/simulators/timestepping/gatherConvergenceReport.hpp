@@ -25,19 +25,21 @@
 #include <opm/simulators/timestepping/ConvergenceReport.hpp>
 #include <dune/common/parallel/mpihelper.hh>
 
-using MPIComm = typename Dune::MPIHelper::MPICommunicator;
+namespace Opm::Parallel { 
+using MPIComm = typename Dune::MPIHelper::MPICommunicator;  
 #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
-    using Communication = Dune::Communication<MPIComm>;
+    using Communication = Dune::Communication<MPIComm>; 
 #else
     using Communication = Dune::CollectiveCommunication<MPIComm>;
 #endif
+} // end namespace Communication
 
 namespace Opm
 {
 
     /// Create a global convergence report combining local
     /// (per-process) reports.
-    ConvergenceReport gatherConvergenceReport(const ConvergenceReport& local_report, Communication communicator);
+    ConvergenceReport gatherConvergenceReport(const ConvergenceReport& local_report, Parallel::Communication communicator);
 
 } // namespace Opm
 

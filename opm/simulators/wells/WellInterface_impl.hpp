@@ -26,13 +26,6 @@
 
 #include <dune/common/version.hh>
 
-using MPIComm = typename Dune::MPIHelper::MPICommunicator;
-#if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
-    using Communication = Dune::Communication<MPIComm>; 
-#else
-    using Communication = Dune::CollectiveCommunication<MPIComm>;
-#endif
-
 namespace Opm
 {
 
@@ -192,7 +185,7 @@ namespace Opm
             changed = this->checkConstraints(well_state, group_state, schedule, summaryState, deferred_logger);
         }
 
-        Communication cc = ebos_simulator.vanguard().grid().comm();
+        Parallel::Communication cc = ebos_simulator.vanguard().grid().comm();
         // checking whether control changed
         if (changed) {
             std::string to;
