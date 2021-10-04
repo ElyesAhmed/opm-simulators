@@ -45,6 +45,14 @@
 #include <dune/common/parallel/mpihelper.hh>
 #endif
 
+namespace Opm::Parallel {   
+#if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
+    using Communication = Dune::Communication<Dune::MPIHelper::MPICommunicator>; 
+#else
+    using Communication = Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator>;
+#endif
+}
+
 namespace Opm::Properties {
 
 template<class TypeTag, class MyTypeTag>
@@ -97,13 +105,6 @@ namespace Opm
 
         typedef SimulatorFullyImplicitBlackoilEbos<TypeTag> Simulator;
 
-        using MPIComm = typename Dune::MPIHelper::MPICommunicator;
-        #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
-            using Communication = Dune::Communication<MPIComm>;
-        #else
-            using Communication = Dune::CollectiveCommunication<MPIComm>;
-        #endif
-
         FlowMainEbos(int argc, char **argv, bool output_cout, bool output_files )
             : argc_{argc}, argv_{argv},
               output_cout_{output_cout}, output_files_{output_files}
@@ -112,7 +113,7 @@ namespace Opm
         }
 
         // Read the command line parameters. Throws an exception if something goes wrong.
-        static int setupParameters_(int argc, char** argv, Communication comm)
+        static int setupParameters_(int argc, char** argv, Parallel::Communication comm)
         {
             using ParamsMeta = GetProp<TypeTag, Properties::ParameterMetaData>;
             if (!ParamsMeta::registrationOpen()) {
@@ -277,7 +278,7 @@ namespace Opm
             return status;
         }
 
-        static void printBanner(Communication comm)
+        static void printBanner(Parallel::Communication comm)
         {
             const int lineLen = 70;
             const std::string version = moduleVersionName();

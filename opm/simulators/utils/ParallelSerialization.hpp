@@ -23,11 +23,10 @@
 #include <dune/common/parallel/mpihelper.hh>
 
 namespace Opm::Parallel {   
-using MPIComm = typename Dune::MPIHelper::MPICommunicator;
 #if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 7)
-    using Communication = Dune::Communication<MPIComm>; 
+    using Communication = Dune::Communication<Dune::MPIHelper::MPICommunicator>; 
 #else
-    using Communication = Dune::CollectiveCommunication<MPIComm>;
+    using Communication = Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator>;
 #endif
 }
 
