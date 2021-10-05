@@ -224,12 +224,6 @@ void EclGenericVanguard::updateOutputDir_(std::string outputDir,
 
 void EclGenericVanguard::init()
 {
-    int myRank = 0;
-
-#if HAVE_MPI
-    MPI_Comm_rank(MPI_COMM_WORLD, &myRank);
-#endif
-
     // Make proper case name.
     {
         if (fileName_.empty())
@@ -326,6 +320,7 @@ void EclGenericVanguard::init()
     if (enableDistributedWells() )
     {
         int hasMsWell = false;
+        int myRank = EclGenericVanguard::comm().rank();
 
         if (useMultisegmentWell_)
         {
