@@ -38,6 +38,10 @@
 
 #include <ebos/eclgenericwriter.hh>
 
+#if OPM_HAVE_DAMARIS
+#include <Damaris.h>
+#endif
+
 #include <string>
 
 namespace Opm::Properties {
@@ -132,6 +136,9 @@ public:
                    EWOMS_GET_PARAM(TypeTag, bool, EnableAsyncEclOutput), EWOMS_GET_PARAM(TypeTag, bool, EnableEsmry))
         , simulator_(simulator)
     {
+#if OPM_HAVE_DAMARIS      
+        this->damarisUpdate = true ; 
+#endif         
         this->eclOutputModule_ = std::make_unique<EclOutputBlackOilModule<TypeTag>>(simulator, this->wbp_index_list_, this->collectToIORank_);
         this->wbp_index_list_.clear();
     }
@@ -231,6 +238,93 @@ public:
 
     void writeOutput(bool isSubStep)
     {
+#if OPM_HAVE_DAMARIS      
+        using DataEntry = std::tuple<std::string,
+                                 UnitSystem::measure,
+                                 data::TargetType,
+                                 const std::vector<Scalar>&>;
+                                 
+        if (this->damarisUpdate == true)
+        {
+            int damaris_err = DAMARIS_OK;
+            
+            const int nranks = simulator_.vanguard().grid().comm().size() ;
+            const int rank   = simulator_.vanguard().grid().comm().rank() ;
+          
+            std::vector<unsigned long long> elements_rank_sizes(nranks);    // one for each rank // to be gathered from each client rank
+            std::vector<unsigned long long> elements_rank_offsets(nranks);  // one for each rank, first one 0 // to be computed - Probably could use MPI_Scan()?
+            
+            const auto& gridView = simulator_.vanguard().gridView();
+            const int n_elements_local_grid = gridView.size(/*codim=*/0);  // I think this might be the full model size?
+            const int n_elements_local_vector = this->collectToIORank_.getPRESSURE_size() ;
+            const int n_elements_local = n_elements_local_vector ;
+            
+            std::cout << "INFO: n_elements_local_grid   = " << n_elements_local_grid << std::endl ;
+            std::cout << "INFO: n_elements_local_vector = " << n_elements_local_vector << std::endl ;
+
+
+
+
+            // This gets the n_elements_local from all ranks and copies them to a vector of all the values on all ranks (elements_rank_sizes[]).
+            // MPI_Allgather(&n_elements_local, 1, MPI_UNSIGNED_LONG, elements_rank_sizes, 1, MPI_UNSIGNED_LONG, w->damaris_mpi_comm);
+            simulator_.vanguard().grid().comm().allgather(n_elements_local, 1, elements_rank_sizes);
+            elements_rank_offsets[0] = 0ULL ;  // 
+            for (int t1 = 1 ; t1 < nranks; t1++)
+            {
+                elements_rank_offsets[t1] = elements_rank_offsets[t1-1] + elements_rank_sizes[t1-1];
+            }
+            
+            if (rank == 0 ) {
+               int n_elements_global_max  = elements_rank_offsets[nranks-1] + n_elements_local ;
+                std::cout << "INFO: n_elements_global_max = " << n_elements_global_max << std::endl ;
+            }
+            
+            
+            // Set the paramater so that the Damaris servers can allocate the correct amount of memory for the variabe
+            // Damaris parameters only support int data types. This will limit models to be under size of 2^32-1 elements
+            int temp_int = static_cast<int>(elements_rank_sizes[rank]) ;
+            damaris_err = damaris_parameter_set("n_elements_local",&temp_int, sizeof(int));
+            if (damaris_err != DAMARIS_OK ) {
+                 std::cerr << "ERROR: Damaris library produced an error result for damaris_parameter_set(n_elements_local,&temp_int, sizeof(int));" << std::endl ;
+            }
+            
+            temp_int = static_cast<int>(n_elements_local_grid) ;
+            damaris_err = damaris_parameter_set("n_elements_total",&temp_int, sizeof(int));
+            if (damaris_err != DAMARIS_OK ) {
+                 std::cerr << "ERROR: Damaris library produced an error result for damaris_parameter_set(n_elements_local,&temp_int, sizeof(int));" << std::endl ;
+            }
+            
+            // Use damaris_set_position to set the offset in the global size of the array.
+            // This is used so that output functionality (e.g. HDF5Store) knows global offsets of the data of the ranks
+            int64_t temp_int64_t[1] ;
+<<<<<<< HEAD
+<<<<<<< HEAD
+            temp_int64_t[0] = static_cast<int64_t>(elements_rank_offsets[rank]) ;
+            damaris_err = damaris_set_position("PRESSURE",temp_int64_t) ;
+            if (damaris_err != DAMARIS_OK ) {
+                 std::cerr << "ERROR: Damaris library produced an error result for damaris_set_position(\"PRESSURE\",temp_int64_t);" << std::endl ;
+=======
+            temp_int64_t[0] = std::static_cast<int64_t>)(elements_rank_offsets[rank]) ;
+            damaris_err = damaris_set_position("PRESSURE",temp_int64_t) ;
+            if (damaris_err != DAMARIS_OK ) {
+                 std::err << "ERROR: Damaris library produced an error result for damaris_set_position("PRESSURE",temp_int64_t);" << std::endl ;
+>>>>>>> 2a6ce47e6... changes needed to add Damaris functionality
+=======
+            temp_int64_t[0] = static_cast<int64_t>(elements_rank_offsets[rank]) ;
+            damaris_err = damaris_set_position("PRESSURE",temp_int64_t) ;
+            if (damaris_err != DAMARIS_OK ) {
+                 std::cerr << "ERROR: Damaris library produced an error result for damaris_set_position(\"PRESSURE\",temp_int64_t);" << std::endl ;
+>>>>>>> 12ef224a1... Compiling and running the OPM_HAVE_DAAMRIS guards
+            }  
+            this->damarisUpdate = false ;
+        }
+        // now to find the field data
+        
+        // this->collectToIORank_.getPRESSURE_ptr() ;
+        
+        damaris_write("PRESSURE", (void *) this->collectToIORank_.getPRESSURE_ptr() ) ;
+ 
+#else          
         const int reportStepNum = simulator_.episodeIndex() + 1;
 
         this->prepareLocalCellData(isSubStep, reportStepNum);
@@ -278,6 +372,7 @@ public:
                                 curTime, nextStepSize,
                                 EWOMS_GET_PARAM(TypeTag, bool, EclOutputDoublePrecision));
         }
+#endif         
     }
 
     void beginRestart()
@@ -416,6 +511,9 @@ private:
     Simulator& simulator_;
     std::unique_ptr<EclOutputBlackOilModule<TypeTag>> eclOutputModule_;
     Scalar restartTimeStepSize_;
+#if OPM_HAVE_DAMARIS
+    bool damarisUpdate ;  ///< Whenever this is true writeOutput() will set up Damris offsets of model fields
+#endif
 };
 } // namespace Opm
 

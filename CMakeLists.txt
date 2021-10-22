@@ -29,6 +29,8 @@ option(ENABLE_FPGA "Enable FPGA kernels integration?" OFF)
 option(USE_CHOW_PATEL_ILU "Use the iterative ILU by Chow and Patel?" OFF)
 option(USE_CHOW_PATEL_ILU_GPU "Run iterative ILU decomposition on GPU? Requires USE_CHOW_PATEL_ILU" OFF)
 option(USE_CHOW_PATEL_ILU_GPU_PARALLEL "Try to use more parallelism on the GPU during the iterative ILU decomposition? Requires USE_CHOW_PATEL_ILU_GPU_PARALLEL" OFF)
+option(USE_DAMARIS_LIB "Use the Damaris library for asynchronous I/O?" OFF)
+
 
 if(SIBLING_SEARCH AND NOT opm-common_DIR)
   # guess the sibling dir
@@ -57,6 +59,33 @@ if(opm-common_DIR AND NOT IS_DIRECTORY ${opm-common_DIR})
 endif()
 
 find_package(opm-common REQUIRED)
+
+if (USE_DAMARIS_LIB)
+  find_package(Damaris 1.5 )
+  if (Damaris_FOUND)
+    message(STATUS "The Damaris library was found: ${Damaris_VERSION}")
+    if (Damaris_HAS_HDF5)
+      message(STATUS "The Damaris library has HDF5 support: ${HDF5_VERSION}")
+    else()
+      message(STATUS "The Damaris library does NOT have HDF5 support")
+    endif()
+    if (Damaris_HAS_VISIT)
+      message(STATUS "The Damaris library has VisIt support: ${VisIt_VERSION}")
+    else()
+      message(STATUS "The Damaris library does NOT have VisIt support")
+    endif()
+    if (Damaris_HAS_CATALYST)
+      message(STATUS "The Damaris library has Catalyst support: ${Catalyst_VERSION}  ${Paraview_VERSION}")
+    else()
+      message(STATUS "The Damaris library does NOT have Catalyst support")
+    endif()
+    include_directories(${Damaris_INCLUDE_DIRS})
+
+  else()
+    message(STATUS "The Damaris library was NOT found")
+  endif()
+endif()
+
 
 include(OpmInit)
 OpmSetPolicies()
@@ -487,6 +516,12 @@ if(HAVE_FPGA)
   ExternalProject_Get_Property(FPGA_library binary_dir)
   target_link_libraries(opmsimulators PUBLIC ${binary_dir}/fpga_lib_alveo_u280.a)
 endif()
+if (USE_DAMARIS_LIB)
+    target_link_libraries(opmsimulators PUBLIC ${Damaris_LIBRARIES})
+    target_compile_definitions(opmsimulators PUBLIC OPM_HAVE_DAMARIS=1)
+endif()
 
 install(DIRECTORY doc/man1 DESTINATION ${CMAKE_INSTALL_MANDIR}
   FILES_MATCHING PATTERN "*.1")
+
+

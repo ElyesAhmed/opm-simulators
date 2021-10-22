@@ -279,6 +279,10 @@ public:
         report_.success.output_write_time += perfTimer.stop();
 
         solver->model().endReportStep();
+        
+#if OPM_HAVE_DAMARIS       
+        damaris_end_iteration( ) ;
+#endif     
 
         // take time that was used to solve system for this reportStep
         solverTimer_->stop();

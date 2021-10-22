@@ -52,7 +52,15 @@ template<class FluidSystem, class Scalar>
 class EclGenericOutputBlackoilModule {
 public:
     using Comm = Dune::CollectiveCommunication<Dune::MPIHelper::MPICommunicator>;
-
+    
+    Scalar* getPRESSURE_ptr( void ){
+        return (oilPressure_.data()) ;
+    };
+    
+    int  getPRESSURE_size( void ) {
+        return (oilPressure_.size()) ;
+    };
+    
     // write cumulative production and injection reports to output
     void outputCumLog(size_t reportStepNum,
                       const bool substep,
