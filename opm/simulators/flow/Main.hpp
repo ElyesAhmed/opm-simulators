@@ -152,7 +152,7 @@ public:
         initMPI();
     }
 
-#define DEMONSTRATE_RUN_WITH_NONWORLD_COMM 0
+#define DEMONSTRATE_RUN_WITH_NONWORLD_COMM 1
 
     ~Main()
     {
