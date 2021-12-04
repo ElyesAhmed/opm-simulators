@@ -203,9 +203,6 @@ public:
         bool forceDisableProdOutput = false;
         bool forceDisableInjOutput = false;
         bool forceDisableCumOutput = false;
-        eclOutputModule_->outputProdLog(reportStepNum, isSubStep, forceDisableProdOutput);
-        eclOutputModule_->outputInjLog(reportStepNum, isSubStep, forceDisableInjOutput);
-        eclOutputModule_->outputCumLog(reportStepNum, isSubStep, forceDisableCumOutput);
 
         // Add TCPU
         if (totalCpuTime != 0.0) {
@@ -226,6 +223,10 @@ public:
                           summaryState(), udqState(),
                           inplace,
                           eclOutputModule_->initialInplace());
+
+        eclOutputModule_->outputProdLog(reportStepNum, isSubStep, forceDisableProdOutput);
+        eclOutputModule_->outputInjLog(reportStepNum, isSubStep, forceDisableInjOutput);
+        eclOutputModule_->outputCumLog(reportStepNum, isSubStep, forceDisableCumOutput);
     }
 
     void writeOutput(bool isSubStep)
@@ -305,6 +306,12 @@ public:
         std::vector<RestartKey> extraKeys = {{"OPMEXTRA", UnitSystem::measure::identity, false},
                                              {"THRESHPR", UnitSystem::measure::pressure, inputThpres.active()}};
 
+        {
+            const auto& tracers = simulator_.vanguard().eclState().tracer();
+            for (const auto& tracer : tracers)
+                solutionKeys.emplace_back(tracer.fname(), UnitSystem::measure::identity, true);
+        }
+
         // The episodeIndex is rewined one back before beginRestart is called
         // and can not be used here.
         // We just ask the initconfig directly to be sure that we use the correct
@@ -324,6 +331,16 @@ public:
             for (unsigned elemIdx = 0; elemIdx < numElements; ++elemIdx) {
                 unsigned globalIdx = this->collectToIORank_.localIdxToGlobalIdx(elemIdx);
                 eclOutputModule_->setRestart(restartValues.solution, elemIdx, globalIdx);
+            }
+
+            auto& tracer_model = simulator_.problem().tracerModel();
+            for (int tracer_index = 0; tracer_index < tracer_model.numTracers(); tracer_index++) {
+                const auto& tracer_name = tracer_model.fname(tracer_index);
+                const auto& tracer_solution = restartValues.solution.data(tracer_name);
+                for (unsigned elemIdx = 0; elemIdx < numElements; ++elemIdx) {
+                    unsigned globalIdx = this->collectToIORank_.localIdxToGlobalIdx(elemIdx);
+                    tracer_model.setTracerConcentration(tracer_index, globalIdx, tracer_solution[globalIdx]);
+                }
             }
 
             if (inputThpres.active()) {

@@ -875,10 +875,12 @@ public:
         transmissibilities_.finishInit();
 
         const auto& initconfig = eclState.getInitConfig();
+        tracerModel_.init(initconfig.restartRequested());
         if (initconfig.restartRequested())
             readEclRestartSolution_();
         else
             readInitialCondition_();
+        tracerModel_.prepareTracerBatches();
 
         updatePffDofData_();
 
@@ -888,8 +890,6 @@ public:
             int numElements = gridView.size(/*codim=*/0);
             this->maxPolymerAdsorption_.resize(numElements, 0.0);
         }
-
-        tracerModel_.init();
 
         readBoundaryConditions_();
 
@@ -1463,6 +1463,9 @@ public:
     { return thresholdPressures_; }
 
     const EclTracerModel<TypeTag>& tracerModel() const
+    { return tracerModel_; }
+
+    EclTracerModel<TypeTag>& tracerModel()
     { return tracerModel_; }
 
     /*!
@@ -2474,11 +2477,6 @@ private:
             // DRVDT is enabled
             for (size_t pvtRegionIdx = 0; pvtRegionIdx < this->maxDRv_.size(); ++pvtRegionIdx)
                 this->maxDRv_[pvtRegionIdx] = oilVaporizationControl.getMaxDRVDT(pvtRegionIdx)*simulator.timeStepSize();
-
-        if (tracerModel().numTracers() > 0 && this->gridView().comm().rank() == 0)
-            std::cout << "Warning: Restart is not implemented for the tracer model, it will initialize itself "
-                      << "with the initial tracer concentration.\n"
-                      << std::flush;
 
         // assign the restart solution to the current solution. note that we still need
         // to compute real initial solution after this because the initial fluid states
