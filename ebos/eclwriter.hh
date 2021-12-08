@@ -297,24 +297,10 @@ public:
             // Use damaris_set_position to set the offset in the global size of the array.
             // This is used so that output functionality (e.g. HDF5Store) knows global offsets of the data of the ranks
             int64_t temp_int64_t[1] ;
-<<<<<<< HEAD
-<<<<<<< HEAD
             temp_int64_t[0] = static_cast<int64_t>(elements_rank_offsets[rank]) ;
             damaris_err = damaris_set_position("PRESSURE",temp_int64_t) ;
             if (damaris_err != DAMARIS_OK ) {
                  std::cerr << "ERROR: Damaris library produced an error result for damaris_set_position(\"PRESSURE\",temp_int64_t);" << std::endl ;
-=======
-            temp_int64_t[0] = std::static_cast<int64_t>)(elements_rank_offsets[rank]) ;
-            damaris_err = damaris_set_position("PRESSURE",temp_int64_t) ;
-            if (damaris_err != DAMARIS_OK ) {
-                 std::err << "ERROR: Damaris library produced an error result for damaris_set_position("PRESSURE",temp_int64_t);" << std::endl ;
->>>>>>> 2a6ce47e6... changes needed to add Damaris functionality
-=======
-            temp_int64_t[0] = static_cast<int64_t>(elements_rank_offsets[rank]) ;
-            damaris_err = damaris_set_position("PRESSURE",temp_int64_t) ;
-            if (damaris_err != DAMARIS_OK ) {
-                 std::cerr << "ERROR: Damaris library produced an error result for damaris_set_position(\"PRESSURE\",temp_int64_t);" << std::endl ;
->>>>>>> 12ef224a1... Compiling and running the OPM_HAVE_DAAMRIS guards
             }  
             this->damarisUpdate = false ;
         }
