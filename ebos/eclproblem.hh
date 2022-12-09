@@ -680,6 +680,15 @@ class EclProblem : public GetPropType<TypeTag, Properties::BaseProblem>
 
     using TracerModel = EclTracerModel<TypeTag>;
     using DirectionalMobilityPtr = Opm::Utility::CopyablePtr<DirectionalMobility<TypeTag, Evaluation>>;
+    using Grid = GetPropType<TypeTag, Properties::Grid>;
+    using PrimaryVarsMeaning = typename PrimaryVariables::PrimaryVarsMeaning;
+    struct ProblemContainer {
+        int index;
+        PrimaryVarsMeaning pm;
+        MaterialLawParams* matLawParams;
+    };
+
+    using GlobalContainer = Dune::PersistentContainer< Grid, ProblemContainer>;
 
 public:
     using EclGenericProblem<GridView,FluidSystem,Scalar>::briefDescription;
@@ -691,6 +700,7 @@ public:
     using EclGenericProblem<GridView,FluidSystem,Scalar>::rockCompressibility;
     using EclGenericProblem<GridView,FluidSystem,Scalar>::rockReferencePressure;
     using EclGenericProblem<GridView,FluidSystem,Scalar>::porosity;
+    using RestrictProlongOperator = CopyRestrictProlong< Grid, GlobalContainer >;
 
     /*!
      * \copydoc FvBaseProblem::registerParameters
@@ -793,6 +803,7 @@ public:
         , aquiferModel_(simulator)
         , pffDofData_(simulator.gridView(), this->elementMapper())
         , tracerModel_(simulator)
+        , container_(simulator.vanguard().grid(), 0 )
         , actionHandler_(simulator.vanguard().eclState(),
                          simulator.vanguard().schedule(),
                          simulator.vanguard().actionState(),
@@ -834,6 +845,75 @@ public:
         relpermDiagnostics.diagnosis(vanguard.eclState(), vanguard.cartesianIndexMapper());
     }
 
+   unsigned markForGridAdaptation()
+    {
+        using Toolbox = Opm::MathToolbox<Evaluation>;
+
+        unsigned numMarked = 0;
+        ElementContext elemCtx( this->simulator() );
+        auto gridView = this->simulator().vanguard().gridView();
+        auto& grid = this->simulator().vanguard().grid();
+        auto elemIt = gridView.template begin</*codim=*/0, Dune::Interior_Partition>();
+        auto elemEndIt = gridView.template end</*codim=*/0, Dune::Interior_Partition>();
+        for (; elemIt != elemEndIt; ++elemIt)
+        {
+            const auto& element = *elemIt ;
+            elemCtx.updateAll( element );
+            unsigned elemIdx = elemCtx.globalSpaceIndex(/*dofIdx=*/0, /*timeIdx=*/0);
+            container_[element].pm = elemCtx.primaryVars(0, 0).primaryVarsMeaning();
+            container_[element].matLawParams = &materialLawManager_->materialLawParamsPointerReferenceHack(elemIdx);
+            //container_[element].matLawParams = materialLawParams(elemIdx);
+
+
+            if (wellModel().isCellPerforated(elemIdx))
+                continue;
+
+            // HACK: this should better be part of an AdaptionCriterion class
+            for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++phaseIdx) {
+                if (!FluidSystem::phaseIsActive(phaseIdx))
+                    continue;
+                Scalar minSat = 1e100 ;
+                Scalar maxSat = -1e100;
+                size_t nDofs = elemCtx.numDof(/*timeIdx=*/0);
+                bool hasSamePrimaryVarsMeaning = true;
+                const auto& primaryVarsMeaningBase = elemCtx.primaryVars(0, /*timeIdx=*/0 ).primaryVarsMeaning();
+                for (unsigned dofIdx = 0; dofIdx < nDofs; ++dofIdx)
+                {
+                    const auto& intQuant = elemCtx.intensiveQuantities( dofIdx, /*timeIdx=*/0 );
+                    minSat = std::min(minSat,
+                                      Toolbox::value(intQuant.fluidState().saturation(phaseIdx)));
+                    maxSat = std::max(maxSat,
+                                      Toolbox::value(intQuant.fluidState().saturation(phaseIdx)));
+
+                    if(primaryVarsMeaningBase != elemCtx.primaryVars(dofIdx, /*timeIdx=*/0 ).primaryVarsMeaning())
+                        hasSamePrimaryVarsMeaning = false;
+                }
+
+                const Scalar indicator =
+                    (maxSat - minSat)/(std::max<Scalar>(0.01, maxSat+minSat)/2);
+                if( indicator > 0.2 && element.level() < 2 ) {
+                    grid.mark( 1, element );
+                    ++ numMarked;
+
+                    //std::cout << "refine cell " << elemIdx << std::endl;
+                }
+                else if ( hasSamePrimaryVarsMeaning && indicator < 0.025 ) {
+                    grid.mark( -1, element );
+                    ++ numMarked;
+                    //std::cout << "course cell " << elemIdx << std::endl;
+                }
+                else
+                {
+                    grid.mark( 0, element );
+                }
+            }
+        }
+
+        // get global sum so that every proc is on the same page
+        numMarked = this->simulator().vanguard().grid().comm().sum( numMarked );
+
+        return numMarked;
+    }
     /*!
      * \copydoc FvBaseProblem::finishInit
      */
@@ -991,6 +1071,25 @@ public:
             simulator.startNextEpisode(schedule.seconds(0));
             simulator.setEpisodeIndex(0);
         }
+        
+        container_.resize();
+        ElementContext elemCtx( this->simulator() );
+        auto gridView = this->simulator().vanguard().gridView();
+        auto& grid = this->simulator().vanguard().grid();
+        auto elemIt = gridView.template begin</*codim=*/0, Dune::Interior_Partition>();
+        auto elemEndIt = gridView.template end</*codim=*/0, Dune::Interior_Partition>();
+        for (; elemIt != elemEndIt; ++elemIt)
+        {
+            const auto& element = *elemIt ;
+            elemCtx.updatePrimaryStencil( element );
+            elemCtx.updatePrimaryIntensiveQuantities(/*timeIdx=*/0);
+            unsigned elemIdx = elemCtx.globalSpaceIndex(/*dofIdx=*/0, /*timeIdx=*/0);
+            container_[element].index = elemIdx;
+            const auto& priVars = elemCtx.primaryVars(0, 0);
+            elemCtx.updateIntensiveQuantities(priVars, /*dofIdx=*/0, /*timeIdx=*/0);
+            container_[element].pm = priVars.primaryVarsMeaning();
+            container_[element].matLawParams = &materialLawManager_->materialLawParamsPointerReferenceHack(elemIdx);
+        } 
     }
 
     void prefetch(const Element& elem) const
@@ -1269,6 +1368,101 @@ public:
 
         // .. if we're not yet done, start the next episode (report step)
         simulator.startNextEpisode(schedule.stepLength(episodeIdx + 1));
+    }
+    
+    void gridChanged()
+    {
+        ParentType::gridChanged();
+
+        //TODO set primary variable
+        // deal with DRSDT
+        const auto& vanguard = this->simulator().vanguard();
+        unsigned ntpvt = vanguard.eclState().runspec().tabdims().getNumPVTTables();
+        size_t numDof = this->model().numGridDof();
+        if (FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)) {
+            this->maxDRs_.resize(ntpvt, 1e30);
+            this->dRsDtOnlyFreeGas_.resize(ntpvt, false);
+            this->lastRs_.resize(numDof, 0.0);
+            this->maxDRv_.resize(ntpvt, 1e30);
+            this->lastRv_.resize(numDof, 0.0);
+            this->maxOilSaturation_.resize(numDof, 0.0);
+        }
+
+        this->readRockParameters_(this->simulator().vanguard().cellCenterDepths());
+        readMaterialParameters_();
+        readThermalParameters_();
+        transmissibilities_.finishInit();
+        updatePffDofData_();
+
+        auto gridView = this->simulator().vanguard().gridView();
+        std::vector<int> newIndex ;
+        newIndex.reserve(gridView.indexSet().size(0));
+
+        std::vector<MaterialLawParams> materialLawParams;
+        materialLawParams.reserve(gridView.indexSet().size(0));
+
+        auto it = gridView.template begin<0>();
+        const auto& endIt = gridView.template end<0>();
+        const auto& elementMapper = this->model().elementMapper();
+        auto& sol = this->model().solution(/*timeIdx=*/0);
+        for (; it != endIt; ++it) {
+            newIndex.push_back(container_[*it].index) ;
+            unsigned globalElemIdx = elementMapper.index(*it);
+            auto& priVars = sol[globalElemIdx];
+            priVars.setPrimaryVarsMeaning(container_[*it].pm);
+            //materialLawParams.push_back(*container_[*it].matLawParams);
+            //container_[globalElemIdx].matLawParams = materialLawManager_->materialLawParamsPointerReferenceHack(elemIdx);
+
+        }
+        //materialLawManager_->setMaterialLawParams(materialLawParams);
+
+
+        for (size_t dofIdx = 0; dofIdx <numDof; ++dofIdx) {
+            auto& priVars = sol[dofIdx];
+            if(priVars.primaryVarsMeaning() == PrimaryVariables::Undef) {
+                std::cout << priVars.primaryVarsMeaning() << std::endl;
+                //priVars.setPrimaryVarsMeaning(sol2[newIndex[dofIdx]].primaryVarsMeaning());
+            }
+        }
+        ElementContext elemCtx( this->simulator() );
+        auto& grid = this->simulator().vanguard().grid();
+        auto elemIt = gridView.template begin</*codim=*/0, Dune::Interior_Partition>();
+        auto elemEndIt = gridView.template end</*codim=*/0, Dune::Interior_Partition>();
+        for (; elemIt != elemEndIt; ++elemIt)
+        {
+            const auto& element = *elemIt ;
+            elemCtx.updatePrimaryStencil( element );
+            //const auto& intQuant = elemCtx.intensiveQuantities( 0, /*timeIdx=*/0 );
+            auto& priVars = elemCtx.primaryVars(0, 0);
+            //priVars.checkDefined();
+            //std::cout << priVars.primaryVarsMeaning() << std::endl;
+            //priVars.setPrimaryVarsMeaning(PrimaryVariables::Sw_po_Sg);
+            //priVars.assignNaiveMeaning(intQuant.fluidState());
+        }
+
+        wellModel_.gridChanged();
+
+    }
+
+    /*!
+     * \brief Mark grid cells for refinement or coarsening
+     *
+     * \return The number of elements marked for refinement or coarsening.
+     */
+//    /*!
+//     * \brief \copydoc FvBaseProblem::restrictProlongOperator
+//     */
+//    SolRestrictProlongOperator solRestrictProlongOperator( sol)
+//    {
+//        return SolRestrictProlongOperator( sol );
+//    }
+
+    /*!
+     * \brief \copydoc FvBaseProblem::restrictProlongOperator
+     */
+    RestrictProlongOperator restrictProlongOperator()
+    {
+        return RestrictProlongOperator( container_ );
     }
 
     /*!
@@ -1766,7 +1960,7 @@ public:
     bool recycleFirstIterationStorage() const
     {
         int episodeIdx = this->episodeIndex();
-        return !this->drsdtActive_(episodeIdx) &&
+        return false && !this->drsdtActive_(episodeIdx) &&
                !this->drvdtActive_(episodeIdx) &&
                this->rockCompPoroMultWc_.empty() &&
                this->rockCompPoroMult_.empty();
@@ -2250,7 +2444,9 @@ private:
         const auto& fp = eclState.fieldProps();
         const std::vector<double> porvData = fp.porv(false);
         const std::vector<int> actnumData = fp.actnum();
-        for (size_t dofIdx = 0; dofIdx < numDof; ++ dofIdx) {
+        for (size_t ref_dofIdx = 0; ref_dofIdx < numDof; ++ ref_dofIdx) {
+          //  size_t dofIdx = container_[ref_dofIdx].index;
+          auto dofIdx = ref_dofIdx;
             Scalar poreVolume = porvData[dofIdx];
 
             // we define the porosity as the accumulated pore volume divided by the
@@ -2946,6 +3142,7 @@ private:
     BCData<bool> freebc_;
     BCData<RateVector> massratebc_;
     bool nonTrivialBoundaryConditions_ = false;
+    GlobalContainer container_;
 };
 
 } // namespace Opm

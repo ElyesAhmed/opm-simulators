@@ -96,6 +96,30 @@ namespace Opm {
         is_cell_perforated_.resize(local_num_cells_, false);
     }
 
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    gridChanged()
+    {
+        local_num_cells_ = ebosSimulator_.gridView().size(0);
+        // Number of cells the global grid view
+        global_num_cells_ = ebosSimulator_.vanguard().globalNumCells();
+
+        extractLegacyCellPvtRegionIndex_();
+        extractLegacyDepth_();
+
+        //this->setupCartesianToCompressed_();
+        is_cell_perforated_.resize(local_num_cells_, false);
+
+        // Compute reservoir volumes for RESV controls.
+        rateConverter_.reset(new RateConverterType (phase_usage_,
+                                                    std::vector<int>(local_num_cells_, 0)));
+        rateConverter_->template defineState<ElementContext>(ebosSimulator_);
+
+
+
+
+    }
 
     template<typename TypeTag>
     void
@@ -1806,8 +1830,8 @@ namespace Opm {
         const auto& eclProblem = ebosSimulator_.problem();
         const unsigned numCells = grid.size(/*codim=*/0);
 
-        pvt_region_idx_.resize(numCells);
-        for (unsigned cellIdx = 0; cellIdx < numCells; ++cellIdx) {
+        pvt_region_idx_.resize(local_num_cells_);
+        for (unsigned cellIdx = 0; cellIdx < local_num_cells_; ++cellIdx) {
             pvt_region_idx_[cellIdx] =
                 eclProblem.pvtRegionIndex(cellIdx);
         }
@@ -1844,6 +1868,14 @@ namespace Opm {
         for (unsigned cellIdx = 0; cellIdx < local_num_cells_; ++cellIdx) {
             depth_[cellIdx] = eclProblem.dofCenterDepth(cellIdx);
         }
+    }
+
+   template<typename TypeTag>
+    bool
+    BlackoilWellModel<TypeTag>::
+    isCellPerforated(unsigned elemIdx) const {
+
+        return is_cell_perforated_[elemIdx];
     }
 
     template<typename TypeTag>

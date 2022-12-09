@@ -144,6 +144,10 @@ namespace Opm {
 
             void init();
             void initWellContainer(const int reportStepIdx) override;
+            
+            void gridChanged();
+
+            bool isCellPerforated(unsigned elemIdx) const;
 
             /////////////
             // <eWoms auxiliary module stuff>

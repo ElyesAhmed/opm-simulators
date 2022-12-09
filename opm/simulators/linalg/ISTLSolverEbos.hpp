@@ -357,7 +357,7 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
                 detail::makeOverlapRowsInvalid(getMatrix(), overlapRows_);
             }
             prepareFlexibleSolver();
-            firstcall = false;
+            firstcall = true;
         }
 
 
