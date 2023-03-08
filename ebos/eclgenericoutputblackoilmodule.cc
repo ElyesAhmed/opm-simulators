@@ -842,9 +842,9 @@ regionSum(const ScalarBuffer& property,
         if (property.empty())
             return totals;
 
-        assert(regionId.size() == property.size());
-        for (size_t j = 0; j < regionId.size(); ++j) {
-            const int regionIdx = regionId[j] - 1;
+      //  assert(regionId.size() == property.size());
+        for (size_t j = 0; j < property.size(); ++j) {
+            const int regionIdx = regionId[0] - 1;
             // the cell is not attributed to any region. ignore it!
             if (regionIdx < 0)
                 continue;

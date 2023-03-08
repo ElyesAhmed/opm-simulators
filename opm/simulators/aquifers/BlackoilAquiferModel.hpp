@@ -73,8 +73,13 @@ class SupportsFaceTag<Dune::PolyhedralGrid<3, 3>>
 
 #if HAVE_DUNE_ALUGRID
 template<>
-class SupportsFaceTag<Dune::ALUGrid<3, 3, Dune::cube, Dune::nonconforming>>
-    : public std::bool_constant<true>
+class SupportsFaceTag<Dune::ALUGrid<3, 3, Dune::cube, Dune::nonconforming,     
+#if HAVE_MPI
+      Dune::ALUGridMPIComm
+#else
+      Dune::ALUGridNoComm
+#endif //HAVE_MPI
+>> : public std::bool_constant<true>
 {};
 #endif
 

@@ -1883,20 +1883,41 @@ namespace Opm {
     BlackoilWellModel<TypeTag>::
     updatePerforationIntensiveQuantities()
     {
+     
         ElementContext elemCtx(ebosSimulator_);
         const auto& gridView = ebosSimulator_.gridView();
-
+        auto elemIt = gridView.template begin</*codim=*/0, Dune::Interior_Partition>();
+        auto elemEndIt = gridView.template end</*codim=*/0, Dune::Interior_Partition>();
+        int numElem = gridView.size(0);
         OPM_BEGIN_PARALLEL_TRY_CATCH();
-        for (const auto& elem : elements(gridView, Dune::Partitions::interior)) {
-            elemCtx.updatePrimaryStencil(elem);
-            int elemIdx = elemCtx.globalSpaceIndex(0, 0);
+        for (; elemIt != elemEndIt; ++elemIt)
+        {
+            const auto& element = *elemIt ;
+            elemCtx.updateAll( element );
 
-            if (!is_cell_perforated_[elemIdx]) {
+            if (!is_cell_perforated_[ebosSimulator_.problem().originalIndex(element)]) {
                 continue;
             }
             elemCtx.updatePrimaryIntensiveQuantities(/*timeIdx=*/0);
         }
         OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel::updatePerforationIntensiveQuantities() failed: ", ebosSimulator_.vanguard().grid().comm());
+     
+     
+     
+     //   ElementContext elemCtx(ebosSimulator_);
+     //   const auto& gridView = ebosSimulator_.gridView();
+
+     //   OPM_BEGIN_PARALLEL_TRY_CATCH();
+     //   for (const auto& elem : elements(gridView, Dune::Partitions::interior)) {
+     //       elemCtx.updatePrimaryStencil(elem);
+     //       int elemIdx = elemCtx.globalSpaceIndex(0, 0);
+
+//            if (!is_cell_perforated_[elemIdx]) {
+ //               continue;
+  //          }
+  //          elemCtx.updatePrimaryIntensiveQuantities(/*timeIdx=*/0);
+  //      }
+  //      OPM_END_PARALLEL_TRY_CATCH("BlackoilWellModel::updatePerforationIntensiveQuantities() failed: ", ebosSimulator_.vanguard().grid().comm());
     }
 
 

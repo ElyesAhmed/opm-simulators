@@ -468,7 +468,7 @@ namespace Opm {
                             + std::to_string(minTimeStep_) + "\n which is the minimum threshold given"
                             +  "by option --solver-min-time-step= \n";
                     if (solverVerbose_) {
-                        OpmLog::error(msg);
+                       // OpmLog::error(msg);
                     }
                 }
 

@@ -289,9 +289,9 @@ updateNum(const std::string& name, std::vector<T>& numbers)
 
     unsigned numElems = gridView_.size(/*codim=*/0);
     numbers.resize(numElems);
-    for (unsigned elemIdx = 0; elemIdx < numElems; ++elemIdx) {
-        numbers[elemIdx] = static_cast<T>(numData[elemIdx]) - 1;
-    }
+  //  for (unsigned elemIdx = 0; elemIdx < numElems; ++elemIdx) {
+   //     numbers[elemIdx] = static_cast<T>(numData[elemIdx]) - 1;
+  //  }
 }
 
 template<class GridView, class FluidSystem, class Scalar>

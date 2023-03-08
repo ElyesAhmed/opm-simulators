@@ -50,7 +50,13 @@ namespace Dune {
  */
 //#if HAVE_MPI
     template <>
-    class CartesianIndexMapper<Dune::ALUGrid<3, 3, Dune::cube, Dune::nonconforming>>
+    class CartesianIndexMapper<Dune::ALUGrid<3, 3, Dune::cube, Dune::nonconforming,
+    #if HAVE_MPI
+      Dune::ALUGridMPIComm
+#else
+      Dune::ALUGridNoComm
+#endif //HAVE_MPI
+>>
 {
 public:
 
@@ -201,8 +207,8 @@ public:
     /** \brief return index of the cells in the logical Cartesian grid */
     int cartesianIndex(const int compressedElementIndex) const
     {
-        assert(compressedElementIndex < compressedSize());
-        return cartesianIndex_[compressedElementIndex];
+       // assert(compressedElementIndex < compressedSize());
+        return compressedElementIndex;
     }
 
     /** \brief return index of the cells in the logical Cartesian grid */

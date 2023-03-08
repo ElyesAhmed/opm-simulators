@@ -18,6 +18,8 @@
 */
 #include "config.h"
 #include <opm/simulators/flow/Main.hpp>
+#include <opm/models/common/transfluxmodule.hh>
+#include <opm/models/discretization/ecfv/ecfvdiscretization.hh>
 
 namespace Opm {
 namespace Properties {
@@ -30,7 +32,43 @@ template<class TypeTag>
 struct EclEnableAquifers<TypeTag, TTag::EclFlowProblemAlugrid> {
     static constexpr bool value = false;
 };
-}
+
+// Set the problem property
+template <class TypeTag>
+struct FluxModule<TypeTag, TTag::EclFlowProblemAlugrid> {
+    using type = Opm::TransFluxModule<TypeTag>;
+};
+//template<class TypeTag>
+//struct GradientCalculator<TypeTag, TTag::FvBaseDiscretization> { 
+//    using type = FvBaseGradientCalculator<TypeTag>; };
+
+//}
+//template<class TypeTag>
+//struct GradientCalculator<TypeTag, TTag::EclFlowProblemAlugrid> { 
+//    using type = FvBaseGradientCalculator<TypeTag>; 
+//};
+// use automatic differentiation for this simulator
+template<class TypeTag>
+struct LocalLinearizerSplice<TypeTag, TTag::EclFlowProblemAlugrid> { using type = TTag::AutoDiffLocalLinearizer; };
+// use the element centered finite volume spatial discretization
+template<class TypeTag>
+struct SpatialDiscretizationSplice<TypeTag, TTag::EclFlowProblemAlugrid> { using type = TTag::EcfvDiscretization; };
+// By default, include the intrinsic permeability tensor to the VTK output files
+template<class TypeTag>
+struct VtkWriteIntrinsicPermeabilities<TypeTag, TTag::EclFlowProblemAlugrid> { static constexpr bool value = false; };
+
+// enable the storage cache by default for this problem
+template<class TypeTag>
+struct EnableStorageCache<TypeTag, TTag::EclFlowProblemAlugrid> { static constexpr bool value = false; };
+
+// enable the cache for intensive quantities by default for this problem
+template<class TypeTag>
+struct EnableIntensiveQuantityCache<TypeTag, TTag::EclFlowProblemAlugrid> { static constexpr bool value = true; };
+// this problem works fine if the linear solver uses single precision scalars
+template<class TypeTag>
+struct LinearSolverScalar<TypeTag, TTag::EclFlowProblemAlugrid> { using type = float; };
+};
+
 }
 int main(int argc, char** argv)
 {

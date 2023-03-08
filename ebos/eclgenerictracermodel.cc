@@ -416,7 +416,16 @@ Dune::Fem::AdaptiveLeafGridPart<ALUGrid3CN, Dune::PartitionIteratorType(4), fals
                                      Opm::EcfvStencil<double, Dune::Fem::GridPart2GridViewImpl<
                                                                   Dune::Fem::AdaptiveLeafGridPart<ALUGrid3CN, Dune::PartitionIteratorType(4), false> >,
                                                       false, false>,
-                                     double>;                                     
+                                     double>; 
+template class EclGenericTracerModel<ALUGrid3CN,
+Dune::Fem::GridPart2GridViewImpl<Dune::Fem::AdaptiveLeafGridPart<ALUGrid3CN, Dune::PartitionIteratorType(4), false> >,
+                                     Dune::MultipleCodimMultipleGeomTypeMapper<
+                                         Dune::Fem::GridPart2GridViewImpl<
+Dune::Fem::AdaptiveLeafGridPart<ALUGrid3CN, Dune::PartitionIteratorType(4), false> > >,
+                                     Opm::EcfvStencil<double, Dune::Fem::GridPart2GridViewImpl<
+                                                                  Dune::Fem::AdaptiveLeafGridPart<ALUGrid3CN, Dune::PartitionIteratorType(4), false> >,
+                                                      true, true>,
+                                     double>;                                                                           
 #endif //HAVE_DUNE_ALUGRID                                     
 #else
 template class EclGenericTracerModel<Dune::CpGrid,

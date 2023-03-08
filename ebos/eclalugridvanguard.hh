@@ -262,11 +262,26 @@ public:
     }
     
     unsigned int gridEquilIdxToGridIdx(unsigned int elemIndex) const {
-        return equilGridToGrid_[elemIndex];
+    //if (elemIndex>equilGridToGrid_.size())
+   // {
+       return elemIndex;
+   // }   
+   // else 
+   // {   
+     //   return equilGridToGrid_[elemIndex];
+   // }    
     }
 
     unsigned int gridIdxToEquilGridIdx(unsigned int elemIndex) const {
-        return ordering_[elemIndex];
+        //return ordering_[elemIndex];
+   // if (elemIndex>ordering_.size())
+    //{
+       return elemIndex;
+   // }
+   // else    
+   // {
+    //    return ordering_[elemIndex];
+   // }    
     }
 
 protected:

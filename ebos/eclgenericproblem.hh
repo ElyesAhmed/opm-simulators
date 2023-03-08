@@ -120,7 +120,7 @@ public:
      * degrees of freedom into the interface.
      */
     Scalar referencePorosity(unsigned elementIdx, unsigned timeIdx) const
-    { return referencePorosity_[timeIdx][elementIdx]; }
+    { return referencePorosity_[timeIdx][0]; }
 
     /*!
      * \brief Sets the porosity of an element

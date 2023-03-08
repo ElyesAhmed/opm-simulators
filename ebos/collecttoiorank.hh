@@ -57,7 +57,7 @@ public:
     enum { ioRank = 0 };
 
     static const bool needsReordering =
-        !std::is_same<Grid, EquilGrid>::value;
+        std::is_same<Grid, EquilGrid>::value;
 
     CollectDataToIORank(const Grid& grid,
                         const EquilGrid* equilGrid,

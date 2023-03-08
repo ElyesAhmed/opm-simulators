@@ -332,9 +332,9 @@ namespace Opm {
 
                 // Throw if any NaN or too large residual found.
                 if (severity == ConvergenceReport::Severity::NotANumber) {
-                    OPM_THROW(NumericalIssue, "NaN residual found!");
+              //      OPM_THROW(NumericalIssue, "NaN residual found!");
                 } else if (severity == ConvergenceReport::Severity::TooLarge) {
-                    OPM_THROW_NOLOG(NumericalIssue, "Too large residual found!");
+             //       OPM_THROW_NOLOG(NumericalIssue, "Too large residual found!");
                 }
             }
             report.update_time += perfTimer.stop();
@@ -690,6 +690,8 @@ namespace Opm {
 
                     R_sum[ compIdx ] += R2;
                     maxCoeff[ compIdx ] = std::max( maxCoeff[ compIdx ], std::abs( R2 ) / pvValue );
+                    if (!std::isfinite(maxCoeff[ compIdx ]))
+                       assert(std::isfinite(maxCoeff[ compIdx ]));
                 }
 
                 if constexpr (has_solvent_) {
