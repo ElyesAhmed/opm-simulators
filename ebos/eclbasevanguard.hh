@@ -480,7 +480,7 @@ public:
           this->updateCartesianToCompressedMapping_();
     }
 
-protected:
+//protected:
     /*!
      * \brief Get function to query cell centroids for a distributed grid.
      *

@@ -145,6 +145,37 @@ namespace Opm {
         is_cell_perforated_.resize(local_num_cells_, false);
     }
 
+   template<typename TypeTag>
+    bool
+    BlackoilWellModel<TypeTag>::
+    isCellPerforated(unsigned elemIdx) const {
+
+        return is_cell_perforated_[elemIdx];
+    }
+
+ template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    gridChanged()
+    {
+        local_num_cells_ = ebosSimulator_.gridView().size(0);
+        // Number of cells the global grid view
+        global_num_cells_ = ebosSimulator_.vanguard().globalNumCells();
+
+        extractLegacyCellPvtRegionIndex_();
+        extractLegacyDepth_();
+
+        //is_cell_perforated_.resize(local_num_cells_, false);
+
+        // Compute reservoir volumes for RESV controls.
+        rateConverter_.reset(new RateConverterType (phase_usage_,
+                                                    std::vector<int>(local_num_cells_, 0)));
+        rateConverter_->template defineState<ElementContext>(ebosSimulator_);
+
+
+
+
+    }
 
     template<typename TypeTag>
     void

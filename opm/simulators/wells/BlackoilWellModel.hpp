@@ -147,7 +147,8 @@ namespace Opm {
 
             void init();
             void initWellContainer(const int reportStepIdx) override;
-
+            bool isCellPerforated(unsigned elemIdx) const;
+           void gridChanged();
             /////////////
             // <eWoms auxiliary module stuff>
             /////////////
@@ -359,13 +360,13 @@ namespace Opm {
 
             void setupDomains(const std::vector<Domain>& domains);
 
-        protected:
-            Simulator& ebosSimulator_;
-
-            // a vector of all the wells.
+          // a vector of all the wells.
             std::vector<WellInterfacePtr> well_container_{};
 
             std::vector<bool> is_cell_perforated_{};
+        protected:
+            Simulator& ebosSimulator_;
+
 
             void initializeWellState(const int timeStepIdx);
 
