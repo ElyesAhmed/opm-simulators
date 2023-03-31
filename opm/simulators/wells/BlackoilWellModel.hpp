@@ -77,6 +77,7 @@
 #include <opm/material/densead/Math.hpp>
 
 #include <opm/simulators/utils/DeferredLogger.hpp>
+#include <dune/grid/utility/persistentcontainer.hh>
 
 namespace Opm::Properties {
 
@@ -360,13 +361,13 @@ namespace Opm {
 
             void setupDomains(const std::vector<Domain>& domains);
 
-          // a vector of all the wells.
+            // a vector of all the wells.
             std::vector<WellInterfacePtr> well_container_{};
 
             std::vector<bool> is_cell_perforated_{};
+
         protected:
             Simulator& ebosSimulator_;
-
 
             void initializeWellState(const int timeStepIdx);
 
@@ -394,6 +395,7 @@ namespace Opm {
             bool alternative_well_rate_init_{};
 
             std::unique_ptr<RateConverterType> rateConverter_{};
+
             std::map<std::string, std::unique_ptr<AverageRegionalPressureType>> regionalAveragePressureCalculator_{};
 
             struct WBPCalcID

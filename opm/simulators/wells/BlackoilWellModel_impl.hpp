@@ -161,15 +161,14 @@ namespace Opm {
         local_num_cells_ = ebosSimulator_.gridView().size(0);
         // Number of cells the global grid view
         global_num_cells_ = ebosSimulator_.vanguard().globalNumCells();
-
-        extractLegacyCellPvtRegionIndex_();
         extractLegacyDepth_();
 
         //is_cell_perforated_.resize(local_num_cells_, false);
 
         // Compute reservoir volumes for RESV controls.
-        rateConverter_.reset(new RateConverterType (phase_usage_,
-                                                    std::vector<int>(local_num_cells_, 0)));
+            // Compute reservoir volumes for RESV controls.
+        rateConverter_ = std::make_unique<RateConverterType>(phase_usage_,
+                                                                 std::vector<int>(local_num_cells_, 0));
         rateConverter_->template defineState<ElementContext>(ebosSimulator_);
 
 
@@ -2416,8 +2415,8 @@ namespace Opm {
 
         pvt_region_idx_.resize(numCells);
         for (unsigned cellIdx = 0; cellIdx < numCells; ++cellIdx) {
-            pvt_region_idx_[cellIdx] =
-                eclProblem.pvtRegionIndex(cellIdx);
+            pvt_region_idx_[cellIdx] =0;
+//                eclProblem.pvtRegionIndex(cellIdx);
         }
     }
 
