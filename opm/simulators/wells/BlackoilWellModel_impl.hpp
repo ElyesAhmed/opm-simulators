@@ -161,6 +161,7 @@ namespace Opm {
         local_num_cells_ = ebosSimulator_.gridView().size(0);
         // Number of cells the global grid view
         global_num_cells_ = ebosSimulator_.vanguard().globalNumCells();
+        extractLegacyCellPvtRegionIndex_();
         extractLegacyDepth_();
 
         //is_cell_perforated_.resize(local_num_cells_, false);

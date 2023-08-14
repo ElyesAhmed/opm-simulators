@@ -310,7 +310,7 @@ protected:
     */
     void resetWGState()
     {
-        this->active_wgstate_ = this->last_valid_wgstate_;
+     //   this->active_wgstate_ = this->last_valid_wgstate_;
     }
 
     /*

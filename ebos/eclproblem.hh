@@ -1027,7 +1027,14 @@ public:
     {
         return materialLawManager_->materialLawParams(globalDofIdx, facedir);
     }
-
+    
+    template <class Context>
+    const MaterialLawParams& materialLawParams(const Context& context,
+                                               unsigned spaceIdx, unsigned timeIdx, FaceDir::DirEnum facedir) const
+    {
+        unsigned globalDofIdx = context.globalSpaceIndex(spaceIdx, timeIdx);
+        return materialLawManager_->materialLawParams(globalDofIdx, facedir);
+    }
     /*!
      * \brief Return the parameters for the energy storage law of the rock
      */
@@ -1085,6 +1092,36 @@ public:
             Dir facedirs[ndim] = {Dir::XPlus, Dir::YPlus, Dir::ZPlus};
             for (int i = 0; i<ndim; i++) {
                 const auto& materialParams = materialLawParams(globalSpaceIdx, facedirs[i]);
+                auto& mob_array = dirMob->getArray(i);
+                MaterialLaw::relativePermeabilities(mob_array, materialParams, fluidState);
+            }
+        }
+    }
+    
+    template <class Context, class FluidState>
+    void updateRelperms( const Context& context,
+        std::array<Evaluation,numPhases> &mobility,
+        DirectionalMobilityPtr &dirMob,
+        FluidState &fluidState,
+        unsigned dofIdx, unsigned timeIdx) const
+    {
+        OPM_TIMEBLOCK_LOCAL(updateRelperms);
+        {
+            // calculate relative permeabilities. note that we store the result into the
+            // mobility_ class attribute. the division by the phase viscosity happens later.
+            const auto& materialParams = materialLawParams(context, dofIdx, timeIdx);
+            MaterialLaw::relativePermeabilities(mobility, materialParams, fluidState);
+            Valgrind::CheckDefined(mobility);
+        }
+        if (materialLawManager_->hasDirectionalRelperms()
+               || materialLawManager_->hasDirectionalImbnum())
+        {
+            using Dir = FaceDir::DirEnum;
+            constexpr int ndim = 3;
+            dirMob = std::make_unique<DirectionalMobility<TypeTag, Evaluation>>();
+            Dir facedirs[ndim] = {Dir::XPlus, Dir::YPlus, Dir::ZPlus};
+            for (int i = 0; i<ndim; i++) {
+                const auto& materialParams = materialLawParams(context, dofIdx, timeIdx, facedirs[i]);
                 auto& mob_array = dirMob->getArray(i);
                 MaterialLaw::relativePermeabilities(mob_array, materialParams, fluidState);
             }

@@ -292,6 +292,7 @@ public:
 
             typedef typename std::remove_const<typename std::remove_reference<decltype(fs)>::type>::type FluidState;
             unsigned globalDofIdx = elemCtx.globalSpaceIndex(dofIdx, /*timeIdx=*/0);
+            auto entity = elemCtx.stencil(/*timeIdx=*/0).entity(dofIdx);
             unsigned pvtRegionIdx = elemCtx.primaryVars(dofIdx, /*timeIdx=*/0).pvtRegionIndex();
 
             for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++phaseIdx) {
@@ -387,8 +388,8 @@ public:
                 if (this->invB_[phaseIdx].empty())
                     continue;
 
-                this->invB_[phaseIdx][globalDofIdx] = getValue(fs.invB(phaseIdx));
-                Valgrind::CheckDefined(this->invB_[phaseIdx][globalDofIdx]);
+                this->invB_[phaseIdx][elemCtx.simulator().problem().container_[entity].preAdaptIndex] = getValue(fs.invB(phaseIdx));
+                Valgrind::CheckDefined(this->invB_[phaseIdx][elemCtx.simulator().problem().container_[entity].preAdaptIndex]);
             }
 
             for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++phaseIdx) {
@@ -624,7 +625,7 @@ public:
             }
 
             // Adding Well RFT data
-            const auto cartesianIdx = elemCtx.simulator().vanguard().cartesianIndex(globalDofIdx);
+            const auto cartesianIdx = elemCtx.simulator().vanguard().cartesianIndex(elemCtx.simulator().problem().container_[entity].preAdaptIndex);
             if (this->oilConnectionPressures_.count(cartesianIdx) > 0) {
                 this->oilConnectionPressures_[cartesianIdx] = getValue(fs.pressure(oilPhaseIdx));
             }
@@ -848,7 +849,7 @@ public:
                         }
 
                         // Include active pore-volume.
-                        val.second *= elemCtx.simulator().model().dofTotalVolume(globalDofIdx)
+                        val.second *= elemCtx.simulator().model().dofTotalVolume(elemCtx.simulator().problem().container_[entity].preAdaptIndex)
                             * getValue(intQuants.porosity());
                     }
                     else if (key.first == "BRS")
@@ -900,7 +901,7 @@ public:
                         }
 
                         // Include active pore-volume.
-                        val.second *= elemCtx.simulator().model().dofTotalVolume(globalDofIdx)
+                        val.second *= elemCtx.simulator().model().dofTotalVolume(elemCtx.simulator().problem().container_[entity].preAdaptIndex)
                             * getValue(intQuants.porosity());
                     }
                     else if (key.first == "BFLOWI")
