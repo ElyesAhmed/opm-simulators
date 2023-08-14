@@ -641,7 +641,6 @@ namespace Opm
                       };
         WellInterface<TypeTag>::getMobility(ebosSimulator, perf, mob,
                                             obtain, deferred_logger);
-
         // modify the water mobility if polymer is present
         if constexpr (has_polymer) {
             if (!FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)) {
