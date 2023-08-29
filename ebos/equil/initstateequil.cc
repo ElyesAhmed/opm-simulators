@@ -27,6 +27,10 @@
 
 #include <opm/grid/CpGrid.hpp>
 
+#if HAVE_DUNE_ALUGRID
+#include <dune/alugrid/grid.hh>
+#endif
+
 #if HAVE_DUNE_FEM
 #include <dune/fem/gridpart/adaptiveleafgridpart.hh>
 #include <dune/fem/gridpart/common/gridpart2gridview.hh>
@@ -38,18 +42,40 @@ namespace EQUIL {
 namespace DeckDependent {
 
 using MatLaw = EclMaterialLawManager<ThreePhaseMaterialTraits<double,0,1,2>>;
-template InitialStateComputer<BlackOilFluidSystem<double>,
-                              Dune::CpGrid,
-                              GridView,
-                              Mapper,
-                              Dune::CartesianIndexMapper<Dune::CpGrid>>::
-    InitialStateComputer(MatLaw&,
-                         const EclipseState&,
-                         const Dune::CpGrid&,
-                         const GridView&,
-                         const Dune::CartesianIndexMapper<Dune::CpGrid>&,
-                         const double,
-                         const bool);
+#define INSTANCE_COMP(Grid, GridView, Mapper) \
+    template class InitialStateComputer<BlackOilFluidSystem<double>, \
+                                        Grid, \
+                                        GridView, \
+                                        Mapper, \
+                                        Dune::CartesianIndexMapper<Grid>>; \
+    template InitialStateComputer<BlackOilFluidSystem<double>, \
+                                  Grid, \
+                                  GridView, \
+                                  Mapper, \
+                                  Dune::CartesianIndexMapper<Grid>>::\
+        InitialStateComputer(MatLaw&, \
+                             const EclipseState&, \
+                             const Grid&, \
+                             const GridView&, \
+                             const Dune::CartesianIndexMapper<Grid>&, \
+                             const double, \
+                             const int, \
+                             const bool);
+using Grid = Dune::CpGrid;
+using GridView = Dune::GridView<Dune::DefaultLeafGridViewTraits<Grid>>;
+using Mapper = Dune::MultipleCodimMultipleGeomTypeMapper<GridView>;
+INSTANCE_COMP(Grid, GridView, Mapper)
+
+#if HAVE_DUNE_FEM
+using GridViewFem = Dune::Fem::GridPart2GridViewImpl<
+                                        Dune::Fem::AdaptiveLeafGridPart<
+                                            Grid,
+                                            Dune::PartitionIteratorType(4),
+                                            false>>;
+using MapperFem = Dune::MultipleCodimMultipleGeomTypeMapper<GridViewFem>;
+INSTANCE_COMP(Grid, GridViewFem, MapperFem)
+#endif // HAVE_DUNE_FEM
+
 #if HAVE_DUNE_ALUGRID
 #if HAVE_MPI
 using ALUGridComm = Dune::ALUGridMPIComm;
@@ -59,82 +85,14 @@ using ALUGridComm = Dune::ALUGridNoComm;
 using ALUGrid3CN = Dune::ALUGrid<3, 3, Dune::cube, Dune::nonconforming, ALUGridComm>;
 using ALUGridView = Dune::GridView<Dune::ALU3dLeafGridViewTraits<const ALUGrid3CN, Dune::PartitionIteratorType(4)>>;
 using ALUGridMapper = Dune::MultipleCodimMultipleGeomTypeMapper<ALUGridView>;
-template class InitialStateComputer<BlackOilFluidSystem<double>,
-                                    ALUGrid3CN,
-                                    ALUGridView,
-                                    ALUGridMapper,
-                                    Dune::CartesianIndexMapper<ALUGrid3CN>>;
-
-template InitialStateComputer<BlackOilFluidSystem<double>,
-                              ALUGrid3CN,
-                              ALUGridView,
-                              ALUGridMapper,
-                              Dune::CartesianIndexMapper<ALUGrid3CN>>::
-    InitialStateComputer(MatLaw&,
-                         const EclipseState&,
-                         const ALUGrid3CN&,
-                         const ALUGridView&,
-                         const Dune::CartesianIndexMapper<ALUGrid3CN>&,
-                         const double,
-                         const bool);
+INSTANCE_COMP(ALUGrid3CN, ALUGridView, ALUGridMapper)
 #if HAVE_DUNE_FEM
 using MapperFemAluGrid = Dune::MultipleCodimMultipleGeomTypeMapper<Dune::Fem::GridPart2GridViewImpl<Dune::Fem::AdaptiveLeafGridPart<ALUGrid3CN> > >;
 using GridViewFemAluGrid = Dune::Fem::GridPart2GridViewImpl<
                                      Dune::Fem::AdaptiveLeafGridPart<ALUGrid3CN>>;
-template class InitialStateComputer<BlackOilFluidSystem<double>,
-                                    ALUGrid3CN,
-                                    GridViewFemAluGrid,
-                                    MapperFemAluGrid,
-                                    Dune::CartesianIndexMapper<ALUGrid3CN>>;
-
-template InitialStateComputer<BlackOilFluidSystem<double>,
-                              ALUGrid3CN,
-                              GridViewFemAluGrid,
-                              MapperFemAluGrid,
-                              Dune::CartesianIndexMapper<ALUGrid3CN>>::
-    InitialStateComputer(MatLaw&,
-                         const EclipseState&,
-                         const ALUGrid3CN&,
-                         const GridViewFemAluGrid&,
-                         const Dune::CartesianIndexMapper<ALUGrid3CN>&,
-                         const double,
-                         const bool);
-#endif //HAVE_DUNE_FEM
-#endif //HAVE_DUNE_ALUGRID
-
-#define INSTANCE_COMP(GridView, Mapper) \
-    template class InitialStateComputer<BlackOilFluidSystem<double>, \
-                                        Dune::CpGrid, \
-                                        GridView, \
-                                        Mapper, \
-                                        Dune::CartesianIndexMapper<Dune::CpGrid>>; \
-    template InitialStateComputer<BlackOilFluidSystem<double>, \
-                                  Dune::CpGrid, \
-                                  GridView, \
-                                  Mapper, \
-                                  Dune::CartesianIndexMapper<Dune::CpGrid>>::\
-        InitialStateComputer(MatLaw&, \
-                             const EclipseState&, \
-                             const Dune::CpGrid&, \
-                             const GridView&, \
-                             const Dune::CartesianIndexMapper<Dune::CpGrid>&, \
-                             const double, \
-                             const int, \
-                             const bool);
-
-using GridView = Dune::GridView<Dune::DefaultLeafGridViewTraits<Dune::CpGrid>>;
-using Mapper = Dune::MultipleCodimMultipleGeomTypeMapper<GridView>;
-INSTANCE_COMP(GridView, Mapper)
-
-#if HAVE_DUNE_FEM
-using GridViewFem = Dune::Fem::GridPart2GridViewImpl<
-                                        Dune::Fem::AdaptiveLeafGridPart<
-                                            Dune::CpGrid,
-                                            Dune::PartitionIteratorType(4),
-                                            false>>;
-using MapperFem = Dune::MultipleCodimMultipleGeomTypeMapper<GridViewFem>;
-INSTANCE_COMP(GridViewFem, MapperFem)
+INSTANCE_COMP(ALUGrid3CN, GridViewFemAluGrid, MapperFemAluGrid)
 #endif // HAVE_DUNE_FEM
+#endif // HAVE_DUNE_ALUGRID
 
 } // namespace DeckDependent
 

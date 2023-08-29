@@ -23,6 +23,8 @@
 #include <config.h>
 #include "eclgenerictracermodel_impl.hh"
 
+#include <opm/grid/polyhedralgrid.hh>
+
 #if HAVE_DUNE_FEM
 #include <dune/fem/gridpart/adaptiveleafgridpart.hh>
 #include <dune/fem/gridpart/common/gridpart2gridview.hh>
