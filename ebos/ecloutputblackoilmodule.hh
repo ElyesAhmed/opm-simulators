@@ -388,8 +388,8 @@ public:
                 if (this->invB_[phaseIdx].empty())
                     continue;
 
-                this->invB_[phaseIdx][elemCtx.simulator().problem().container_[entity].preAdaptIndex] = getValue(fs.invB(phaseIdx));
-                Valgrind::CheckDefined(this->invB_[phaseIdx][elemCtx.simulator().problem().container_[entity].preAdaptIndex]);
+                this->invB_[phaseIdx][globalDofIdx] = getValue(fs.invB(phaseIdx));
+                Valgrind::CheckDefined(this->invB_[phaseIdx][globalDofIdx]);
             }
 
             for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++phaseIdx) {
@@ -625,7 +625,7 @@ public:
             }
 
             // Adding Well RFT data
-            const auto cartesianIdx = elemCtx.simulator().vanguard().cartesianIndex(elemCtx.simulator().problem().container_[entity].preAdaptIndex);
+            const auto cartesianIdx = elemCtx.simulator().vanguard().cartesianIndex(globalDofIdx);
             if (this->oilConnectionPressures_.count(cartesianIdx) > 0) {
                 this->oilConnectionPressures_[cartesianIdx] = getValue(fs.pressure(oilPhaseIdx));
             }
@@ -849,7 +849,7 @@ public:
                         }
 
                         // Include active pore-volume.
-                        val.second *= elemCtx.simulator().model().dofTotalVolume(elemCtx.simulator().problem().container_[entity].preAdaptIndex)
+                        val.second *= elemCtx.simulator().model().dofTotalVolume(globalDofIdx)
                             * getValue(intQuants.porosity());
                     }
                     else if (key.first == "BRS")
@@ -901,7 +901,7 @@ public:
                         }
 
                         // Include active pore-volume.
-                        val.second *= elemCtx.simulator().model().dofTotalVolume(elemCtx.simulator().problem().container_[entity].preAdaptIndex)
+                        val.second *= elemCtx.simulator().model().dofTotalVolume(globalDofIdx)
                             * getValue(intQuants.porosity());
                     }
                     else if (key.first == "BFLOWI")
