@@ -385,11 +385,42 @@ updateNum(const std::string& name, std::vector<T>& numbers, std::size_t num_regi
 }
 
 template<class GridView, class FluidSystem, class Scalar>
+template<class T>
+void EclGenericProblem<GridView,FluidSystem,Scalar>::
+updateNum_(const std::string& name, std::vector<T>& numbers, std::size_t num_regions, std::vector<int>& map_)
+{
+    if (!eclState_.fieldProps().has_int(name))
+        return;
+
+    const auto& numData = eclState_.fieldProps().get_int(name);
+
+    unsigned numElems = gridView_.size(/*codim=*/0);
+    numbers.resize(numElems);
+    for (unsigned elemIdx = 0; elemIdx < numElems; ++elemIdx) {
+        if (numData[map_[elemIdx]] > (int)num_regions) {
+            throw std::runtime_error("Values larger than maximum number of regions " + std::to_string(num_regions) + " provided in " + name);
+        } else if (numData[map_[elemIdx]] > 0) {
+            numbers[map_[elemIdx]] = static_cast<T>(numData[map_[elemIdx]]) - 1;
+        } else {
+            throw std::runtime_error("zero or negative values provided for region array: " + name);
+        }
+    }
+}
+
+template<class GridView, class FluidSystem, class Scalar>
 void EclGenericProblem<GridView,FluidSystem,Scalar>::
 updatePvtnum_()
 {
     const auto num_regions = eclState_.getTableManager().getTabdims().getNumPVTTables();
     updateNum("PVTNUM", pvtnum_, num_regions);
+}
+
+template<class GridView, class FluidSystem, class Scalar>
+void EclGenericProblem<GridView,FluidSystem,Scalar>::
+updatePvtnum_(std::vector<int>& map_)
+{
+    const auto num_regions = eclState_.getTableManager().getTabdims().getNumPVTTables();
+    updateNum_("PVTNUM", pvtnum_, num_regions, map_);
 }
 
 template<class GridView, class FluidSystem, class Scalar>
@@ -402,6 +433,14 @@ updateSatnum_()
 
 template<class GridView, class FluidSystem, class Scalar>
 void EclGenericProblem<GridView,FluidSystem,Scalar>::
+updateSatnum_(std::vector<int>& map_)
+{
+    const auto num_regions = eclState_.getTableManager().getTabdims().getNumSatTables();
+    updateNum_("SATNUM", satnum_, num_regions, map_);
+}
+
+template<class GridView, class FluidSystem, class Scalar>
+void EclGenericProblem<GridView,FluidSystem,Scalar>::
 updateMiscnum_()
 {
     const auto num_regions = 1; // we only support single region
@@ -410,10 +449,26 @@ updateMiscnum_()
 
 template<class GridView, class FluidSystem, class Scalar>
 void EclGenericProblem<GridView,FluidSystem,Scalar>::
+updateMiscnum_(std::vector<int>& map_)
+{
+    const auto num_regions = 1; // we only support single region
+    updateNum_("MISCNUM", miscnum_, num_regions, map_);
+}
+
+template<class GridView, class FluidSystem, class Scalar>
+void EclGenericProblem<GridView,FluidSystem,Scalar>::
 updatePlmixnum_()
 {
     const auto num_regions = 1; // we only support single region
     updateNum("PLMIXNUM", plmixnum_, num_regions);
+}
+
+template<class GridView, class FluidSystem, class Scalar>
+void EclGenericProblem<GridView,FluidSystem,Scalar>::
+updatePlmixnum_(std::vector<int>& map_)
+{
+    const auto num_regions = 1; // we only support single region
+    updateNum_("PLMIXNUM", plmixnum_, num_regions, map_);
 }
 
 template<class GridView, class FluidSystem, class Scalar>
@@ -428,12 +483,32 @@ updateKrnum_()
 
 template<class GridView, class FluidSystem, class Scalar>
 void EclGenericProblem<GridView,FluidSystem,Scalar>::
+updateKrnum_(std::vector<int>& map_)
+{
+    const auto num_regions = eclState_.getTableManager().getTabdims().getNumSatTables();
+    updateNum_("KRNUMX", krnumx_, num_regions, map_);
+    updateNum_("KRNUMY", krnumy_, num_regions, map_);
+    updateNum_("KRNUMZ", krnumz_, num_regions, map_);
+}
+
+template<class GridView, class FluidSystem, class Scalar>
+void EclGenericProblem<GridView,FluidSystem,Scalar>::
 updateImbnum_()
 {
     const auto num_regions = eclState_.getTableManager().getTabdims().getNumSatTables();
     updateNum("IMBNUMX", imbnumx_, num_regions);
     updateNum("IMBNUMY", imbnumy_, num_regions);
     updateNum("IMBNUMZ", imbnumz_, num_regions);
+}
+
+template<class GridView, class FluidSystem, class Scalar>
+void EclGenericProblem<GridView,FluidSystem,Scalar>::
+updateImbnum_(std::vector<int>& map_)
+{
+    const auto num_regions = eclState_.getTableManager().getTabdims().getNumSatTables();
+    updateNum_("IMBNUMX", imbnumx_, num_regions, map_);
+    updateNum_("IMBNUMY", imbnumy_, num_regions, map_);
+    updateNum_("IMBNUMZ", imbnumz_, num_regions, map_);
 }
 
 template<class GridView, class FluidSystem, class Scalar>

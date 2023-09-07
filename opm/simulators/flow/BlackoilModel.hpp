@@ -491,7 +491,7 @@ namespace Opm {
                 // ---- Newton update ----
                 // Apply the update, with considering model-dependent limitations and
                 // chopping of the update.
-                updateSolution(x);
+                this->updateSolution(x);
 
                 report.update_time += perfTimer.stop();
             }

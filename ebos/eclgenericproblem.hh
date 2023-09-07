@@ -329,11 +329,28 @@ protected:
                                                   bool enableMICP);
 
     void updatePvtnum_();
+
+    void updatePvtnum_(std::vector<int>& map_);
+
     void updateSatnum_();
+
+    void updateSatnum_(std::vector<int>& map_);
+
     void updateMiscnum_();
+
+    void updateMiscnum_(std::vector<int>& map_);
+
     void updatePlmixnum_();
+
+    void updatePlmixnum_(std::vector<int>& map_);
+
     void updateKrnum_();
+
+    void updateKrnum_(std::vector<int>& map_);
+
     void updateImbnum_();
+
+    void updateImbnum_(std::vector<int>& map_);
 
     const EclipseState& eclState_;
     const Schedule& schedule_;
@@ -397,6 +414,8 @@ protected:
 private:
     template<class T>
     void updateNum(const std::string& name, std::vector<T>& numbers, std::size_t num_regions);
+    template<class T>
+    void updateNum_(const std::string& name, std::vector<T>& numbers, std::size_t num_regions, std::vector<int>& map_);
 };
 
 } // namespace Opm
