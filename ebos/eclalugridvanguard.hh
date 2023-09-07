@@ -30,7 +30,7 @@
 #include <dune/alugrid/common/fromtogridfactory.hh>
 #include <dune/alugrid/dgf.hh>
 #include <dune/alugrid/grid.hh>
-
+#define DISABLE_ALUGRID_SFC_ORDERING 1
 #include <ebos/alucartesianindexmapper.hh>
 #include <ebos/eclbasevanguard.hh>
 #include <ebos/ecltransmissibility.hh>

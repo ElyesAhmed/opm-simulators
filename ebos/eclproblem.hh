@@ -33,7 +33,7 @@
 #include <dune/common/version.hh>
 #include <dune/common/fvector.hh>
 #include <dune/common/fmatrix.hh>
-
+#define DISABLE_ALUGRID_SFC_ORDERING 1
 #include <ebos/eclbaseaquifermodel.hh>
 #include <ebos/eclcpgridvanguard.hh>
 #include <ebos/ecldummygradientcalculator.hh>

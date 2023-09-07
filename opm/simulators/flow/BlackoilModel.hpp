@@ -491,7 +491,7 @@ namespace Opm {
                 // ---- Newton update ----
                 // Apply the update, with considering model-dependent limitations and
                 // chopping of the update.
-                updateSolution(x);
+                this->updateSolution(x);
 
                 report.update_time += perfTimer.stop();
             }
@@ -703,8 +703,8 @@ namespace Opm {
             // if the solution is updated, the intensive quantities need to be recalculated
             {
                 OPM_TIMEBLOCK(invalidateAndUpdateIntensiveQuantities);
-                simulator_.model().invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
-                simulator_.problem().eclWriter()->mutableEclOutputModule().invalidateLocalData();
+                ebosSimulator_.model().invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
+             //   ebosSimulator_.problem().eclWriter()->mutableEclOutputModule().invalidateLocalData();
             }
         }
 
