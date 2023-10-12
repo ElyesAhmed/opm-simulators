@@ -419,7 +419,7 @@ namespace Opm {
             // Keep track of the domain of each well, if using subdomains.
             std::map<std::string, int> well_domain_;
 
-            const Grid& grid() const
+            Grid& grid() const
             { return ebosSimulator_.vanguard().grid(); }
 
             const EquilGrid& equilGrid() const

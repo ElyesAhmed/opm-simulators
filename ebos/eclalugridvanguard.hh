@@ -283,6 +283,45 @@ public:
         return ordering_[elemIndex];
     }
 
+    void resetOrdering_()
+    {
+    
+    
+     // cartesianCellId_ = this->equilGrid_->globalCell();
+//
+   //     for (unsigned i = 0; i < dimension; ++i)
+  //          cartesianDimension_[i] = this->equilGrid_->logicalCartesianSize()[i];
+
+  //      equilCartesianIndexMapper_ = std::make_unique<EquilCartesianIndexMapper>(*equilGrid_);
+
+  //      cartesianIndexMapper_ = std::make_unique<CartesianIndexMapper>(*grid_, cartesianDimension_, cartesianCellId_);
+        ordering_.resize(grid().size(0));
+        equilGridToGrid_.resize(ordering_.size());
+        for (std::size_t index = 0; index < ordering_.size(); ++index) {
+            ordering_[index] = index;
+            equilGridToGrid_[index] = index;
+        }
+       
+     // this->updateGridView_();
+      this->adaptCartesianToCompressedMapping_();
+   //   if (grid().size(0))
+   //    {
+    //       globalTrans_ = std::make_unique<TransmissibilityType>(this->eclState(),
+    //                                                             this->gridView(),
+   //                                                              this->cartesianIndexMapper(),
+   //                                                              this->grid(),
+   //                                                              this->cellCentroids(),
+  //                                                               getPropValue<TypeTag,
+  //                                                               Properties::EnableEnergy>(),
+  //                                                               getPropValue<TypeTag,
+ //                                                                Properties::EnableDiffusion>());
+            // Re-ordering  for ALUGrid
+ //           globalTrans_->update(false, [&](unsigned int i) { return gridEquilIdxToGridIdx(i);});
+  //      }
+    }
+
+
+
 protected:
     void createGrids_()
     {

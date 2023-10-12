@@ -327,13 +327,13 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
 
                 useWellConn_ = EWOMS_GET_PARAM(TypeTag, bool, MatrixAddWellContributions);
                 // setup sparsity pattern for jacobi matrix for preconditioner (only used for openclSolver)
-//            } else {
+           // } else {
                 // Pointers should not change
-//                if ( &M != matrix_ ) {
-//                        OPM_THROW(std::logic_error,
-//                                  "Matrix objects are expected to be reused when reassembling!");
-//                }
- //           }
+          //      if ( &M != matrix_ ) {
+          //              OPM_THROW(std::logic_error,
+          //                        "Matrix objects are expected to be reused when reassembling!");
+         //       }
+          //  }
             rhs_ = &b;
 
             // TODO: check all solvers, not just one.
