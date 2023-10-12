@@ -34,7 +34,7 @@
 #include <opm/grid/LookUpCellCentroid.hh>
 #include <opm/input/eclipse/EclipseState/Aquifer/NumericalAquifer/NumericalAquiferCell.hpp>
 #include <opm/input/eclipse/EclipseState/EclipseState.hpp>
-
+#define DISABLE_ALUGRID_SFC_ORDERING 1
 #include <opm/models/discretization/common/fvbaseproperties.hh>
 #include <opm/models/io/basevanguard.hh>
 #include <opm/models/utils/parametersystem.hh>
@@ -533,6 +533,28 @@ public:
             const auto elemIdx = elemMapper.index(element);
             unsigned cartesianCellIdx = cartesianIndex(elemIdx);
             cartesianToCompressed_[cartesianCellIdx] = elemIdx;
+            if (element.partitionType() == Dune::InteriorEntity)
+            {
+                is_interior_[elemIdx] = 1;
+            }
+            else
+            {
+                is_interior_[elemIdx] = 0;
+            }
+        }
+    }
+    
+    void adaptCartesianToCompressedMapping_()
+    {
+        int num_cells = this->gridView().size(/*codim=*/0);
+        is_interior_.resize(num_cells);
+        
+        ElementMapper elemMapper(this->gridView(), Dune::mcmgElementLayout());
+        for (const auto& element : elements(this->gridView()))
+        {
+            const auto elemIdx = elemMapper.index(element);
+            //unsigned cartesianCellIdx = cartesianIndex(elemIdx);
+            cartesianToCompressed_[elemIdx] = elemIdx;
             if (element.partitionType() == Dune::InteriorEntity)
             {
                 is_interior_[elemIdx] = 1;
