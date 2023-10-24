@@ -202,7 +202,8 @@ initFromRestartFile(const RestartValue& restartValues,
     this->local_parallel_well_info_ = createLocalParallelWellInfo(wells_ecl_);
 
     this->initializeWellProdIndCalculators();
-    initializeWellPerfData();
+    std::vector<int> mapping;
+    initializeWellPerfData(mapping);
 
     if (! this->wells_ecl_.empty()) {
         handle_ms_well &= anyMSWellOpenLocal();
@@ -248,7 +249,8 @@ prepareDeserialize(int report_step, const std::size_t numCells, bool handle_ms_w
     this->local_parallel_well_info_ = createLocalParallelWellInfo(wells_ecl_);
 
     this->initializeWellProdIndCalculators();
-    initializeWellPerfData();
+    std::vector<int> mapping;
+    initializeWellPerfData(mapping);
 
     if (! this->wells_ecl_.empty()) {
         handle_ms_well &= anyMSWellOpenLocal();
@@ -303,7 +305,7 @@ initializeWellProdIndCalculators()
 
 void
 BlackoilWellModelGeneric::
-initializeWellPerfData()
+initializeWellPerfData(const std::vector<int>& mapping)
 {
     well_perf_data_.resize(wells_ecl_.size());
 
@@ -355,7 +357,17 @@ initializeWellPerfData()
                     }
 
                     auto pd = PerforationData{};
-                    pd.cell_index = active_index;
+                    if(mapping.size() == 0){
+                        pd.cell_index = active_index;
+                    }else{
+                        // grid is refined
+                        int new_cellindex = mapping[active_index];
+                        if(new_cellindex <0){
+                            std::runtime_error("Refinement in well cells not supported");
+                        }else{
+                            pd.cell_index = new_cellindex;
+                        }
+                    }
                     pd.connection_transmissibility_factor = connection.CF();
                     pd.satnum_id = connection.satTableId();
                     pd.ecl_index = connection_index;

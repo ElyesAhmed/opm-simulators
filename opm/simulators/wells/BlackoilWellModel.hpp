@@ -454,9 +454,10 @@ namespace Opm {
             /// \param[in] enableWellPIScaling Whether or not to enable WELPI
             ///   scaling.  Typically enabled (i.e., true) only at the start
             ///   of a report step.
+
             void initializeLocalWellStructure(const int  reportStepIdx,
                                               const bool enableWellPIScaling);
-
+            std::vector<int> getWellGridMapping() const;
             /// Initialize group control modes/constraints and group solution state.
             ///
             /// \param[in] reportStepIdx Report step.
