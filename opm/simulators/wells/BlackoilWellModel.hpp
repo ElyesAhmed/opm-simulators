@@ -457,7 +457,7 @@ namespace Opm {
 
             void initializeLocalWellStructure(const int  reportStepIdx,
                                               const bool enableWellPIScaling);
-            std::vector<int> getWellGridMapping() const;
+            //std::vector<int> getWellGridMapping() const;
             /// Initialize group control modes/constraints and group solution state.
             ///
             /// \param[in] reportStepIdx Report step.

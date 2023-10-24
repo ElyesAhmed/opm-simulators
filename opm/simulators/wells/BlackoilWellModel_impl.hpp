@@ -152,25 +152,25 @@ namespace Opm {
 
         return is_cell_perforated_[elemIdx];
     }
-    template<typename TypeTag>
-    std::vector<int> BlackoilWellModel<TypeTag>::getWellGridMapping() const{
-        int org_size = ebosSimulator_.vanguard().cartesianSize();//?
-        std::vector<int> mapping(org_size);
-        std::fill(mapping.begin(),mapping.end(),-1);
-        const auto& gridView = ebosSimulator_.gridView();
-        const auto& problem = ebosSimulator_.problem();
-        const auto& model = ebosSimulator_.model();
-        for(auto elem: elements(gridView)) {
-            if(elem.level() == 0){
-                int org_index = problem.container_[elem].preAdaptIndex;
-                int new_index = model.elementMapper().index(elem);
-                //int new_index = problem.container_[elem].postAdaptIndex;
-                mapping[org_index] = new_index;
-                std::cout << "Level 0 : preadapt" << org_index << " postadapt" << new_index << std::endl;
-            }
-        }
-        return mapping;
-    }
+    // template<typename TypeTag>
+    // std::vector<int> BlackoilWellModel<TypeTag>::getWellGridMapping() const{
+    //     int org_size = ebosSimulator_.vanguard().cartesianSize();//?
+    //     std::vector<int> mapping(org_size);
+    //     std::fill(mapping.begin(),mapping.end(),-1);
+    //     const auto& gridView = ebosSimulator_.gridView();
+    //     const auto& problem = ebosSimulator_.problem();
+    //     const auto& model = ebosSimulator_.model();
+    //     for(auto elem: elements(gridView)) {
+    //         if(elem.level() == 0){
+    //             int org_index = problem.container_[elem].preAdaptIndex;
+    //             int new_index = model.elementMapper().index(elem);
+    //             //int new_index = problem.container_[elem].postAdaptIndex;
+    //             mapping[org_index] = new_index;
+    //             std::cout << "Level 0 : preadapt" << org_index << " postadapt" << new_index << std::endl;
+    //         }
+    //     }
+    //     return mapping;
+    // }
 
  template<typename TypeTag>
     void
@@ -183,7 +183,7 @@ namespace Opm {
         extractLegacyCellPvtRegionIndex_();
         extractLegacyDepth_();
         // redo perforation data TODO recalculate well conections if refinement
-        std::vector<int> mapping = this->getWellGridMapping();
+        std::vector<int> mapping = ebosSimulator_.problem().getWellGridMapping();
         this->initializeWellPerfData(mapping);
         // help structure for faster reservoir well update
         is_cell_perforated_.resize(local_num_cells_, false);
@@ -357,7 +357,7 @@ namespace Opm {
         // scope a bit.
         OPM_BEGIN_PARALLEL_TRY_CATCH()
         {
-            std::vector<int> mapping = this->getWellGridMapping();
+            std::vector<int> mapping = ebosSimulator_.problem().getWellGridMapping();
             this->initializeWellPerfData(mapping);
             this->initializeWellState(reportStepIdx);
             this->initializeWBPCalculationService();
