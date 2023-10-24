@@ -328,7 +328,7 @@ protected:
     std::vector<std::reference_wrapper<ParallelWellInfo>> createLocalParallelWellInfo(const std::vector<Well>& wells);
 
     void initializeWellProdIndCalculators();
-    void initializeWellPerfData();
+    void initializeWellPerfData(const std::vector<int>& mapping);
 
     bool wasDynamicallyShutThisTimeStep(const int well_index) const;
 
