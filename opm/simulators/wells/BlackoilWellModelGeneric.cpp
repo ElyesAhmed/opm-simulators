@@ -316,6 +316,7 @@ initializeWellPerfData(const std::vector<int>& mapping)
     for (const auto& well : wells_ecl_) {
         int connection_index = 0;
 
+        //well.recalculatePerforations(G);
         // INVALID_ECL_INDEX marks no above perf available
         int connection_index_above = ParallelWellInfo::INVALID_ECL_INDEX;
 
@@ -362,8 +363,8 @@ initializeWellPerfData(const std::vector<int>& mapping)
                     }else{
                         // grid is refined
                         int new_cellindex = mapping[active_index];
-                        if(new_cellindex <0){
-                            std::runtime_error("Refinement in well cells not supported");
+                        if(new_cellindex < 0){
+                            std::cout << "Well mapped to negative cell: wrong refinement?" << std::endl;
                         }else{
                             pd.cell_index = new_cellindex;
                         }
