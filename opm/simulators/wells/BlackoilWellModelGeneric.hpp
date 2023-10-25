@@ -249,7 +249,7 @@ public:
                this->switched_prod_groups_ == rhs.switched_prod_groups_ &&
                this->switched_inj_groups_ == rhs.switched_inj_groups_;
     }
-
+    std::vector<std::vector<int>> getMaxWellConnections() const;
 protected:
 
     /*
@@ -426,7 +426,7 @@ protected:
     virtual int compressedIndexForInterior(int cartesian_cell_idx) const = 0;
 
     std::vector<int> getCellsForConnections(const Well& well) const;
-    std::vector<std::vector<int>> getMaxWellConnections() const;
+
 
     std::vector<std::string> getWellsForTesting(const int timeStepIdx,
                                                 const double simulationTime);
