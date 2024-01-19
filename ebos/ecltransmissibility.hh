@@ -73,7 +73,7 @@ public:
      * \brief Return the permeability for an element.
      */
     const DimMatrix& permeability(unsigned elemIdx) const
-    { return permeability_[0]; }
+    { return permeability_[elemIdx]; }
 
     /*!
      * \brief Return the transmissibility for the intersection between two elements.
