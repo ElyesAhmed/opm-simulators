@@ -184,7 +184,7 @@ namespace Opm {
         extractLegacyDepth_();
         // redo perforation data TODO recalculate well conections if refinement
         //std::vector<int> mapping = ebosSimulator_.problem().getWellGridMapping();
-        //this->initializeWellPerfData(mapping);
+        this->initializeWellPerfData({});
         // help structure for faster reservoir well update
         is_cell_perforated_.resize(local_num_cells_, false);
         std::fill(is_cell_perforated_.begin(), is_cell_perforated_.end(), false);
@@ -358,7 +358,7 @@ namespace Opm {
         OPM_BEGIN_PARALLEL_TRY_CATCH()
         {
             //std::vector<int> mapping = ebosSimulator_.problem().getWellGridMapping();
-           // this->initializeWellPerfData(mapping);
+            this->initializeWellPerfData({});
             this->initializeWellState(reportStepIdx);
             this->initializeWBPCalculationService();
 

@@ -170,15 +170,7 @@ public:
      */
     void loadBalance()
     {
-        auto gridView = grid().leafGridView();
-        auto dataHandle = cartesianIndexMapper_->dataHandle(gridView);
-        grid().loadBalance(*dataHandle);
-
-        // communicate non-interior cells values
-        grid().communicate(*dataHandle,
-                           Dune::InteriorBorder_All_Interface,
-                           Dune::ForwardCommunication );
-
+ 
        if (grid().size(0))
        {
            globalTrans_ = std::make_unique<TransmissibilityType>(this->eclState(),
@@ -195,6 +187,23 @@ public:
             // Re-ordering  for ALUGrid
             globalTrans_->update(false, [&](unsigned int i) { return gridEquilIdxToGridIdx(i);});
         }
+        
+        this->updateGridView_();        
+        auto gridView = grid().leafGridView();
+        auto dataHandle = cartesianIndexMapper_->dataHandle(gridView);
+        grid().loadBalance(*dataHandle);
+
+        // communicate non-interior cells values
+        grid().communicate(*dataHandle,
+                           Dune::InteriorBorder_All_Interface,
+                           Dune::ForwardCommunication );
+       
+        this->updateCartesianToCompressedMapping_();
+        this->updateCellDepths_();
+        this->updateCellThickness_();
+#if HAVE_MPI
+        this->distributeFieldProps_(this->eclState());
+#endif
         
     }
 
@@ -378,10 +387,43 @@ protected:
         }
 
         cartesianIndexMapper_ = std::make_unique<CartesianIndexMapper>(*grid_, cartesianDimension_, cartesianCellId_);
-        this->updateGridView_();
-        this->updateCartesianToCompressedMapping_();
-        this->updateCellDepths_();
-        this->updateCellThickness_();
+       // }
+        if (mpiRank == 0)
+    {
+        equilGrid_.reset(new Dune::CpGrid(*equilGrid_));
+        equilCartesianIndexMapper_ = std::make_unique<EquilCartesianIndexMapper>(*equilGrid_);
+
+    }
+    
+    }
+    
+    
+    void distributeFieldProps_(EclipseState& eclState1)
+    {
+        const auto mpiSize = this->grid_->comm().size();
+
+        if (mpiSize == 1) {
+           return;
+        }
+
+       if (auto* parallelEclState = dynamic_cast<ParallelEclipseState*>(&eclState1);
+          parallelEclState != nullptr)
+       {
+          // Reset Cartesian index mapper for automatic creation of field
+          // properties
+          parallelEclState->resetCartesianMapper(this->cartesianIndexMapper_.get());
+          parallelEclState->switchToDistributedProps();
+       }
+       else {
+          const auto message = std::string {
+              "Parallel simulator setup is incorrect as "
+              "it does not use ParallelEclipseState"
+            };
+
+          OpmLog::error(message);
+
+         throw std::invalid_argument { message };
+       }
     }
 
     void filterConnections_()

@@ -399,7 +399,7 @@ update(bool global, const std::function<unsigned int(unsigned int)>& map, const 
 
             // apply the full face transmissibility multipliers
             // for the inside ...
-            if(!pinchActive){
+            if(!pinchActive&isCpGrid){
                 if (insideFaceIdx > 3){// top or bottom
                      auto find_layer = [&cartDims](std::size_t cell){
                         cell /= cartDims[0];
