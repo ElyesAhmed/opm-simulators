@@ -703,7 +703,7 @@ namespace Opm {
             // if the solution is updated, the intensive quantities need to be recalculated
             {
                 OPM_TIMEBLOCK(invalidateAndUpdateIntensiveQuantities);
-                ebosSimulator_.model().invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
+                simulator_.model().invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
              //   ebosSimulator_.problem().eclWriter()->mutableEclOutputModule().invalidateLocalData();
             }
         }
