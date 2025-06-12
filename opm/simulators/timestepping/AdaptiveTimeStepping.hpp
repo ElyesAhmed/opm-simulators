@@ -104,7 +104,7 @@ private:
 
         AdaptiveTimeStepping<TypeTag>& getAdaptiveTimerStepper();
         SimulatorReport run();
-        friend class AdaptiveTimeStepping<TypeTag>::template SubStepIteration<Solver>;
+        friend class SubStepIteration<Solver>;
 
     private:
         bool isReservoirCouplingMaster_() const;
