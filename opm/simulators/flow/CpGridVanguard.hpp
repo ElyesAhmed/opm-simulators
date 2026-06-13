@@ -38,14 +38,30 @@
 
 #include <array>
 #include <functional>
+#include <map>
 #include <memory>
+#include <numeric>
+#include <set>
 #include <stdexcept>
 #include <tuple>
+#include <type_traits>
 #include <vector>
 
 namespace Opm {
 template <class TypeTag>
 class CpGridVanguard;
+
+namespace detail {
+// Detect whether the grid supports CpGrid::setPartitionCellGroups (present
+// in the LGR-refinement grid fork, absent in upstream opm-grid). Lets the
+// LGR-aware partitioning below compile against both.
+template <class G, class = void>
+struct HasSetPartitionCellGroups : std::false_type {};
+template <class G>
+struct HasSetPartitionCellGroups<
+    G, std::void_t<decltype(std::declval<G&>().setPartitionCellGroups(
+           std::declval<std::vector<std::set<int>>>()))>> : std::true_type {};
+} // namespace detail
 }
 
 namespace Opm::Properties {
@@ -229,6 +245,79 @@ public:
     }
 
     /*!
+     * \brief Tell the partitioner to keep each LGR region on one rank.
+     *
+     * Builds one cell group per connected set of CARFIN boxes (boxes that
+     * touch or overlap are merged, so their shared refined boundary stays on
+     * one rank) and hands the groups to the grid's partitioner. Returns true
+     * if the grid supports this (the LGR-refinement fork) and groups were set.
+     */
+    template <class Lgrs>
+    bool applyLgrPartitionCellGroups_([[maybe_unused]] const Lgrs& lgrs)
+    {
+        if constexpr (detail::HasSetPartitionCellGroups<Grid>::value) {
+            const auto dims = this->grid_->logicalCartesianSize();
+            struct Box { int i0, i1, j0, j1, k0, k1; };
+            std::vector<Box> boxes;
+            boxes.reserve(lgrs.size());
+            for (std::size_t l = 0; l < lgrs.size(); ++l) {
+                const auto c = lgrs.getLgr(static_cast<int>(l));
+                boxes.push_back({c.I1(), c.I2() + 1, c.J1(), c.J2() + 1, c.K1(), c.K2() + 1});
+            }
+            // Union-find: merge boxes that meet in every direction (touch or
+            // overlap), i.e. share a face/edge/corner.
+            std::vector<int> parent(boxes.size());
+            std::iota(parent.begin(), parent.end(), 0);
+            std::function<int(int)> find = [&](int x) {
+                while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+                return x;
+            };
+            const auto meet = [](int a0, int a1, int b0, int b1) { return a1 >= b0 && b1 >= a0; };
+            for (std::size_t i = 0; i < boxes.size(); ++i) {
+                for (std::size_t j = i + 1; j < boxes.size(); ++j) {
+                    if (meet(boxes[i].i0, boxes[i].i1, boxes[j].i0, boxes[j].i1)
+                        && meet(boxes[i].j0, boxes[i].j1, boxes[j].j0, boxes[j].j1)
+                        && meet(boxes[i].k0, boxes[i].k1, boxes[j].k0, boxes[j].k1)) {
+                        parent[find(static_cast<int>(i))] = find(static_cast<int>(j));
+                    }
+                }
+            }
+            // Each group is the box(es) PLUS a halo of `halo` cells. The halo
+            // keeps the box that far inside its owning rank, so the box cells
+            // never appear in another rank's overlap (which would make the
+            // refinement builder reject the box as touching the overlap). The
+            // halo must be at least the overlap-layer count used below (2).
+            const int halo = 2;
+            std::map<int, std::set<int>> groups;
+            for (std::size_t b = 0; b < boxes.size(); ++b) {
+                auto& cells = groups[find(static_cast<int>(b))];
+                const auto& bx = boxes[b];
+                const int i0 = std::max(0, bx.i0 - halo), i1 = std::min(dims[0], bx.i1 + halo);
+                const int j0 = std::max(0, bx.j0 - halo), j1 = std::min(dims[1], bx.j1 + halo);
+                const int k0 = std::max(0, bx.k0 - halo), k1 = std::min(dims[2], bx.k1 + halo);
+                for (int k = k0; k < k1; ++k) {
+                    for (int j = j0; j < j1; ++j) {
+                        for (int i = i0; i < i1; ++i) {
+                            cells.insert(i + dims[0] * j + dims[0] * dims[1] * k);
+                        }
+                    }
+                }
+            }
+            std::vector<std::set<int>> cellGroups;
+            cellGroups.reserve(groups.size());
+            for (auto& [root, cells] : groups) {
+                cellGroups.push_back(std::move(cells));
+            }
+            const auto numGroups = cellGroups.size();
+            this->grid_->setPartitionCellGroups(std::move(cellGroups));
+            OpmLog::info("Keeping " + std::to_string(numGroups)
+                         + " LGR region(s) (with halo) together for load balancing.");
+            return true;
+        }
+        return false;
+    }
+
+    /*!
      * \brief Distribute the simulation grid over multiple processes
      *
      * (For parallel simulation runs.)
@@ -242,9 +331,25 @@ public:
             this->setExternalLoadBalancer(details::MPIPartitionFromFile { extPFile });
         }
 
+        // LGR-aware partitioning: keep each refinement region (and groups of
+        // touching ones) on a single rank so the rank-interior refinement
+        // builder never splits a box across ranks. Needs the cell-group
+        // partitioner (zoltanGoG) and, for a contracted interior region,
+        // overlap layer 2 (a single layer misses corner/edge neighbours).
+        int overlapLayers = this->numOverlap();
+        auto partMethod = this->partitionMethod();
+        if (this->grid_->comm().size() > 1) {
+            if (const auto& lgrs = this->eclState().getLgrs(); lgrs.size() > 0) {
+                if (applyLgrPartitionCellGroups_(lgrs)) {
+                    overlapLayers = std::max(overlapLayers, 2);
+                    partMethod = Dune::PartitionMethod::zoltanGoG;
+                }
+            }
+        }
+
         this->doLoadBalance_(this->edgeWeightsMethod(), this->ownersFirst(),
-                             this->addCorners(), this->numOverlap(),
-                             this->partitionMethod(), this->serialPartitioning(),
+                             this->addCorners(), overlapLayers,
+                             partMethod, this->serialPartitioning(),
                              this->enableDistributedWells(),
                              this->allow_splitting_inactive_wells_,
                              this->imbalanceTol(),
@@ -281,15 +386,21 @@ public:
             this->updateCellDepths_();
             this->updateCellThickness_();
 
-            if (this->grid_->comm().size()>1) {
-                // Add LGRs and update the leaf grid view in the global (undistributed) simulation grid.
-                // Purpose: To enable synchronization of cell ids in 'serial mode',
-                //          we rely on the "parent-to-children" cell id mapping.
-                OpmLog::info("\nAdding LGRs to the global view and updating its leaf grid view");
-                this->grid_->switchToGlobalView();
-                this->addLgrsUpdateLeafView(lgrs, lgrs.size(), *this->grid_);
-                this->grid_->switchToDistributedView();
-                this->grid_->syncDistributedGlobalCellIds();
+            // The global-view refinement + id sync below is the original
+            // implementation's way to make refined cell ids globally
+            // consistent. The rank-interior refinement builder (the fork)
+            // produces deterministic per-rank refinement and does not use it.
+            if constexpr (!detail::HasSetPartitionCellGroups<Grid>::value) {
+                if (this->grid_->comm().size()>1) {
+                    // Add LGRs and update the leaf grid view in the global (undistributed) simulation grid.
+                    // Purpose: To enable synchronization of cell ids in 'serial mode',
+                    //          we rely on the "parent-to-children" cell id mapping.
+                    OpmLog::info("\nAdding LGRs to the global view and updating its leaf grid view");
+                    this->grid_->switchToGlobalView();
+                    this->addLgrsUpdateLeafView(lgrs, lgrs.size(), *this->grid_);
+                    this->grid_->switchToDistributedView();
+                    this->grid_->syncDistributedGlobalCellIds();
+                }
             }
         }
     }
