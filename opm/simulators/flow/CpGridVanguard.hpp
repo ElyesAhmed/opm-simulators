@@ -383,6 +383,12 @@ public:
             this->addLgrsUpdateLeafView(lgrs, lgrs.size(), *this->grid_);
 
             this->updateGridView_();
+            // Refinement changes the leaf cell count and ordering, so the
+            // Cartesian->compressed map built during load balancing (on the
+            // unrefined grid) is now stale. Rebuild it before well connections
+            // are resolved, otherwise coarse-grid wells map to the wrong leaf
+            // cell (e.g. their source term lands on an unrelated cell).
+            this->updateCartesianToCompressedMapping_();
             this->updateCellDepths_();
             this->updateCellThickness_();
 
