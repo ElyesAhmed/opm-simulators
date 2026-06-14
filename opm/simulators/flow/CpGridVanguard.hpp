@@ -309,6 +309,34 @@ public:
                 cellGroups.push_back(std::move(cells));
             }
             const auto numGroups = cellGroups.size();
+
+            // The rank-interior model requires each group to live entirely on one
+            // rank. If a single group is so large that confining it to one rank
+            // would leave another rank with no cells, the constraint is
+            // unsatisfiable (e.g. an LGR that covers essentially the whole grid).
+            // Detect that here and fail with a clear, actionable message rather
+            // than aborting deep in the partitioner (a zero-cells error or, worse,
+            // a non-deterministic assertion while contracting the giant group).
+            // The groups are built identically on every rank from the box extents,
+            // so this Cartesian-based test is collective-safe without communication.
+            const int numRanks = this->grid_->comm().size();
+            std::size_t maxGroup = 0;
+            for (const auto& g : cellGroups) {
+                maxGroup = std::max(maxGroup, g.size());
+            }
+            const std::size_t totalCart = static_cast<std::size_t>(dims[0]) * dims[1] * dims[2];
+            if (numRanks > 1 && maxGroup + static_cast<std::size_t>(numRanks - 1) > totalCart) {
+                OPM_THROW(std::runtime_error,
+                          "An LGR refinement region (with its halo) spans "
+                          + std::to_string(maxGroup) + " of " + std::to_string(totalCart)
+                          + " cells, too much to keep on a single rank when running on "
+                          + std::to_string(numRanks) + " MPI ranks. The rank-interior "
+                          "parallel LGR model needs each refinement box to fit inside one "
+                          "rank's interior, so an LGR covering (nearly) the whole grid "
+                          "cannot be distributed. Run this case on a single MPI rank, or "
+                          "reduce the extent of the refinement box(es).");
+            }
+
             this->grid_->setPartitionCellGroups(std::move(cellGroups));
             OpmLog::info("Keeping " + std::to_string(numGroups)
                          + " LGR region(s) (with halo) together for load balancing.");
