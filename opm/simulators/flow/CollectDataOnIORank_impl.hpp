@@ -1082,6 +1082,13 @@ collect(const data::Solution&                                localCellData,
     if(!needsReordering && !isParallel())
         return;
 
+    // The constructor skips building the IO index maps for parallel runs on
+    // refined (LGR) grids (gather-to-IO-rank collection is not implemented for
+    // that case). Mirror that here so output is degraded gracefully instead of
+    // dereferencing the empty index maps.
+    if (isParallel() && indexMaps_.empty())
+        return;
+
     // this also linearises the local buffers on ioRank
     PackUnPackCellData packUnpackCellData {
         localCellData,
