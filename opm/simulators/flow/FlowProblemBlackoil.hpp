@@ -505,12 +505,16 @@ public:
         // also updated.
         this->eclWriter().mutableOutputModule().invalidateLocalData();
 
-        // For CpGrid with LGRs, ecl/vtk output is not supported yet.
+        // For CpGrid with LGRs, ECL summary/restart output is only wired up
+        // for serial runs (rank-interior refinement): in that case the
+        // CollectDataOnIORank index maps are the identity and the leaf-grid
+        // well/cell data is written directly.  Parallel LGR output is not
+        // supported yet (CollectDataOnIORank skips building its index maps).
         const auto& grid = this->simulator().vanguard().gridView().grid();
 
         using GridType = std::remove_cv_t<std::remove_reference_t<decltype(grid)>>;
         constexpr bool isCpGrid = std::is_same_v<GridType, Dune::CpGrid>;
-        if (!isCpGrid || (grid.maxLevel() == 0)) {
+        if (!isCpGrid || (grid.maxLevel() == 0) || (grid.comm().size() == 1)) {
             this->eclWriter_->evalSummaryState(!this->episodeWillBeOver());
         }
 
@@ -622,13 +626,14 @@ public:
         // the initial solution.
         this->thresholdPressures_.finishInit();
 
-        // For CpGrid with LGRs, ecl-output is not supported yet.
+        // For CpGrid with LGRs, ECL output is only wired up for serial runs
+        // (see endStepApplyAction()).  Compute the initial FIP report in that
+        // case as well so the in-place reference values are available.
         const auto& grid = this->simulator().vanguard().gridView().grid();
 
         using GridType = std::remove_cv_t<std::remove_reference_t<decltype(grid)>>;
         constexpr bool isCpGrid = std::is_same_v<GridType, Dune::CpGrid>;
-        // Skip - for now -  calculate the initial fip values for CpGrid with LGRs.
-        if (!isCpGrid || (grid.maxLevel() == 0)) {
+        if (!isCpGrid || (grid.maxLevel() == 0) || (grid.comm().size() == 1)) {
             if (this->simulator().episodeIndex() == 0) {
                 eclWriter_->writeInitialFIPReport();
             }
