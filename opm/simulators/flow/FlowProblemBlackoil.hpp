@@ -505,18 +505,12 @@ public:
         // also updated.
         this->eclWriter().mutableOutputModule().invalidateLocalData();
 
-        // For CpGrid with LGRs, ECL summary/restart output is only wired up
-        // for serial runs (rank-interior refinement): in that case the
-        // CollectDataOnIORank index maps are the identity and the leaf-grid
-        // well/cell data is written directly.  Parallel LGR output is not
-        // supported yet (CollectDataOnIORank skips building its index maps).
-        const auto& grid = this->simulator().vanguard().gridView().grid();
-
-        using GridType = std::remove_cv_t<std::remove_reference_t<decltype(grid)>>;
-        constexpr bool isCpGrid = std::is_same_v<GridType, Dune::CpGrid>;
-        if (!isCpGrid || (grid.maxLevel() == 0) || (grid.comm().size() == 1)) {
-            this->eclWriter_->evalSummaryState(!this->episodeWillBeOver());
-        }
+        // Evaluate the summary state for CpGrid with LGRs as well.  In serial
+        // the CollectDataOnIORank maps are the identity and the leaf-grid data
+        // is written directly; in parallel the name-keyed summary data (wells,
+        // groups, region values) is gathered to the I/O rank while cell-based
+        // restart/block output on refined grids is still being wired up.
+        this->eclWriter_->evalSummaryState(!this->episodeWillBeOver());
 
         {
             OPM_TIMEBLOCK(applyActions);
@@ -626,17 +620,10 @@ public:
         // the initial solution.
         this->thresholdPressures_.finishInit();
 
-        // For CpGrid with LGRs, ECL output is only wired up for serial runs
-        // (see endStepApplyAction()).  Compute the initial FIP report in that
-        // case as well so the in-place reference values are available.
-        const auto& grid = this->simulator().vanguard().gridView().grid();
-
-        using GridType = std::remove_cv_t<std::remove_reference_t<decltype(grid)>>;
-        constexpr bool isCpGrid = std::is_same_v<GridType, Dune::CpGrid>;
-        if (!isCpGrid || (grid.maxLevel() == 0) || (grid.comm().size() == 1)) {
-            if (this->simulator().episodeIndex() == 0) {
-                eclWriter_->writeInitialFIPReport();
-            }
+        // Compute the initial FIP report (also for CpGrid with LGRs) so the
+        // in-place reference values are available for the summary balance.
+        if (this->simulator().episodeIndex() == 0) {
+            eclWriter_->writeInitialFIPReport();
         }
     }
 
