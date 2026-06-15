@@ -937,11 +937,34 @@ CollectDataOnIORank(const Grid& grid, const EquilGrid* equilGrid,
             fipRegionsInterregFlow.end()
         }))
 {
-    // Build index maps only when reordering is needed; skip in parallel runs for CpGrid with LGRs
-    if ((!needsReordering && !isParallel()) || (isParallel() && (grid.maxLevel()>0)))
+    // Nothing to do in serial runs that don't need reordering.
+    if (!needsReordering && !isParallel())
         return;
 
     const CollectiveCommunication& comm = grid.comm();
+
+    // For CpGrid with LGRs in parallel, gather-to-I/O-rank reordering of
+    // *cell* data is not implemented (the global Cartesian index is not a
+    // unique cell id once cells are refined).  We still set up the bare
+    // gather linkage to the I/O rank so that *name-keyed* data (wells,
+    // groups, region/well-block summary values) can be collected; the
+    // cell-index maps are deliberately left empty and collect() skips the
+    // cell/block reordering for this case.
+    if (isParallel() && (grid.maxLevel() > 0)) {
+        std::set<int> send, recv;
+        if (isIORank()) {
+            for (int i = 0; i < comm.size(); ++i) {
+                if (i != ioRank) {
+                    recv.insert(i);
+                }
+            }
+        }
+        else {
+            send.insert(ioRank);
+        }
+        toIORankComm_.insertRequest(send, recv);
+        return;
+    }
 
     {
         std::set<int> send, recv;
@@ -1082,12 +1105,40 @@ collect(const data::Solution&                                localCellData,
     if(!needsReordering && !isParallel())
         return;
 
-    // The constructor skips building the IO index maps for parallel runs on
-    // refined (LGR) grids (gather-to-IO-rank collection is not implemented for
-    // that case). Mirror that here so output is degraded gracefully instead of
-    // dereferencing the empty index maps.
-    if (isParallel() && indexMaps_.empty())
+    // For parallel runs on refined (LGR) grids the constructor does not build
+    // the cell-index reordering maps (gather-to-I/O-rank of cell data is not
+    // implemented there).  The name-keyed data (wells, groups, well-block
+    // pressures, aquifers, well-test state, inter-region flows) does not need
+    // those maps, so still gather it via the I/O-rank linkage and skip only the
+    // cell/block reordering.
+    if (isParallel() && indexMaps_.empty()) {
+        PackUnPackWellData packUnpackWellData {
+            localWellData, this->globalWellData_, this->isIORank()
+        };
+        PackUnPackGroupAndNetworkValues packUnpackGroupAndNetworkData {
+            localGroupAndNetworkData, this->globalGroupAndNetworkData_, this->isIORank()
+        };
+        PackUnPackWBPData packUnpackWBPData {
+            localWBPData, this->globalWBPData_, this->isIORank()
+        };
+        PackUnPackAquiferData packUnpackAquiferData {
+            localAquiferData, this->globalAquiferData_, this->isIORank()
+        };
+        PackUnPackWellTestState packUnpackWellTestState {
+            localWellTestState, this->globalWellTestState_, this->isIORank()
+        };
+        PackUnpackInterRegFlows packUnpackInterRegFlows {
+            localInterRegFlows, this->globalInterRegFlows_, this->isIORank()
+        };
+
+        toIORankComm_.exchange(packUnpackWellData);
+        toIORankComm_.exchange(packUnpackGroupAndNetworkData);
+        toIORankComm_.exchange(packUnpackWBPData);
+        toIORankComm_.exchange(packUnpackAquiferData);
+        toIORankComm_.exchange(packUnpackWellTestState);
+        toIORankComm_.exchange(packUnpackInterRegFlows);
         return;
+    }
 
     // this also linearises the local buffers on ioRank
     PackUnPackCellData packUnpackCellData {
