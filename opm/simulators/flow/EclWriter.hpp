@@ -176,7 +176,15 @@ public:
                     ? &simulator.vanguard().equilCartesianIndexMapper()
                     : nullptr),
                    Parameters::Get<Parameters::EnableAsyncEclOutput>(),
-                   Parameters::Get<Parameters::EnableEsmry>())
+                   Parameters::Get<Parameters::EnableEsmry>(),
+                   // Refined I/O-rank reference grid for the cell-data gather
+                   // (equals equilGrid unless this is a parallel LGR run).
+                   ((simulator.vanguard().grid().comm().rank() == 0)
+                    ? &simulator.vanguard().eclOutputGrid()
+                    : nullptr),
+                   ((simulator.vanguard().grid().comm().rank() == 0)
+                    ? &simulator.vanguard().eclOutputCartesianIndexMapper()
+                    : nullptr))
         , simulator_(simulator)
     {
 #if HAVE_MPI
