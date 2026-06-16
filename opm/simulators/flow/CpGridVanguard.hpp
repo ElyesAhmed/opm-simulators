@@ -134,14 +134,39 @@ public:
 
     int compressedIndexForInteriorLGR(const std::string& lgr_tag, const Connection& conn) const override
     {
-        const std::array<int,3> lgr_ijk = {conn.getI(), conn.getJ(), conn.getK()};
-        const auto& lgr_level = this->grid().getLgrNameToLevel().at(lgr_tag);
+        // Mirror compressedIndexForInterior: return -1 when the LGR-completed
+        // connection's cell is not interior on this rank.  In a parallel run
+        // the refinement is rank-interior - the box is refined only on the rank
+        // that owns it - so on every other rank the level grid for this LGR is
+        // empty and the cell is simply absent.  Using .at() there throws
+        // std::out_of_range (seen as a setup hang at higher rank counts, where
+        // more ranks do not own the box); a missing cell must yield -1 instead.
+        const auto& nameToLevel = this->grid().getLgrNameToLevel();
+        const auto levelIt = nameToLevel.find(lgr_tag);
+        if (levelIt == nameToLevel.end()) {
+            return -1;
+        }
+        const int lgr_level = levelIt->second;
+
         if (ParentType::lgrMappers_.has_value() == false) {
             ParentType::lgrMappers_.emplace(this->grid().mapLocalCartesianIndexSetsToLeafIndexSet());
         }
+        const auto& mappers = ParentType::lgrMappers_.value();
+        if (lgr_level < 0 || static_cast<std::size_t>(lgr_level) >= mappers.size()) {
+            return -1;
+        }
+
         const auto& lgr_dim = this->grid().currentData()[lgr_level]->logicalCartesianSize();
-        const auto lgr_cartesian_index = (lgr_ijk[2]*lgr_dim[0]*lgr_dim[1]) + (lgr_ijk[1]*lgr_dim[0]) + (lgr_ijk[0]);
-        return ParentType::lgrMappers_.value()[lgr_level].at(lgr_cartesian_index);
+        const std::array<int,3> lgr_ijk = {conn.getI(), conn.getJ(), conn.getK()};
+        const auto lgr_cartesian_index = static_cast<std::size_t>(
+            (lgr_ijk[2]*lgr_dim[0]*lgr_dim[1]) + (lgr_ijk[1]*lgr_dim[0]) + lgr_ijk[0]);
+
+        const auto& mapper = mappers[lgr_level];
+        const auto it = mapper.find(lgr_cartesian_index);
+        if (it == mapper.end()) {
+            return -1; // cell of this LGR is not present on this rank
+        }
+        return static_cast<int>(it->second);
     }
     /*!
      * Checking consistency of simulator
