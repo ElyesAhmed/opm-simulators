@@ -283,7 +283,33 @@ writeInit()
     if (collectOnIORank_.isIORank()) {
         std::map<std::string, std::vector<int>> integerVectors;
         if (collectOnIORank_.isParallel()) {
-            integerVectors.emplace("MPI_RANK", collectOnIORank_.globalRanks());
+            const auto& leafRanks = collectOnIORank_.globalRanks();
+            if (collectGrid_ != nullptr && collectGrid_->maxLevel() > 0) {
+                // For a refined grid the gather reference (collectGrid_) is the
+                // leaf grid, so globalRanks_ is leaf-sized.  MPI_RANK in the INIT
+                // belongs to the level-zero (main) grid, so reduce it: each leaf
+                // cell contributes its owning rank to its level-zero origin (all
+                // children of a refined cell share one rank - the box is
+                // rank-interior).  Without this MPI_RANK is written at leaf size
+                // into the main-grid slot, mismatching the main grid.
+                std::vector<int> mpiRank(collectGrid_->currentData().front()->size(0), 0);
+                const auto leafView = collectGrid_->leafGridView();
+                Dune::MultipleCodimMultipleGeomTypeMapper<std::decay_t<decltype(leafView)>>
+                    leafMapper(leafView, Dune::mcmgElementLayout());
+                for (const auto& elem : elements(leafView)) {
+                    const auto leafIdx = leafMapper.index(elem);
+                    const auto originIdx = elem.getOrigin().index();
+                    if (originIdx >= 0
+                        && static_cast<std::size_t>(originIdx) < mpiRank.size()
+                        && static_cast<std::size_t>(leafIdx) < leafRanks.size()) {
+                        mpiRank[originIdx] = leafRanks[leafIdx];
+                    }
+                }
+                integerVectors.emplace("MPI_RANK", std::move(mpiRank));
+            }
+            else {
+                integerVectors.emplace("MPI_RANK", leafRanks);
+            }
         }
 
         if (const auto& lgrs = this->eclState_.getLgrs(); lgrs.size() > 0) {
