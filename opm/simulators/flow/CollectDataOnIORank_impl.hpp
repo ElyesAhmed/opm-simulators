@@ -943,42 +943,46 @@ CollectDataOnIORank(const Grid& grid, const EquilGrid* equilGrid,
 
     const CollectiveCommunication& comm = grid.comm();
 
-    // For CpGrid with LGRs in parallel, gather-to-I/O-rank reordering of
-    // *cell* data is not implemented (the global Cartesian index is not a
-    // unique cell id once cells are refined).  We still set up the bare
-    // gather linkage to the I/O rank so that *name-keyed* data (wells,
-    // groups, region/well-block summary values) can be collected; the
-    // cell-index maps are deliberately left empty and collect() skips the
-    // cell/block reordering for this case.
-    if (isParallel() && (grid.maxLevel() > 0)) {
-        std::set<int> send, recv;
-        if (isIORank()) {
-            for (int i = 0; i < comm.size(); ++i) {
-                if (i != ioRank) {
-                    recv.insert(i);
-                }
-            }
+    // Unique global cell id used to gather distributed cell data onto the I/O
+    // rank.  For an unrefined grid this is the level-zero Cartesian index.  For
+    // a CpGrid with LGRs the Cartesian index is no longer unique (refined
+    // children share their parent's Cartesian index), so use a composite id
+    // levelOffset[level] + level-local-Cartesian-index that is unique across
+    // all leaf cells and consistent between the distributed grid and the
+    // (refined) I/O-rank reference grid.  getLevelCartesianIdx() reduces to the
+    // ordinary level-zero Cartesian index for an unrefined grid.
+    auto makeLevelOffsets = [](const auto& cpGrid) {
+        std::vector<std::size_t> off(cpGrid.maxLevel() + 2, std::size_t{0});
+        for (int l = 0; l <= cpGrid.maxLevel(); ++l) {
+            const auto& d = cpGrid.currentData()[l]->logicalCartesianSize();
+            off[l + 1] = off[l] + static_cast<std::size_t>(d[0]) * d[1] * d[2];
         }
-        else {
-            send.insert(ioRank);
-        }
-        toIORankComm_.insertRequest(send, recv);
-        return;
-    }
+        return off;
+    };
 
     {
         std::set<int> send, recv;
         using EquilGridView = typename EquilGrid::LeafGridView;
         typename std::is_same<Grid, EquilGrid>::type isSameGrid;
 
+        const bool refined = grid.maxLevel() > 0;
+        const auto localLevelOffsets = makeLevelOffsets(grid);
+
         typedef Dune::MultipleCodimMultipleGeomTypeMapper<GridView> ElementMapper;
         ElementMapper elemMapper(localGridView, Dune::mcmgElementLayout());
         sortedCartesianIdx_.reserve(localGridView.size(0));
 
+        auto localGlobalId = [&](const auto& elem) -> int {
+            if (refined) {
+                return static_cast<int>(localLevelOffsets[elem.level()])
+                    + elem.getLevelCartesianIdx();
+            }
+            return cartMapper.cartesianIndex(elemMapper.index(elem));
+        };
+
         for (const auto& elem : elements(localGridView, Dune::Partitions::interior))
         {
-            auto idx = elemMapper.index(elem);
-            sortedCartesianIdx_.push_back(cartMapper.cartesianIndex(idx));
+            sortedCartesianIdx_.push_back(localGlobalId(elem));
         }
 
         std::ranges::sort(sortedCartesianIdx_);
@@ -1002,11 +1006,14 @@ CollectDataOnIORank(const Grid& grid, const EquilGrid* equilGrid,
              grid.scatterData(handle);
            }
 
-            // loop over all elements (global grid) and store Cartesian index
+            // loop over all elements (global grid) and store the global cell id
+            const auto equilLevelOffsets = makeLevelOffsets(*equilGrid);
             for (const auto& elem : elements(equilGrid->leafGridView())) {
                 int elemIdx = equilElemMapper.index(elem);
-                int cartElemIdx = equilCartMapper->cartesianIndex(elemIdx);
-                globalCartesianIndex_[elemIdx] = cartElemIdx;
+                int globalId = refined
+                    ? static_cast<int>(equilLevelOffsets[elem.level()]) + elem.getLevelCartesianIdx()
+                    : equilCartMapper->cartesianIndex(elemIdx);
+                globalCartesianIndex_[elemIdx] = globalId;
             }
 
             for (int i = 0; i < comm.size(); ++i) {
@@ -1046,7 +1053,7 @@ CollectDataOnIORank(const Grid& grid, const EquilGrid* equilGrid,
         // A mapping for the whole grid (including the ghosts) is needed for restarts
         for (const auto& elem : elements(localGridView, Dune::Partitions::interior)) {
             int elemIdx = elemMapper.index(elem);
-            distributedCartesianIndex[elemIdx] = cartMapper.cartesianIndex(elemIdx);
+            distributedCartesianIndex[elemIdx] = localGlobalId(elem);
 
             // only store interior element for collection
             assert(elem.partitionType() == Dune::InteriorEntity);

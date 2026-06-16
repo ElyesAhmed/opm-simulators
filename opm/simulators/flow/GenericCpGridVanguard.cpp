@@ -34,6 +34,7 @@
 
 #include <opm/grid/cpgrid/GridHelpers.hpp>
 #include <opm/grid/cpgrid/LevelCartesianIndexMapper.hpp>
+#include <opm/grid/cpgrid/refinement/GridStateWriter.hpp>
 
 #include <opm/input/eclipse/EclipseState/EclipseState.hpp>
 #include <opm/input/eclipse/Schedule/Schedule.hpp>
@@ -572,6 +573,41 @@ doCreateGrids_(const bool edge_conformal, EclipseState& eclState)
         this->equilCartesianIndexMapper_ =
             std::make_unique<CartesianIndexMapper>(*this->equilGrid_);
 
+#if HAVE_MPI
+        // For a parallel run with LGRs, the simulation grid is refined only
+        // after distribution (rank-interior refinement) and equilGrid_ stays
+        // coarse.  ECL output gathers cell data onto the I/O rank using a
+        // reference grid, which must therefore carry the refined leaf cells.
+        // Build a self-communicator copy of the global grid and refine it
+        // locally - getCommunicator() in the refinement builder follows the
+        // grid's own communicator, so this is collective-free - giving the
+        // I/O rank the same full refined grid a serial run would have.
+        // equilGrid_ is left coarse for EQUIL; this is a separate grid used
+        // only for output.
+        if (this->grid_->comm().size() > 1 && input_grid != nullptr) {
+            if (const auto& lgrs = eclState.getLgrs(); lgrs.size() > 0) {
+                // grid_ is still undistributed here, so its level-zero data
+                // carries the retained corner-point input the builder needs.
+                auto retained = Opm::Refinement::GridStateWriter::retainedCornerPointInput(
+                    *this->grid_->currentData().front());
+                if (retained) {
+                    auto outGrid = std::make_unique<Dune::CpGrid>(Dune::MPIHelper::getLocalCommunicator());
+                    outGrid->processEclipseFormat(input_grid, nullptr,
+                                                  /* isPeriodic = */ false,
+                                                  /* flipNormals = */ false,
+                                                  /* clipZ = */ false,
+                                                  edge_conformal);
+                    Opm::Refinement::GridStateWriter::setRetainedCornerPointInput(
+                        *outGrid->currentData().front(), retained);
+                    this->addLgrsUpdateLeafView(lgrs, lgrs.size(), *outGrid);
+                    this->outputGrid_ = std::move(outGrid);
+                    this->outputCartesianIndexMapper_ =
+                        std::make_unique<CartesianIndexMapper>(*this->outputGrid_);
+                }
+            }
+        }
+#endif
+
         eclState.reset_actnum(UgGridHelpers::createACTNUM(*this->grid_));
         eclState.set_active_indices(this->grid_->globalCell());
     }
@@ -646,6 +682,23 @@ GenericCpGridVanguard<ElementMapper,GridView,Scalar>::equilCartesianIndexMapper(
     assert(mpiRank == 0);
     assert(equilCartesianIndexMapper_);
     return *equilCartesianIndexMapper_;
+}
+
+template<class ElementMapper, class GridView, class Scalar>
+const Dune::CpGrid&
+GenericCpGridVanguard<ElementMapper,GridView,Scalar>::eclOutputGrid() const
+{
+    assert(mpiRank == 0);
+    return outputGrid_ ? *outputGrid_ : *equilGrid_;
+}
+
+template<class ElementMapper, class GridView, class Scalar>
+const Dune::CartesianIndexMapper<Dune::CpGrid>&
+GenericCpGridVanguard<ElementMapper,GridView,Scalar>::eclOutputCartesianIndexMapper() const
+{
+    assert(mpiRank == 0);
+    return outputCartesianIndexMapper_ ? *outputCartesianIndexMapper_
+                                       : *equilCartesianIndexMapper_;
 }
 
 template<class ElementMapper, class GridView, class Scalar>
