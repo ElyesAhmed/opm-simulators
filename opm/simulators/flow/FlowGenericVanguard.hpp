@@ -79,6 +79,13 @@ struct AddCorners { static constexpr bool value = false; };
 struct NumOverlap { static constexpr int value = 1; };
 struct EdgeConformal { static constexpr bool value = false; };
 
+/// Experimental: for LGR decks, refine the global grid *before* load
+/// balancing (refine-then-distribute) instead of the default rank-interior
+/// model (distribute the coarse grid, then refine each box on its owning
+/// rank). Off by default; the fork does not yet distribute a refined grid,
+/// so this only works in serial / single-rank runs.
+struct RefineBeforeRedistribute { static constexpr bool value = false; };
+
 struct SchedRestart{ static constexpr bool value = false; };
 struct SerialPartitioning{ static constexpr bool value = false; };
 
@@ -263,6 +270,9 @@ public:
     bool edgeConformal() const
     { return edgeConformal_; }
 
+    bool refineBeforeRedistribute() const
+    { return refineBeforeRedistribute_; }
+
 #if HAVE_MPI
     bool addCorners() const
     { return addCorners_; }
@@ -377,6 +387,7 @@ protected:
 
     bool ownersFirst_;
     bool edgeConformal_;
+    bool refineBeforeRedistribute_;
 
 #if HAVE_MPI
     bool addCorners_;

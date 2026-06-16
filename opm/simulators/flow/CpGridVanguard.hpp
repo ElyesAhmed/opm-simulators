@@ -393,7 +393,25 @@ public:
         auto partMethod = this->partitionMethod();
         if (this->grid_->comm().size() > 1) {
             if (const auto& lgrs = this->eclState().getLgrs(); lgrs.size() > 0) {
-                if (applyLgrPartitionCellGroups_(lgrs)) {
+                if (this->refineBeforeRedistribute()) {
+                    // Experimental refine-then-distribute path (opt-in via
+                    // --refine-before-redistribute). Refine the global grid now,
+                    // before load balancing, instead of the default
+                    // rank-interior model (distribute the coarse grid, then
+                    // refine each box on its owning rank in addLgrs()).
+                    //
+                    // WARNING: CpGrid's scatter currently distributes only
+                    // level 0 and discards the refinement (the distributed-
+                    // refinement machinery is stripped from this fork), so this
+                    // only yields a correct result in serial / single-rank runs.
+                    // It is kept as a selectable option for the day refined-grid
+                    // distribution is reinstated; the default remains the
+                    // working rank-interior path below.
+                    OpmLog::info("\nRefine-before-redistribute: adding LGRs to "
+                                 "the grid before load balancing");
+                    this->addLgrsUpdateLeafView(lgrs, lgrs.size(), *this->grid_);
+                    this->updateGridView_();
+                } else if (applyLgrPartitionCellGroups_(lgrs)) {
                     overlapLayers = std::max(overlapLayers, 2);
                     partMethod = Dune::PartitionMethod::zoltanGoG;
                 }
@@ -432,6 +450,13 @@ public:
         // Check if input file contains Lgrs. Add them, if any.
         // In a parallel run, this adds the LGRs on the distributed simulation grid.
         if (const auto& lgrs = this->eclState().getLgrs(); lgrs.size() > 0) {
+            // With the experimental refine-before-redistribute option the LGRs
+            // were already added in loadBalance() (before the grid was
+            // distributed); the grid is already refined, so don't add them
+            // again here.
+            if (this->refineBeforeRedistribute() && this->grid_->maxLevel() > 0) {
+                return;
+            }
             OpmLog::info("\nAdding LGRs to the grid and updating its leaf grid view");
             this->addLgrsUpdateLeafView(lgrs, lgrs.size(), *this->grid_);
 
