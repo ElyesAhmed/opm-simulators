@@ -696,6 +696,17 @@ void GenericCpGridVanguard<ElementMapper,GridView,Scalar>::addLgrsUpdateLeafView
         lgrParentName_vec.emplace_back(lgrCarfin.PARENT_NAME());
     }
 
+    // Common case: no nesting (every CARFIN refines GLOBAL). Take the exact
+    // original code path - the 4-arg call, no reordering, no parent vector -
+    // so single-level decks are completely unaffected by the nested-LGR
+    // machinery below.
+    const bool anyNested = std::any_of(lgrParentName_vec.begin(), lgrParentName_vec.end(),
+                                       [](const std::string& p) { return p != "GLOBAL"; });
+    if (!anyNested) {
+        grid.addLgrsUpdateLeafView(cells_per_dim_vec, startIJK_vec, endIJK_vec, lgrName_vec);
+        return;
+    }
+
     // Order the LGRs so a parent grid is always added before its children:
     // the conforming builder appends level grids in request order and resolves
     // each box's parent by name, so a child must follow its parent. Stable-sort
