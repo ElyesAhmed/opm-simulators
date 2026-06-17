@@ -222,7 +222,9 @@ doLoadBalance_(const Dune::EdgeWeightMethod             edgeWeightsMethod,
                 : schedule.getWellsatEnd()
             : std::vector<Well>{};
 
-        const auto& possibleFutureConnections = schedule.getPossibleFutureConnections();
+        // NOTE: a mutable copy (upstream takes a const&): the LGR well
+        // anchoring below inserts additional entries.
+        auto possibleFutureConnections = schedule.getPossibleFutureConnections();
                 // Mechanics couples cells across zero-transmissibility faces,
                 // so the overlap layer must not be pruned by transmissibility
                 // in mechanical runs (same reasoning as for thermal runs).
@@ -230,6 +232,44 @@ doLoadBalance_(const Dune::EdgeWeightMethod             edgeWeightsMethod,
                         !(eclState1.getSimulationConfig().isThermal() ||
                             eclState1.getSimulationConfig().isTemp() ||
                             eclState1.runspec().mech());
+        // Wells completed inside an LGR (COMPDATL) carry LGR-local connection
+        // (i,j,k) that WellConnections cannot place in the level-zero load-
+        // balance graph, so it skips them and the well is left unanchored. The
+        // partitioner may then put the well on a different rank than the one
+        // owning its (rank-interior) refinement box; the box's connection cells
+        // are then not found on the well's rank (ParallelWellInfo "cells not
+        // found", surfacing as a deadlock/failure at higher rank counts - works
+        // at np<=4 only by partition coincidence). Anchor each such well to its
+        // box's coarse parent cells (which the LGR partition cell groups keep on
+        // one rank) so the well lands on the box's rank.
+        if (mpiSize > 1) {
+            const auto& lgrs = eclState1.getLgrs();
+            if (lgrs.size() > 0) {
+                const auto cartDims = this->grid_->logicalCartesianSize();
+                for (const auto& well : wells) {
+                    const auto lgrTag = well.get_lgr_well_tag();
+                    if (!lgrTag.has_value() || !lgrs.hasLgr(*lgrTag)) {
+                        continue;
+                    }
+                    const auto& carfin = lgrs.getLgr(*lgrTag);
+                    const int rx = carfin.NX() / (carfin.I2() + 1 - carfin.I1());
+                    const int ry = carfin.NY() / (carfin.J2() + 1 - carfin.J1());
+                    const int rz = carfin.NZ() / (carfin.K2() + 1 - carfin.K1());
+                    auto& anchors = possibleFutureConnections[well.name()];
+                    for (const auto& conn : well.getConnections()) {
+                        if (conn.get_lgr_level() == 0) {
+                            continue; // a coarse connection is already in the graph
+                        }
+                        // LGR-local (i,j,k) -> coarse father cell -> level-zero
+                        // Cartesian index used by the well partition graph.
+                        const int ci = carfin.I1() + conn.getI() / rx;
+                        const int cj = carfin.J1() + conn.getJ() / ry;
+                        const int ck = carfin.K1() + conn.getK() / rz;
+                        anchors.insert(ci + cartDims[0] * (cj + cartDims[1] * ck));
+                    }
+                }
+            }
+        }
         // Distribute the grid and switch to the distributed view.
         if (mpiSize > 1) {
             this->distributeGrid(edgeWeightsMethod, ownersFirst,
