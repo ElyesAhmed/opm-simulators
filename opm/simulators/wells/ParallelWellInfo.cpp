@@ -820,7 +820,16 @@ checkAllConnectionsFound()
             const auto& completion = well_.getConnections()[conFound - start];
             msg = msg + " " + std::to_string(completion.getI()) + "," +
                 std::to_string(completion.getJ()) + ","
-                + std::to_string(completion.getK()) + " ";
+                + std::to_string(completion.getK());
+            // For a connection completed inside an LGR (COMPDATL) the i,j,k
+            // above are LGR-*local* indices; flag this and add the LGR-local
+            // global cell so the message is not mistaken for main-grid indices.
+            if (completion.get_lgr_level() > 0) {
+                msg = msg + " (LGR grid level " + std::to_string(completion.get_lgr_level())
+                    + ", LGR-local indices; LGR global cell "
+                    + std::to_string(completion.global_index()) + ")";
+            }
+            msg = msg + " ";
             missingCells = true;
         }
     }
