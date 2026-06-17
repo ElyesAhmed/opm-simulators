@@ -56,9 +56,11 @@
 #include <opm/simulators/flow/FemCpGridCompat.hpp>
 #endif //HAVE_DUNE_FEM
 
+#include <algorithm>
 #include <cassert>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <numeric>
 #include <optional>
 #include <stdexcept>
@@ -677,10 +679,12 @@ void GenericCpGridVanguard<ElementMapper,GridView,Scalar>::addLgrsUpdateLeafView
     std::vector<std::array<int,3>> startIJK_vec;
     std::vector<std::array<int,3>> endIJK_vec;
     std::vector<std::string> lgrName_vec;
+    std::vector<std::string> lgrParentName_vec;
     cells_per_dim_vec.reserve(lgrsSize);
     startIJK_vec.reserve(lgrsSize);
     endIJK_vec.reserve(lgrsSize);
     lgrName_vec.reserve(lgrsSize);
+    lgrParentName_vec.reserve(lgrsSize);
     for (int lgr = 0; lgr < lgrsSize; ++lgr)
     {
         const auto lgrCarfin = lgrCollection.getLgr(lgr);
@@ -689,8 +693,54 @@ void GenericCpGridVanguard<ElementMapper,GridView,Scalar>::addLgrsUpdateLeafView
         startIJK_vec.push_back({lgrCarfin.I1(), lgrCarfin.J1(), lgrCarfin.K1()});
         endIJK_vec.push_back({lgrCarfin.I2()+1, lgrCarfin.J2()+1, lgrCarfin.K2()+1});
         lgrName_vec.emplace_back(lgrCarfin.NAME());
+        lgrParentName_vec.emplace_back(lgrCarfin.PARENT_NAME());
     }
-    grid.addLgrsUpdateLeafView(cells_per_dim_vec, startIJK_vec, endIJK_vec, lgrName_vec);
+
+    // Order the LGRs so a parent grid is always added before its children:
+    // the conforming builder appends level grids in request order and resolves
+    // each box's parent by name, so a child must follow its parent. Stable-sort
+    // by depth in the parent chain; top-level boxes (parent "GLOBAL") have
+    // depth 0 and keep their original relative order, so the common
+    // single-level case is unchanged.
+    std::vector<int> order(lgrsSize);
+    std::iota(order.begin(), order.end(), 0);
+    std::map<std::string,int> indexOfName;
+    for (int i = 0; i < lgrsSize; ++i) {
+        indexOfName[lgrName_vec[i]] = i;
+    }
+    const auto depthOf = [&](int i) {
+        int depth = 0;
+        std::string parent = lgrParentName_vec[i];
+        while (parent != "GLOBAL") {
+            ++depth;
+            const auto it = indexOfName.find(parent);
+            if (it == indexOfName.end() || depth > lgrsSize) {
+                break;  // unknown parent or cycle: let the builder report it
+            }
+            parent = lgrParentName_vec[it->second];
+        }
+        return depth;
+    };
+    std::stable_sort(order.begin(), order.end(),
+                     [&](int a, int b) { return depthOf(a) < depthOf(b); });
+
+    const auto permute = [&order](auto& v) {
+        using V = std::decay_t<decltype(v)>;
+        V reordered;
+        reordered.reserve(v.size());
+        for (const int idx : order) {
+            reordered.push_back(v[idx]);
+        }
+        v = std::move(reordered);
+    };
+    permute(cells_per_dim_vec);
+    permute(startIJK_vec);
+    permute(endIJK_vec);
+    permute(lgrName_vec);
+    permute(lgrParentName_vec);
+
+    grid.addLgrsUpdateLeafView(cells_per_dim_vec, startIJK_vec, endIJK_vec,
+                               lgrName_vec, lgrParentName_vec);
 };
 
 template<class ElementMapper, class GridView, class Scalar>
