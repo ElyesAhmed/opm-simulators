@@ -411,6 +411,16 @@ public:
                                  "the grid before load balancing");
                     this->addLgrsUpdateLeafView(lgrs, lgrs.size(), *this->grid_);
                     this->updateGridView_();
+                    // Keep each box's coarse cells together for the level-zero
+                    // partition, exactly as the rank-interior path does. The
+                    // leaf partition is then derived by propagating the level-
+                    // zero partition to the children (CpGrid::leafPartition-
+                    // FromLevelZero), so the box's refined cells all land on
+                    // one rank.
+                    if (applyLgrPartitionCellGroups_(lgrs)) {
+                        overlapLayers = std::max(overlapLayers, 2);
+                        partMethod = Dune::PartitionMethod::zoltanGoG;
+                    }
                 } else if (applyLgrPartitionCellGroups_(lgrs)) {
                     overlapLayers = std::max(overlapLayers, 2);
                     partMethod = Dune::PartitionMethod::zoltanGoG;
