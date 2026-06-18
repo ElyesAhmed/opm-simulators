@@ -496,6 +496,20 @@ public:
                     this->grid_->syncDistributedGlobalCellIds();
                 }
             }
+
+            // Opt-in canary (OPM_LGR_POISON_REFINED=1): poison every refined leaf
+            // cell's global Cartesian index now that the grid is built and the
+            // Cartesian->compressed map has been (re)built. If anything later
+            // re-derives a refined cell's properties from globalCell() (i.e.
+            // re-reads the parent Cartesian instead of using the materialized
+            // per-cell arrays) it will index out of bounds and fail loudly. A
+            // correct run is unaffected. Default off => zero impact on the
+            // achieved (rank-interior / refine-before) behaviour.
+            if (std::getenv("OPM_LGR_POISON_REFINED") != nullptr) {
+                this->grid_->poisonRefinedGlobalCell(-1);
+                OpmLog::info("\n[canary] poisoned refined leaf cells' global Cartesian index "
+                             "(OPM_LGR_POISON_REFINED): any late re-derivation will now fail loudly.");
+            }
         }
     }
 
