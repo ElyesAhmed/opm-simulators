@@ -461,10 +461,14 @@ public:
         // In a parallel run, this adds the LGRs on the distributed simulation grid.
         if (const auto& lgrs = this->eclState().getLgrs(); lgrs.size() > 0) {
             // With the experimental refine-before-redistribute option the LGRs
-            // were already added in loadBalance() (before the grid was
-            // distributed); the grid is already refined, so don't add them
-            // again here.
-            if (this->refineBeforeRedistribute() && this->grid_->maxLevel() > 0) {
+            // are already added in loadBalance() for a parallel run (before the
+            // grid is distributed), so don't add them again here. The check is on
+            // comm().size() > 1, not maxLevel(): once the refined leaf has been
+            // distributed the distributed grid carries the leaf as its only level
+            // (maxLevel() == 0 again), so a maxLevel() test would wrongly re-add
+            // the LGRs. In a serial refine-before run loadBalance() does not add
+            // the LGRs, so they are still added below.
+            if (this->refineBeforeRedistribute() && this->grid_->comm().size() > 1) {
                 return;
             }
             OpmLog::info("\nAdding LGRs to the grid and updating its leaf grid view");
