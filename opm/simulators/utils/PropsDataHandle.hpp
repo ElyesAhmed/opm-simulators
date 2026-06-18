@@ -82,23 +82,21 @@ public:
         if (comm.rank() == 0) {
             const FieldPropsManager& globalProps = eclState.globalFieldProps();
             const auto& idSet = m_grid.localIdSet();
-            const auto& gridView = m_grid.levelGridView(0);
-            using ElementMapper =
-                Dune::MultipleCodimMultipleGeomTypeMapper<typename Grid::LevelGridView>;
-            ElementMapper elemMapper(gridView, Dune::mcmgElementLayout());
 
-            for (const auto &element : elements(gridView, Dune::Partitions::interiorBorder))
+            // Record a single source cell's properties into elementData_, keyed
+            // by the cell's local id; propIndex indexes the (level-zero/Cartesian
+            // sized) global field properties.
+            auto record = [&](const auto& element, const std::size_t propIndex)
             {
                 const auto& id = idSet.id(element);
-                auto index = elemMapper.index(element);
                 auto& data = elementData_[id];
                 data.reserve(m_no_data);
 
                 for (const auto& intKey : m_intKeys)
                 {
                     const auto& fieldData = globalProps.get_int_field_data(intKey);
-                    data.emplace_back(fieldData.data[index],
-                                      static_cast<unsigned char>(fieldData.value_status[index]));
+                    data.emplace_back(fieldData.data[propIndex],
+                                      static_cast<unsigned char>(fieldData.value_status[propIndex]));
                 }
 
                 for (const auto& doubleKey : m_doubleKeys)
@@ -107,8 +105,37 @@ public:
                     // for TranCalculator, too.
                     const auto& fieldData = globalProps.get_double_field_data(doubleKey,
                                                                               /* allow_unsupported = */ true);
-                    data.emplace_back(fieldData.data[index],
-                                      static_cast<unsigned char>(fieldData.value_status[index]));
+                    data.emplace_back(fieldData.data[propIndex],
+                                      static_cast<unsigned char>(fieldData.value_status[propIndex]));
+                }
+            };
+
+            if (m_grid.maxLevel() > 0)
+            {
+                // refine-before-redistribute: the grid being load balanced is the
+                // refined leaf. The global field properties are defined on the
+                // level-zero (Cartesian) grid, so each leaf cell inherits the
+                // properties of its level-zero origin (getOrigin(): the cell
+                // itself for an unrefined coarse leaf cell, the level-zero
+                // ancestor for a refined cell). The whole serial leaf lives on
+                // rank 0 here, and the export list built for the scatter visits
+                // every leaf cell regardless of partition type, so record all of
+                // them (Partitions::all).
+                for (const auto& element : elements(m_grid.leafGridView(), Dune::Partitions::all))
+                {
+                    record(element, element.getOrigin().index());
+                }
+            }
+            else
+            {
+                const auto& gridView = m_grid.levelGridView(0);
+                using ElementMapper =
+                    Dune::MultipleCodimMultipleGeomTypeMapper<typename Grid::LevelGridView>;
+                ElementMapper elemMapper(gridView, Dune::mcmgElementLayout());
+
+                for (const auto &element : elements(gridView, Dune::Partitions::interiorBorder))
+                {
+                    record(element, elemMapper.index(element));
                 }
             }
         }
