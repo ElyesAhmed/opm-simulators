@@ -488,6 +488,19 @@ public:
                              "default tuning (--enable-tuning=false).");
             }
         }
+
+        // Opt-in LGR canary, post-init variant (OPM_LGR_POISON_REFINED_POSTINIT=1):
+        // the one-time materialization (CartesianIndexMapper -> globalCell ->
+        // props/EQUIL/trans/rock) is now complete, so poison the refined leaf
+        // cells' global Cartesian index here. If the *solve* still completes,
+        // it never re-derives a refined cell's property from globalCell() after
+        // init (the invariant we want); if it fails, it pinpoints a per-step
+        // dependency to replace later with an LGR-convertible index. Default off.
+        if (std::getenv("OPM_LGR_POISON_REFINED_POSTINIT") != nullptr) {
+            this->simulator().vanguard().grid().poisonRefinedGlobalCell(-1);
+            OpmLog::info("\n[canary] post-finishInit: poisoned refined leaf cells' global "
+                         "Cartesian index; a clean solve proves no post-init re-derivation.");
+        }
     }
 
     /*!
