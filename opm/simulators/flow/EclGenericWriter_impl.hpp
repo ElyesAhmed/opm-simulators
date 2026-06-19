@@ -1015,7 +1015,14 @@ doWriteOutput(const int                          reportStepNum,
     std::vector<Opm::RestartValue> restartValues{};
     const bool haveLgrCellOutput = !needsReordering
         && (this->eclState_.getLgrs().size() > 0)
-        && (this->grid_.maxLevel() > 0);
+        // The leaf solution is split onto the per-level grids using a grid that
+        // carries the level hierarchy. That is the simulation grid in serial /
+        // the rank-interior path, but with refine-before-redistribute the
+        // distributed simulation grid is the flat leaf (maxLevel() == 0); there
+        // the I/O-rank reference grid (collectGrid_) holds the hierarchy and the
+        // parallel branch below splits on it instead. So accept either.
+        && ( (this->grid_.maxLevel() > 0)
+             || (this->collectGrid_ != nullptr && this->collectGrid_->maxLevel() > 0) );
     // Split the leaf solution onto the per-level grids.  Level cells that appear
     // on the leaf grid view get the data::Solution values from there; other
     // cells (parent cells that vanished due to refinement) get rubbish values
