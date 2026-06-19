@@ -707,33 +707,51 @@ void GenericCpGridVanguard<ElementMapper,GridView,Scalar>::addLgrsUpdateLeafView
         return;
     }
 
-    // Order the LGRs so a parent grid is always added before its children:
-    // the conforming builder appends level grids in request order and resolves
-    // each box's parent by name, so a child must follow its parent. Stable-sort
-    // by depth in the parent chain; top-level boxes (parent "GLOBAL") have
-    // depth 0 and keep their original relative order, so the common
-    // single-level case is unchanged.
-    std::vector<int> order(lgrsSize);
-    std::iota(order.begin(), order.end(), 0);
+    // Order the LGRs so a parent grid is always added before its children: the
+    // conforming builder appends level grids in request order and resolves each
+    // box's parent by name, so a child must follow its parent. Use a STABLE
+    // topological order that preserves the deck order otherwise - a child is
+    // only deferred until after its parent. This matters because the level
+    // numbering produced here (CpGrid level = position in this order) must match
+    // opm-common's LGR numbering, which is the deck order: the per-LGR ECL
+    // output pairs each level's data with the LGR at the same position, so a
+    // depth-grouping sort (which reorders sibling top-level LGRs around a nested
+    // one) would mispair the output. A valid deck (parent before child) is left
+    // exactly in deck order.
     std::map<std::string,int> indexOfName;
     for (int i = 0; i < lgrsSize; ++i) {
         indexOfName[lgrName_vec[i]] = i;
     }
-    const auto depthOf = [&](int i) {
-        int depth = 0;
-        std::string parent = lgrParentName_vec[i];
-        while (parent != "GLOBAL") {
-            ++depth;
-            const auto it = indexOfName.find(parent);
-            if (it == indexOfName.end() || depth > lgrsSize) {
-                break;  // unknown parent or cycle: let the builder report it
-            }
-            parent = lgrParentName_vec[it->second];
+    const auto parentIndex = [&](int i) -> int {
+        if (lgrParentName_vec[i] == "GLOBAL") {
+            return -1;
         }
-        return depth;
+        const auto it = indexOfName.find(lgrParentName_vec[i]);
+        return (it == indexOfName.end()) ? -1 : it->second;  // unknown parent: builder reports it
     };
-    std::stable_sort(order.begin(), order.end(),
-                     [&](int a, int b) { return depthOf(a) < depthOf(b); });
+    std::vector<int> order;
+    order.reserve(lgrsSize);
+    std::vector<char> placed(lgrsSize, 0);
+    bool progress = true;
+    while (static_cast<int>(order.size()) < lgrsSize && progress) {
+        progress = false;
+        for (int i = 0; i < lgrsSize; ++i) {           // deck order within each pass
+            if (placed[i]) {
+                continue;
+            }
+            const int p = parentIndex(i);
+            if (p < 0 || placed[p]) {                  // parent is GLOBAL/unknown or already placed
+                order.push_back(i);
+                placed[i] = 1;
+                progress = true;
+            }
+        }
+    }
+    for (int i = 0; i < lgrsSize; ++i) {               // any leftovers (cycle): builder reports it
+        if (!placed[i]) {
+            order.push_back(i);
+        }
+    }
 
     const auto permute = [&order](auto& v) {
         using V = std::decay_t<decltype(v)>;
