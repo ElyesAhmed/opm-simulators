@@ -1,7 +1,5 @@
 /*
-  Copyright Equinor ASA 2026
-
-  This file is part of the Open Porous Media project (OPM).
+This file is part of the Open Porous Media project (OPM).
 
   OPM is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -16,13 +14,12 @@
   You should have received a copy of the GNU General Public License
   along with OPM.  If not, see <http://www.gnu.org/licenses/>.
 */
-#ifndef OPM_WELLMATRIXMERGER_HEADER_INCLUDED
-#define OPM_WELLMATRIXMERGER_HEADER_INCLUDED
+#pragma once
 
 #include <opm/simulators/linalg/system/SystemTypes.hpp>
+
 #include <opm/grid/utility/SparseTable.hpp>
 
-#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <iterator>
@@ -58,14 +55,14 @@ struct MatrixSparsityPattern
 };
 
 // Structural cache key for the merged well part of the system matrix.
-//  totalWellBlocks is the sum of all individual well D-matrix dimensions,
+//  totalWellDofs is the sum of all individual well D-matrix dimensions,
 //  i.e., the total number of well degrees of freedom.  It is stored here
 //  so that the well-vector size and the structure-rebuild decision stay
 //  in the same place.
 struct WellMatrixStructure
 {
     std::size_t numResDofs = 0;
-    std::size_t totalWellBlocks = 0;  // Aggregated well DOFs (sum of D_i.N())
+    std::size_t totalWellDofs = 0;  // Aggregated well DOFs (sum of D_i.N())
     Opm::SparseTable<int> wellCells;
     std::vector<MatrixSparsityPattern> bPatterns;
     std::vector<MatrixSparsityPattern> cPatterns;
@@ -74,7 +71,7 @@ struct WellMatrixStructure
     bool operator==(const WellMatrixStructure& other) const
     {
         return numResDofs == other.numResDofs
-            && totalWellBlocks == other.totalWellBlocks
+            && totalWellDofs == other.totalWellDofs
             && wellCells == other.wellCells
             && bPatterns == other.bPatterns
             && cPatterns == other.cPatterns
@@ -132,7 +129,7 @@ template<class Matrix> bool hasSameMatrixSparsity(const Matrix& matrix,
 
         for (auto colIt = matrix[rowIdx].begin(); colIt != matrix[rowIdx].end(); ++colIt) {
             if (entryOffset >= pattern.columnIndices.size()
-                || static_cast<std::size_t>(pattern.columnIndices[entryOffset]) != colIt.index())
+                || pattern.columnIndices[entryOffset] != colIt.index())
             {
                 return false;
             }
@@ -147,18 +144,6 @@ template<class Matrix> bool hasSameMatrixSparsity(const Matrix& matrix,
     return entryOffset == pattern.columnIndices.size();
 }
 
-// WellMatrixMerger assembles the global coupled well part of
-//
-//     [ A  C ]
-//     [ B  D ]
-//
-// from the per-well blocks B_j, C_j and D_j. It preserves each well's local
-// sparsity pattern and only does two structural operations: concatenate the
-// well blocks and remap perforation-related rows/columns through the list of
-// perforated reservoir cells for each well.
-
-// Give each block a distinctive value pattern so it is easy to see where it
-// ended up after merging.
 template<typename Scalar>
 class WellMatrixMerger
 {
@@ -167,12 +152,12 @@ public:
     using CMatrix = RWMatrix<Scalar>;
     using DMatrix = WWMatrix<Scalar>;
 
-    WellMatrixMerger(const std::size_t nResDofs,
+    WellMatrixMerger(const std::size_t numResDofs,
                      const std::vector<BMatrix>& bMatrices,
                      const std::vector<CMatrix>& cMatrices,
                      const std::vector<DMatrix>& dMatrices,
                      const Opm::SparseTable<int>& wellCells)
-        : numResDofs_(nResDofs)
+        : numResDofs_(numResDofs)
         , bMatrices_(bMatrices)
         , cMatrices_(cMatrices)
         , dMatrices_(dMatrices)
@@ -185,7 +170,7 @@ public:
     {
         const auto numWells = bMatrices_.size();
         if (cachedStructure.numResDofs != numResDofs_
-            || static_cast<std::size_t>(cachedStructure.wellCells.size()) != numWells
+            || cachedStructure.wellCells.size() != numWells
             || cachedStructure.bPatterns.size() != numWells
             || cachedStructure.cPatterns.size() != numWells
             || cachedStructure.dPatterns.size() != numWells)
@@ -197,9 +182,7 @@ public:
         for (std::size_t well = 0; well < numWells; ++well) {
             totalWellDofs += dMatrices_[well].N();
 
-            const auto& cachedRow = cachedStructure.wellCells[well];
-            const auto& currentRow = wellCells_[well];
-            if (!std::ranges::equal(cachedRow.begin(), cachedRow.end(), currentRow.begin(), currentRow.end())
+            if (cachedStructure.wellCells[well] != wellCells_[well]
                 || !hasSameMatrixSparsity(bMatrices_[well], cachedStructure.bPatterns[well])
                 || !hasSameMatrixSparsity(cMatrices_[well], cachedStructure.cPatterns[well])
                 || !hasSameMatrixSparsity(dMatrices_[well], cachedStructure.dPatterns[well]))
@@ -208,14 +191,14 @@ public:
             }
         }
 
-        return cachedStructure.totalWellBlocks == totalWellDofs;
+        return cachedStructure.totalWellDofs == totalWellDofs;
     }
 
     WellMatrixStructure buildStructure() const
     {
         WellMatrixStructure structure;
         structure.numResDofs = numResDofs_;
-        structure.totalWellBlocks = 0;
+        structure.totalWellDofs = 0;
         structure.wellCells = wellCells_;
         structure.bPatterns.reserve(bMatrices_.size());
         structure.cPatterns.reserve(cMatrices_.size());
@@ -225,7 +208,7 @@ public:
             structure.bPatterns.push_back(captureMatrixSparsity(bMatrices_[well]));
             structure.cPatterns.push_back(captureMatrixSparsity(cMatrices_[well]));
             structure.dPatterns.push_back(captureMatrixSparsity(dMatrices_[well]));
-            structure.totalWellBlocks += dMatrices_[well].N();
+            structure.totalWellDofs += dMatrices_[well].N();
         }
 
         return structure;
@@ -255,7 +238,7 @@ private:
         const auto numWells = bMatrices_.size();
         assert(cMatrices_.size() == numWells);
         assert(dMatrices_.size() == numWells);
-        assert(static_cast<std::size_t>(wellCells_.size()) == numWells);
+        assert(wellCells_.size() == numWells);
 
         for (std::size_t well = 0; well < numWells; ++well) {
             const auto& B = bMatrices_[well];
@@ -482,5 +465,3 @@ private:
 };
 
 } // namespace Opm
-
-#endif // OPM_WELLMATRIXMERGER_HEADER_INCLUDED

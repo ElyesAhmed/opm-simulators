@@ -1,12 +1,12 @@
 #include <config.h>
+
 #define BOOST_TEST_MODULE OPM_test_WellMatrixMerger
 #include <boost/test/unit_test.hpp>
 
 #include <opm/simulators/linalg/system/WellMatrixMerger.hpp>
-#include <opm/grid/utility/SparseTable.hpp>
 
-#include <array>
 #include <cstddef>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -18,8 +18,7 @@ using WWMatrix = Opm::WWMatrix<Scalar>;
 using WRBlock = WRMatrix::block_type;
 using RWBlock = RWMatrix::block_type;
 using WWBlock = WWMatrix::block_type;
-constexpr std::size_t numResDof = 5;
-
+    \
 template<class Block>
 Block makeBlock(const Scalar base)
 {
@@ -106,9 +105,21 @@ struct TestMatrices
     std::vector<WRMatrix> bMatrices;
     std::vector<RWMatrix> cMatrices;
     std::vector<WWMatrix> dMatrices;
-    Opm::SparseTable<int> wellCells;
+    std::vector<std::vector<int>> wellCells;
 };
-    
+
+// WellMatrixMerger assembles the global coupled well part of
+//
+// [ A  C ]
+// [ B  D ]
+//
+// from the per-well blocks B_j, C_j and D_j. It preserves each well's local
+// sparsity pattern and only does two structural operations: concatenate the
+// well blocks and remap perforation-related rows/columns through the list of
+// perforated reservoir cells for each well.
+
+ // Give each block a distinctive value pattern so it is easy to see where it
+// ended up after merging.
 struct MergedMatrices
 {
     WRMatrix b;
@@ -132,15 +143,7 @@ TestMatrices buildTestMatrices()
     // wellCells[well][local perforation] = global reservoir cell index.
     // The first well perforates cells 1 and 3, the second well perforates
     // cells 0 and 4.
-    matrices.wellCells.clear();
-    {
-        std::vector<int> cells{1, 3};
-        matrices.wellCells.appendRow(cells.begin(), cells.end());
-    }
-    {
-        std::vector<int> cells{0, 4};
-        matrices.wellCells.appendRow(cells.begin(), cells.end());
-    }
+    matrices.wellCells = {{1, 3}, {0, 4}};
 
     // Toy MSW: two segment rows/columns and one local perforation attached to
     // each segment. B and C therefore have one entry per row. D has the full
@@ -258,7 +261,8 @@ void updateSourceValues(TestMatrices& matrices)
     matrices.dMatrices[0][1][1] = makeBlock<WWBlock>(230.0);
 }
 
-MergedMatrices buildMergedMatrices(const TestMatrices& matrices)
+MergedMatrices buildMergedMatrices(const TestMatrices& matrices,
+                                   const std::size_t numResDof)
 {
     MergedMatrices merged;
     const Opm::WellMatrixMerger<Scalar> merger(
@@ -292,7 +296,8 @@ void checkUpdatedMergedMatrices(const MergedMatrices& merged)
     checkMatrixEqual(merged.d, expectedD);
 }
 
-void checkEmptyMergedMatrices(const MergedMatrices& merged)
+void checkEmptyMergedMatrices(const MergedMatrices& merged,
+                              const std::size_t numResDof)
 {
     BOOST_CHECK_EQUAL(merged.b.N(), std::size_t{0});
     BOOST_CHECK_EQUAL(merged.b.M(), numResDof);
@@ -306,6 +311,7 @@ void checkEmptyMergedMatrices(const MergedMatrices& merged)
 
 BOOST_AUTO_TEST_CASE(MergeHandlesEmptyWellSet)
 {
+    constexpr std::size_t numResDof = 5;
     const TestMatrices matrices;
     const Opm::WellMatrixMerger<Scalar> merger(
         numResDof,
@@ -316,14 +322,16 @@ BOOST_AUTO_TEST_CASE(MergeHandlesEmptyWellSet)
     const auto structure = merger.buildStructure();
 
     BOOST_CHECK_EQUAL(structure.numResDofs, numResDof);
-    BOOST_CHECK_EQUAL(structure.totalWellBlocks, std::size_t{0});
+    BOOST_CHECK_EQUAL(structure.totalWellDofs, std::size_t{0});
 
-    const auto merged = buildMergedMatrices(matrices);
-    checkEmptyMergedMatrices(merged);
+    const auto merged = buildMergedMatrices(matrices, numResDof);
+    checkEmptyMergedMatrices(merged, numResDof);
 }
 
 BOOST_AUTO_TEST_CASE(MergeBuildsExpectedMatricesAndStructure)
 {
+    constexpr std::size_t numResDof = 5;
+
     const auto matrices = buildTestMatrices();
     const Opm::WellMatrixMerger<Scalar> merger(
         numResDof,
@@ -335,7 +343,7 @@ BOOST_AUTO_TEST_CASE(MergeBuildsExpectedMatricesAndStructure)
 
     // The cached structure records both the perforated-cell mapping and the
     // exact sparsity of every per-well B, C and D block.
-    BOOST_CHECK_EQUAL(structure.totalWellBlocks, std::size_t{3});
+    BOOST_CHECK_EQUAL(structure.totalWellDofs, std::size_t{3});
     BOOST_CHECK(structure.wellCells == matrices.wellCells);
     BOOST_REQUIRE_EQUAL(structure.bPatterns.size(), matrices.bMatrices.size());
     BOOST_REQUIRE_EQUAL(structure.cPatterns.size(), matrices.cMatrices.size());
@@ -345,12 +353,14 @@ BOOST_AUTO_TEST_CASE(MergeBuildsExpectedMatricesAndStructure)
     BOOST_CHECK(structure.dPatterns[0] == Opm::captureMatrixSparsity(matrices.dMatrices[0]));
     BOOST_CHECK(merger.hasSameStructure(structure));
 
-    const auto merged = buildMergedMatrices(matrices);
+    const auto merged = buildMergedMatrices(matrices, numResDof);
     checkMergedMatrices(merged);
 }
 
 BOOST_AUTO_TEST_CASE(UpdateValuesReusesMergedStructure)
 {
+    constexpr std::size_t numResDof = 5;
+
     auto matrices = buildTestMatrices();
     const Opm::WellMatrixMerger<Scalar> merger(
         numResDof,
@@ -358,7 +368,7 @@ BOOST_AUTO_TEST_CASE(UpdateValuesReusesMergedStructure)
         matrices.cMatrices,
         matrices.dMatrices,
         matrices.wellCells);
-    auto merged = buildMergedMatrices(matrices);
+    auto merged = buildMergedMatrices(matrices, numResDof);
 
     const auto mergedBPattern = Opm::captureMatrixSparsity(merged.b);
     const auto mergedCPattern = Opm::captureMatrixSparsity(merged.c);
@@ -382,6 +392,8 @@ BOOST_AUTO_TEST_CASE(UpdateValuesReusesMergedStructure)
 
 BOOST_AUTO_TEST_CASE(StructureChangesWhenWellPatternChanges)
 {
+    constexpr std::size_t numResDof = 5;
+
     const auto matrices = buildTestMatrices();
     auto changedDMatrices = matrices.dMatrices;
     changedDMatrices[0] = buildMatrix<WWMatrix>(
@@ -412,13 +424,15 @@ BOOST_AUTO_TEST_CASE(StructureChangesWhenWellPatternChanges)
 
     BOOST_CHECK(referenceMerger.hasSameStructure(reference));
     BOOST_CHECK(!changedMerger.hasSameStructure(reference));
-    BOOST_CHECK_EQUAL(reference.totalWellBlocks, changed.totalWellBlocks);
+    BOOST_CHECK_EQUAL(reference.totalWellDofs, changed.totalWellDofs);
     BOOST_CHECK(reference != changed);
     BOOST_CHECK(reference.dPatterns[0] != changed.dPatterns[0]);
 }
 
 BOOST_AUTO_TEST_CASE(StructureChangesWhenCouplingPatternChanges)
 {
+    constexpr std::size_t numResDof = 5;
+
     const auto matrices = buildTestMatrices();
     auto changedBMatrices = matrices.bMatrices;
     // Remove one of the standard well's B couplings while keeping the block
@@ -454,18 +468,14 @@ BOOST_AUTO_TEST_CASE(StructureChangesWhenCouplingPatternChanges)
 
 BOOST_AUTO_TEST_CASE(StructureChangesWhenPerforationMappingChanges)
 {
+    constexpr std::size_t numResDof = 5;
 
     const auto matrices = buildTestMatrices();
-
-    // Build a new wellCells table with row 1 swapped
-    Opm::SparseTable<int> changedWellCells;
-    changedWellCells.clear();
-    // Row 0 unchanged: copy from the original matrices
-    changedWellCells.appendRow(matrices.wellCells[0].begin(),
-                               matrices.wellCells[0].end());
-    // Row 1: swap the two perforation cells (4 and 0)
-    constexpr std::array<int, 2> newRow{4, 0};
-    changedWellCells.appendRow(newRow.begin(), newRow.end());
+    auto changedWellCells = matrices.wellCells;
+    // Keep the local B/C/D sparsity unchanged but swap which global reservoir
+    // cells the standard well perforates. The structure key must change
+    // because the merged B and C entries move to different reservoir slots.
+    changedWellCells[1] = {4, 0};
 
     const Opm::WellMatrixMerger<Scalar> referenceMerger(
         numResDof,

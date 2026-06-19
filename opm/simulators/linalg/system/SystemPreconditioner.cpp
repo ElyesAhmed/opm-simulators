@@ -1,7 +1,5 @@
 /*
-  Copyright Equinor ASA 2026
-
-  This file is part of the Open Porous Media project (OPM).
+This file is part of the Open Porous Media project (OPM).
 
   OPM is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -23,24 +21,24 @@
 #include <opm/simulators/linalg/system/SystemPreconditionerFactory.hpp>
 
 #define INSTANTIATE_SYSTEM_PF_SEQ(T)                                                                  \
-    template class Opm::SystemPreconditioner<T, Opm::SeqResOperator<T>>;                             \
+    template class Opm::SystemPreconditioner<T, Opm::SeqResOperatorT<T>>;                             \
     template class Dune::FlexibleSolver<                                                               \
         Dune::MatrixAdapter<Opm::WWMatrix<T>, Opm::WellVector<T>, Opm::WellVector<T>>>;           \
-    template class Dune::FlexibleSolver<Opm::SystemSeqOp<T>>;                                        \
-    template class Opm::PreconditionerFactory<Opm::SystemSeqOp<T>, Dune::Amg::SequentialInformation>;
+    template class Dune::FlexibleSolver<Opm::SystemSeqOpT<T>>;                                        \
+    template class Opm::PreconditionerFactory<Opm::SystemSeqOpT<T>, Dune::Amg::SequentialInformation>;
 
 #if HAVE_MPI
 #define INSTANTIATE_SYSTEM_PF_PAR(T)                                                                  \
-    template class Opm::SystemPreconditioner<T, Opm::ParResOperator<T>, Opm::ParResComm>;            \
-    template class Dune::FlexibleSolver<Opm::SystemParOp<T>>;                                        \
-    template Dune::FlexibleSolver<Opm::SystemParOp<T>>::FlexibleSolver(                               \
-        Opm::SystemParOp<T>& op,                                                                     \
+    template class Opm::SystemPreconditioner<T, Opm::ParResOperatorT<T>, Opm::ParResComm>;            \
+    template class Dune::FlexibleSolver<Opm::SystemParOpT<T>>;                                        \
+    template Dune::FlexibleSolver<Opm::SystemParOpT<T>>::FlexibleSolver(                               \
+        Opm::SystemParOpT<T>& op,                                                                     \
         const Opm::SystemComm& comm,                                                                  \
         const Opm::PropertyTree& prm,                                                                 \
         const std::function<Opm::SystemVector<T>()>& weightsCalculator,                              \
         std::size_t pressureIndex);                                                                    \
-    template class Opm::PreconditionerFactory<Opm::SystemParOp<T>, Opm::SystemComm>;                 \
-    template class Opm::PreconditionerFactory<Opm::SystemParOp<T>, Dune::Amg::SequentialInformation>;
+    template class Opm::PreconditionerFactory<Opm::SystemParOpT<T>, Opm::SystemComm>;                 \
+    template class Opm::PreconditionerFactory<Opm::SystemParOpT<T>, Dune::Amg::SequentialInformation>;
 
 #define INSTANTIATE_SYSTEM_PF(T) \
     INSTANTIATE_SYSTEM_PF_PAR(T) \
