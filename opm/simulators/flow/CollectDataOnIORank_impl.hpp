@@ -968,6 +968,36 @@ CollectDataOnIORank(const Grid& grid, const EquilGrid* equilGrid,
         const bool refined = grid.maxLevel() > 0;
         const auto localLevelOffsets = makeLevelOffsets(grid);
 
+        // refine-before-redistribute: the distributed grid is the flat refined
+        // leaf (refined cells but maxLevel() == 0), so the level-offset id above
+        // is unavailable. Instead build a composite id from the parent Cartesian
+        // index (global_cell_, shared by refined siblings) and the cell's
+        // index-in-parent: coarse cell -> its Cartesian index; refined cell ->
+        // a disjoint range cartDimsProduct + parentCartesian*childStride +
+        // indexInParent. childStride is the global max index-in-parent + 1, so
+        // the mapping is injective and identical on the distributed leaf and the
+        // refined I/O-rank reference grid (both carry the same parent Cartesian
+        // and index-in-parent per cell).
+        const bool refinedFlat = !refined && grid.leafHasParentCellIndices();
+        std::int64_t cartProduct = 0;
+        int childStride = 1;
+        if (refinedFlat) {
+            const auto& d = grid.logicalCartesianSize();
+            cartProduct = static_cast<std::int64_t>(d[0]) * d[1] * d[2];
+            int localMaxChild = 0;
+            for (const auto& elem : elements(localGridView, Dune::Partitions::interior)) {
+                localMaxChild = std::max(localMaxChild, elem.getIdxInParentCell());
+            }
+            childStride = comm.max(localMaxChild) + 1;
+        }
+        auto compositeRefinedId = [cartProduct, childStride](int parentCartesian, int idxInParent) -> int {
+            if (idxInParent < 0) {
+                return parentCartesian; // coarse leaf cell
+            }
+            return static_cast<int>(cartProduct
+                + static_cast<std::int64_t>(parentCartesian) * childStride + idxInParent);
+        };
+
         typedef Dune::MultipleCodimMultipleGeomTypeMapper<GridView> ElementMapper;
         ElementMapper elemMapper(localGridView, Dune::mcmgElementLayout());
         sortedCartesianIdx_.reserve(localGridView.size(0));
@@ -976,6 +1006,10 @@ CollectDataOnIORank(const Grid& grid, const EquilGrid* equilGrid,
             if (refined) {
                 return static_cast<int>(localLevelOffsets[elem.level()])
                     + elem.getLevelCartesianIdx();
+            }
+            if (refinedFlat) {
+                return compositeRefinedId(cartMapper.cartesianIndex(elemMapper.index(elem)),
+                                          elem.getIdxInParentCell());
             }
             return cartMapper.cartesianIndex(elemMapper.index(elem));
         };
@@ -1010,9 +1044,20 @@ CollectDataOnIORank(const Grid& grid, const EquilGrid* equilGrid,
             const auto equilLevelOffsets = makeLevelOffsets(*equilGrid);
             for (const auto& elem : elements(equilGrid->leafGridView())) {
                 int elemIdx = equilElemMapper.index(elem);
-                int globalId = refined
-                    ? static_cast<int>(equilLevelOffsets[elem.level()]) + elem.getLevelCartesianIdx()
-                    : equilCartMapper->cartesianIndex(elemIdx);
+                int globalId;
+                if (refined) {
+                    globalId = static_cast<int>(equilLevelOffsets[elem.level()]) + elem.getLevelCartesianIdx();
+                }
+                else if (refinedFlat) {
+                    // The I/O-rank reference grid is the full refined leaf and
+                    // carries the same parent Cartesian + index-in-parent per
+                    // cell, so the composite id matches the distributed leaf's.
+                    globalId = compositeRefinedId(equilCartMapper->cartesianIndex(elemIdx),
+                                                  elem.getIdxInParentCell());
+                }
+                else {
+                    globalId = equilCartMapper->cartesianIndex(elemIdx);
+                }
                 globalCartesianIndex_[elemIdx] = globalId;
             }
 
