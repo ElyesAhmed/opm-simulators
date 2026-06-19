@@ -287,6 +287,15 @@ public:
             boxes.reserve(lgrs.size());
             for (std::size_t l = 0; l < lgrs.size(); ++l) {
                 const auto c = lgrs.getLgr(static_cast<int>(l));
+                // A nested LGR (parent != GLOBAL) addresses its parent LGR's own
+                // local Cartesian space, so its I/J/K extents are NOT global cell
+                // indices and must not be turned into a global box (that yields
+                // out-of-range cells and a corrupt partition group). A fully
+                // contained nested LGR lives inside its parent's box and is kept
+                // on the parent's rank by the parent's group, so skip it here.
+                if (c.PARENT_NAME() != "GLOBAL") {
+                    continue;
+                }
                 boxes.push_back({c.I1(), c.I2() + 1, c.J1(), c.J2() + 1, c.K1(), c.K2() + 1});
             }
             // Union-find: merge boxes that meet in every direction (touch or
