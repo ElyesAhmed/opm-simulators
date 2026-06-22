@@ -41,10 +41,12 @@
 #include <map>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <tuple>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 namespace Opm {
@@ -148,6 +150,18 @@ public:
         }
         const int lgr_level = levelIt->second;
 
+        // refine-before-redistribute: the distributed grid is the flat refined
+        // leaf (refined cells but maxLevel()==0, so the per-level grids used by
+        // mapLocalCartesianIndexSetsToLeafIndexSet / currentData()[lgr_level] do
+        // not exist on this rank).  Static refinement means the
+        // (LGR-local Cartesian -> leaf cell) relation is fixed and known at
+        // build time, so reconstruct it once from each leaf cell's parent
+        // Cartesian (globalCell()) + index-in-parent + the static CARFIN box,
+        // and look the connection up there.
+        if (this->grid().maxLevel() == 0 && this->grid().leafHasParentCellIndices()) {
+            return this->compressedIndexForInteriorLGRFlat_(lgr_tag, lgr_level, conn);
+        }
+
         if (ParentType::lgrMappers_.has_value() == false) {
             ParentType::lgrMappers_.emplace(this->grid().mapLocalCartesianIndexSetsToLeafIndexSet());
         }
@@ -168,6 +182,105 @@ public:
         }
         return static_cast<int>(it->second);
     }
+
+    //! \brief Resolve an LGR-completed connection on the flat refine-before leaf.
+    //!
+    //! On the refine-before-redistribute path the distributed grid is the flat
+    //! refined leaf (maxLevel()==0); there are no per-level grids to index.  The
+    //! refinement is static, so we reconstruct, once and cached, the per-level
+    //! (LGR-local Cartesian -> local leaf cell) map directly from each leaf
+    //! cell's parent Cartesian index (globalCell(), shared by refined siblings),
+    //! its index-in-parent, and the static CARFIN box (offset + refinement
+    //! factors).  Single nesting level (parent of every refined cell is a
+    //! level-0 coarse cell).
+    int compressedIndexForInteriorLGRFlat_(const std::string& lgr_tag,
+                                           int lgr_level,
+                                           const Connection& conn) const
+    {
+        if (!flatLgrMappers_.has_value()) {
+            this->buildFlatLgrMappers_();
+        }
+        const auto& mappers = flatLgrMappers_.value();
+        if (lgr_level < 0 || static_cast<std::size_t>(lgr_level) >= mappers.size()) {
+            return -1;
+        }
+        // LGR-local Cartesian index of the connection, using the LGR's refined
+        // dimensions straight from the (static) CARFIN definition.
+        const auto& carfin = this->eclState().getLgrs().getLgr(lgr_tag);
+        const int nx = carfin.NX();
+        const int ny = carfin.NY();
+        const auto lgr_cartesian_index = static_cast<std::size_t>(
+            (conn.getK()*nx*ny) + (conn.getJ()*nx) + conn.getI());
+
+        const auto& mapper = mappers[lgr_level];
+        const auto it = mapper.find(lgr_cartesian_index);
+        if (it == mapper.end()) {
+            return -1; // cell of this LGR is not present on this rank
+        }
+        return it->second;
+    }
+
+    //! \brief Build (and cache) the flat refine-before LGR-local-Cartesian maps.
+    void buildFlatLgrMappers_() const
+    {
+        const auto& lgrs = this->eclState().getLgrs();
+        const auto& nameToLevel = this->grid().getLgrNameToLevel();
+        const auto& dims0 = this->grid().logicalCartesianSize(); // global level-0 dims
+
+        struct Box { int i0,j0,k0,i1,j1,k1, rx,ry,rz, nx,ny, level; };
+        std::vector<Box> boxes;
+        int maxLevel = 0;
+        for (const auto& [name, level] : nameToLevel) {
+            if (level == 0) {
+                continue;
+            }
+            const auto& c = lgrs.getLgr(name);
+            const int ni = c.I2() - c.I1() + 1;
+            const int nj = c.J2() - c.J1() + 1;
+            const int nk = c.K2() - c.K1() + 1;
+            boxes.push_back({c.I1(), c.J1(), c.K1(), c.I2(), c.J2(), c.K2(),
+                             c.NX()/ni, c.NY()/nj, c.NZ()/nk, c.NX(), c.NY(), level});
+            maxLevel = std::max(maxLevel, level);
+        }
+
+        std::vector<std::unordered_map<std::size_t,int>> mappers(maxLevel + 1);
+        const auto& gc = this->grid().globalCell();
+        // Interior partition only: mirrors compressedIndexForInterior - a
+        // connection must resolve on the single rank that owns the cell, not on
+        // ranks that merely carry it as an overlap copy (which would perforate
+        // the well twice).
+        for (const auto& elem : elements(this->gridView(), Dune::Partitions::interior)) {
+            const int idxInParent = elem.getIdxInParentCell();
+            if (idxInParent < 0) {
+                continue; // coarse leaf cell - not part of any LGR
+            }
+            const int leafIdx = elem.index();
+            const int pc = gc[leafIdx];                  // parent (level-0) Cartesian
+            const int pi = pc % dims0[0];
+            const int pj = (pc / dims0[0]) % dims0[1];
+            const int pk = pc / (dims0[0]*dims0[1]);
+            for (const auto& b : boxes) {
+                if (pi >= b.i0 && pi <= b.i1 && pj >= b.j0 && pj <= b.j1 &&
+                    pk >= b.k0 && pk <= b.k1) {
+                    const int di = idxInParent % b.rx;
+                    const int dj = (idxInParent / b.rx) % b.ry;
+                    const int dk = idxInParent / (b.rx*b.ry);
+                    const int li = (pi - b.i0)*b.rx + di;
+                    const int lj = (pj - b.j0)*b.ry + dj;
+                    const int lk = (pk - b.k0)*b.rz + dk;
+                    const auto lcart = static_cast<std::size_t>(
+                        (lk*b.nx*b.ny) + (lj*b.nx) + li);
+                    mappers[b.level][lcart] = leafIdx;
+                    break;
+                }
+            }
+        }
+        flatLgrMappers_.emplace(std::move(mappers));
+    }
+
+    //! Cached flat refine-before maps: level -> (LGR-local Cartesian -> leaf idx).
+    mutable std::optional<std::vector<std::unordered_map<std::size_t,int>>> flatLgrMappers_;
+
     /*!
      * Checking consistency of simulator
      */
