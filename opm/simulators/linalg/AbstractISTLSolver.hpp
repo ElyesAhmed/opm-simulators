@@ -17,6 +17,9 @@
 #ifndef OPM_ABSTRACTISTLSOLVER_HEADER_INCLUDED
 #define OPM_ABSTRACTISTLSOLVER_HEADER_INCLUDED
 
+#include <opm/common/Exceptions.hpp>
+#include <opm/simulators/linalg/FlowLinearSolverParameters.hpp>
+#include <opm/simulators/linalg/PropertyTree.hpp>
 
 namespace Opm
 {
@@ -145,8 +148,6 @@ public:
      * - setMatrix(const SparseMatrixAdapter& M)
      */
     virtual bool solve(Vector& x) = 0;
-
-    using Scalar = typename SparseMatrixAdapter::Scalar;
 
     /**
      * \brief Get the number of iterations used in the last solve.

@@ -1,5 +1,7 @@
 /*
-This file is part of the Open Porous Media project (OPM).
+  Copyright Equinor ASA 2026
+
+  This file is part of the Open Porous Media project (OPM).
 
   OPM is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -14,7 +16,8 @@ This file is part of the Open Porous Media project (OPM).
   You should have received a copy of the GNU General Public License
   along with OPM.  If not, see <http://www.gnu.org/licenses/>.
 */
-#pragma once
+#ifndef OPM_ISTLSOLVERSYSTEM_HEADER_INCLUDED
+#define OPM_ISTLSOLVERSYSTEM_HEADER_INCLUDED
 
 #include <opm/simulators/linalg/system/SystemTypes.hpp>
 #include <opm/simulators/linalg/system/SystemPreconditionerFactory.hpp>
@@ -93,7 +96,7 @@ public:
         ++this->solveCount_;
 
         const std::size_t numRes = Parent::matrix_->N();
-        const std::size_t numWell = cachedWellStructure_.totalWellDofs;
+        const std::size_t numWell = cachedWellStructure_.totalWellBlocks;
 
         sysX_[_0].resize(numRes);
         sysX_[_0] = 0.0;
@@ -129,28 +132,28 @@ private:
     RWMatrix<Scalar> mergedC_;
     WWMatrix<Scalar> mergedD_;
 
-    SystemMatrixT<Scalar> sysMatrix_;
+    SystemMatrix<Scalar> sysMatrix_;
     SystemVector<Scalar> sysX_;
     SystemVector<Scalar> sysRhs_;
 
     // Serial solver components
-    std::unique_ptr<SystemSeqOpT<Scalar>> sysOp_;
-    std::unique_ptr<Dune::FlexibleSolver<SystemSeqOpT<Scalar>>> sysFlexSolverSeq_;
+    std::unique_ptr<SystemSeqOp<Scalar>> sysOp_;
+    std::unique_ptr<Dune::FlexibleSolver<SystemSeqOp<Scalar>>> sysFlexSolverSeq_;
 
     // Parallel solver components
 #if HAVE_MPI
     using WellComm = Dune::JacComm;
     std::unique_ptr<WellComm> wellComm_;
     std::unique_ptr<SystemComm> systemComm_;
-    std::unique_ptr<SystemParOpT<Scalar>> sysOpPar_;
-    std::unique_ptr<Dune::FlexibleSolver<SystemParOpT<Scalar>>> sysFlexSolverPar_;
+    std::unique_ptr<SystemParOp<Scalar>> sysOpPar_;
+    std::unique_ptr<Dune::FlexibleSolver<SystemParOp<Scalar>>> sysFlexSolverPar_;
 #endif
 
     using SysSolverType = Dune::InverseOperator<SystemVector<Scalar>, SystemVector<Scalar>>;
     using SysPrecondType = Dune::PreconditionerWithUpdate<SystemVector<Scalar>, SystemVector<Scalar>>;
-    using SeqSysPrecondType = SystemPreconditioner<Scalar, SeqResOperatorT<Scalar>>;
+    using SeqSysPrecondType = SystemPreconditioner<Scalar, SeqResOperator<Scalar>>;
 #if HAVE_MPI
-    using ParSysPrecondType = SystemPreconditioner<Scalar, ParResOperatorT<Scalar>, ParResComm>;
+    using ParSysPrecondType = SystemPreconditioner<Scalar, ParResOperator<Scalar>, ParResComm>;
 #endif
     SysSolverType* sysSolver_ = nullptr;
     SysPrecondType* sysPrecond_ = nullptr;
@@ -176,8 +179,13 @@ private:
         // All ranks must agree on whether to take the structure-change path,
         // because the distributed solver create and update paths use different
         // MPI-collective sequences.
-        const bool needStructureRefresh = !sysInitialized_
-            || this->comm_->communicator().max(static_cast<int>(localStructureChanged)) > 0;
+#if HAVE_MPI
+        const bool globalStructureChanged = this->comm_->communicator().max(
+            static_cast<int>(localStructureChanged)) > 0;
+#else
+        const bool globalStructureChanged = localStructureChanged;
+#endif
+        const bool needStructureRefresh = !sysInitialized_ || globalStructureChanged;
 
         const auto& prm = this->prm_[this->activeSolverNum_];
 
@@ -250,25 +258,26 @@ private:
             };
         }
 
-        const bool is_parallel = this->comm_->communicator().size() > 1;
-
-        if (is_parallel) {
 #if HAVE_MPI
+        const bool is_parallel = this->comm_->communicator().size() > 1;
+        if (is_parallel) {
             wellComm_ = std::make_unique<WellComm>();
             systemComm_ = std::make_unique<SystemComm>(*(this->comm_), *wellComm_);
 
-            sysOpPar_ = std::make_unique<SystemParOpT<Scalar>>(sysMatrix_, *systemComm_);
+            sysOpPar_ = std::make_unique<SystemParOp<Scalar>>(sysMatrix_, *systemComm_);
 
-            sysFlexSolverPar_ = std::make_unique<Dune::FlexibleSolver<SystemParOpT<Scalar>>>(
+            sysFlexSolverPar_ = std::make_unique<Dune::FlexibleSolver<SystemParOp<Scalar>>>(
                 *sysOpPar_, *systemComm_, prm, sysWeightCalc, pressureIndex);
 
             sysSolver_ = sysFlexSolverPar_.get();
             sysPrecond_ = &sysFlexSolverPar_->preconditioner();
+        }
+        else
 #endif
-        } else {
-            sysOp_ = std::make_unique<SystemSeqOpT<Scalar>>(sysMatrix_);
+        {
+            sysOp_ = std::make_unique<SystemSeqOp<Scalar>>(sysMatrix_);
 
-            sysFlexSolverSeq_ = std::make_unique<Dune::FlexibleSolver<SystemSeqOpT<Scalar>>>(
+            sysFlexSolverSeq_ = std::make_unique<Dune::FlexibleSolver<SystemSeqOp<Scalar>>>(
                 *sysOp_, prm, sysWeightCalc, pressureIndex);
 
             sysSolver_ = sysFlexSolverSeq_.get();
@@ -278,3 +287,5 @@ private:
 };
 
 } // namespace Opm
+
+#endif // OPM_ISTLSOLVERSYSTEM_HEADER_INCLUDED

@@ -11,6 +11,7 @@
 
 #include <dune/istl/matrixmarket.hh>
 #include <dune/istl/multitypeblockvector.hh>
+
 namespace Opm
 {
 template<typename T, int i, int j>
@@ -19,21 +20,21 @@ class MatrixBlock;
 
 namespace Dune
 {
-
-    
-template < typename... Args >
-    void writeMatrixMarket(const Dune::MultiTypeBlockVector<Args...>& vector,std::ostream& os){
-                            os<<"%%MatrixMarket matrix array real general"<<std::endl;
-      using namespace Dune::Hybrid;
-      forEach(integralRange(Hybrid::size(vector)), [&](auto&& i) {
-        Dune::writeMatrixMarket(vector[i],os);
-      });
-    };      
+    template <typename... Args>
+    void writeMatrixMarket(const Dune::MultiTypeBlockVector<Args...>& vector, std::ostream& os)
+    {
+        os << "%%MatrixMarket matrix array real general" << std::endl;
+        using namespace Dune::Hybrid;
+        forEach(integralRange(Hybrid::size(vector)), [&](auto&& i)
+        {
+            Dune::writeMatrixMarket(vector[i], os);
+        });
+    };
 
 namespace MatrixMarketImpl
 {
 
-template <typename T, int i, int j, typename A>
+    template <typename T, int i, int j, typename A>
     struct mm_header_printer<BCRSMatrix<Opm::MatrixBlock<T,i,j>, A>>
     {
         static void print(std::ostream& os)

@@ -1,5 +1,7 @@
 /*
-This file is part of the Open Porous Media project (OPM).
+  Copyright Equinor ASA 2026
+
+  This file is part of the Open Porous Media project (OPM).
 
   OPM is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -14,7 +16,8 @@ This file is part of the Open Porous Media project (OPM).
   You should have received a copy of the GNU General Public License
   along with OPM.  If not, see <http://www.gnu.org/licenses/>.
 */
-#pragma once
+#ifndef OPM_SYSTEMPRECONDITIONER_HEADER_INCLUDED
+#define OPM_SYSTEMPRECONDITIONER_HEADER_INCLUDED
 
 #include <opm/simulators/linalg/system/MultiComm.hpp>
 #include <opm/simulators/linalg/system/SystemTypes.hpp>
@@ -31,12 +34,12 @@ namespace Opm
 
 // Reservoir operator/comm types used as template arguments.
 template<typename Scalar>
-using SeqResOperatorT = Dune::MatrixAdapter<RRMatrix<Scalar>, ResVector<Scalar>, ResVector<Scalar>>;
+using SeqResOperator = Dune::MatrixAdapter<RRMatrix<Scalar>, ResVector<Scalar>, ResVector<Scalar>>;
 
 #if HAVE_MPI
 using ParResComm = Dune::OwnerOverlapCopyCommunication<int, int>;
 template<typename Scalar>
-using ParResOperatorT = Dune::OverlappingSchwarzOperator<RRMatrix<Scalar>, ResVector<Scalar>, ResVector<Scalar>, ParResComm>;
+using ParResOperator = Dune::OverlappingSchwarzOperator<RRMatrix<Scalar>, ResVector<Scalar>, ResVector<Scalar>, ParResComm>;
 #endif
 
 // Preconditioner for the coupled reservoir-well system.
@@ -63,8 +66,7 @@ public:
     static constexpr auto _1 = Dune::Indices::_1;
 
     // Sequential constructor (enabled only for non-parallel specializations).
-    template <bool P = isParallel, std::enable_if_t<!P, int> = 0>
-    SystemPreconditioner(const SystemMatrixT<Scalar>& S,
+    SystemPreconditioner(const SystemMatrix<Scalar>& S,
                          const std::function<ResVector<Scalar>()>& weightsCalculator,
                          int pressureIndex,
                          const Opm::PropertyTree& prm)
@@ -77,8 +79,7 @@ public:
     }
 
     // Parallel constructor (enabled only for parallel specializations).
-    template <bool P = isParallel, std::enable_if_t<P, int> = 0>
-    SystemPreconditioner(const SystemMatrixT<Scalar>& S,
+    SystemPreconditioner(const SystemMatrix<Scalar>& S,
                          const std::function<ResVector<Scalar>()>& weightsCalculator,
                          int pressureIndex,
                          const Opm::PropertyTree& prm,
@@ -158,9 +159,9 @@ public:
             syncResVector(tmp_resRes_);
             resSolver_->apply(dresSol_, tmp_resRes_, res_result);
             resSol_ += dresSol_;
-            // resRes_ -= A * dresSol_, A is the (well) upper-left block
+            // resRes_ -= A * dresSol_
             A.mmv(dresSol_, resRes_);
-            // wRes_ -= B * dresSol_, B is the (well) lower-left block
+            // wRes_ -= B * dresSol_
             B.mmv(dresSol_, wRes_);
         }
 
@@ -171,9 +172,9 @@ public:
             tmp_wRes_ = wRes_;
             wellSolver_->apply(dwSol_, tmp_wRes_, well_result);
             wSol_ += dwSol_;
-            // resRes_ -= C * dwSol_, C is the (reservoir) upper-right block
+            // resRes_ -= C * dwSol_
             C.mmv(dwSol_, resRes_);
-            // resRes_ -= D * dwSol_, D is the (reservoir) lower-right block
+            // resRes_ -= D * dwSol_
             D.mmv(dwSol_, wRes_);
 
             Dune::InverseOperatorResult res_result;
@@ -182,7 +183,7 @@ public:
             syncResVector(tmp_resRes_);
             resSmoother_->apply(dresSol_, tmp_resRes_, res_result);
             resSol_ += dresSol_;
-            // wRes_ -= B * dresSol_, B is the (well) lower-left block
+            // wRes_ -= B * dresSol_
             B.mmv(dresSol_, wRes_);
         }
 
@@ -201,7 +202,7 @@ public:
     }
 
 private:
-    const SystemMatrixT<Scalar>& S_;
+    const SystemMatrix<Scalar>& S_;
     const ResComm* resComm_ = nullptr;
     int pressureIndex_ = 0;
     static constexpr int dummyWellPressureIndex = std::numeric_limits<int>::min();
@@ -287,3 +288,5 @@ private:
 };
 
 } // namespace Opm
+
+#endif // OPM_SYSTEMPRECONDITIONER_HEADER_INCLUDED

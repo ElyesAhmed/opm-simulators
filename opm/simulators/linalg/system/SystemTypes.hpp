@@ -1,5 +1,7 @@
 /*
-This file is part of the Open Porous Media project (OPM).
+  Copyright Equinor ASA 2026
+
+  This file is part of the Open Porous Media project (OPM).
 
   OPM is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -14,14 +16,15 @@ This file is part of the Open Porous Media project (OPM).
   You should have received a copy of the GNU General Public License
   along with OPM.  If not, see <http://www.gnu.org/licenses/>.
 */
-#pragma once
+#ifndef OPM_SYSTEMTYPES_HEADER_INCLUDED
+#define OPM_SYSTEMTYPES_HEADER_INCLUDED
+
+#include <opm/simulators/linalg/matrixblock.hh>
 
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/bvector.hh>
 #include <dune/istl/multitypeblockmatrix.hh>
 #include <dune/istl/multitypeblockvector.hh>
-
-#include <opm/simulators/linalg/matrixblock.hh>
 
 namespace Opm
 {
@@ -66,11 +69,11 @@ using SystemVector = Dune::MultiTypeBlockVector<ResVector<Scalar>, WellVector<Sc
 // sub-block access via the index syntax  S[_0][_0]  used by
 // SystemPreconditioner.
 // --------------------------------------------------------------------------
-template<typename Scalar> struct SystemMatrixRow0T;  // forward
-template<typename Scalar> struct SystemMatrixRow1T;
+template<typename Scalar> struct SystemMatrixRow0;  // forward
+template<typename Scalar> struct SystemMatrixRow1;
 
 template<typename Scalar>
-class SystemMatrixT
+class SystemMatrix
 {
 public:
     using size_type  = std::size_t;
@@ -86,8 +89,8 @@ public:
     const WWMatrix<Scalar>* D = nullptr;  // (1,1) well
 
     // Sub-block access: S[_0][_0], S[_0][_1], S[_1][_0], S[_1][_1]
-    inline SystemMatrixRow0T<Scalar> operator[](Dune::index_constant<0>) const;
-    inline SystemMatrixRow1T<Scalar> operator[](Dune::index_constant<1>) const;
+    inline SystemMatrixRow0<Scalar> operator[](Dune::index_constant<0>) const;
+    inline SystemMatrixRow1<Scalar> operator[](Dune::index_constant<1>) const;
 
     // Matrix-vector products required by Dune linear operators.
     // y = S * x  =  (A*x0 + C*x1;  B*x0 + D*x1)
@@ -118,7 +121,7 @@ public:
 
 // Row proxies for  S[row][col]  — simple aggregates, no back-pointers.
 template<typename Scalar>
-struct SystemMatrixRow0T
+struct SystemMatrixRow0
 {
     const RRMatrix<Scalar>& A;
     const RWMatrix<Scalar>& C;
@@ -127,7 +130,7 @@ struct SystemMatrixRow0T
 };
 
 template<typename Scalar>
-struct SystemMatrixRow1T
+struct SystemMatrixRow1
 {
     const WRMatrix<Scalar>& B;
     const WWMatrix<Scalar>& D;
@@ -136,11 +139,13 @@ struct SystemMatrixRow1T
 };
 
 template<typename Scalar>
-SystemMatrixRow0T<Scalar> SystemMatrixT<Scalar>::operator[](Dune::index_constant<0>) const
+SystemMatrixRow0<Scalar> SystemMatrix<Scalar>::operator[](Dune::index_constant<0>) const
 { return {*A, *C}; }
 
 template<typename Scalar>
-SystemMatrixRow1T<Scalar> SystemMatrixT<Scalar>::operator[](Dune::index_constant<1>) const
+SystemMatrixRow1<Scalar> SystemMatrix<Scalar>::operator[](Dune::index_constant<1>) const
 { return {*B, *D}; }
 
 } // namespace Opm
+
+#endif // OPM_SYSTEMTYPES_HEADER_INCLUDED

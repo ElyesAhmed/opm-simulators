@@ -1,5 +1,7 @@
 /*
-This file is part of the Open Porous Media project (OPM).
+  Copyright Equinor ASA 2026
+
+  This file is part of the Open Porous Media project (OPM).
 
   OPM is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -14,17 +16,20 @@ This file is part of the Open Porous Media project (OPM).
   You should have received a copy of the GNU General Public License
   along with OPM.  If not, see <http://www.gnu.org/licenses/>.
 */
-#pragma once
+#ifndef OPM_MULTICOMM_HEADER_INCLUDED
+#define OPM_MULTICOMM_HEADER_INCLUDED
+
+#include <dune/common/hybridutilities.hh>
+
+#if HAVE_MPI
+#include <mpi.h>
+#include <dune/common/parallel/mpicommunication.hh>
+#endif
 
 #include <cmath>
 #include <cstddef>
 #include <tuple>
 #include <type_traits>
-
-#include <mpi.h>
-
-#include <dune/common/hybridutilities.hh>
-#include <dune/common/parallel/mpicommunication.hh>
 
 namespace Dune
 {
@@ -57,8 +62,14 @@ public:
     {
         y = x;
     }
+
+    auto communicator() const
+    {
+        return Dune::Communication<int>{};
+    }
 };
 
+#if HAVE_MPI
 class JacComm
 {
 public:
@@ -101,6 +112,7 @@ public:
 private:
     Communication<MPI_Comm> colcom_;
 };
+#endif
 
 template <typename... Args>
 class MultiCommunicator : public std::tuple<Args...>
@@ -175,3 +187,5 @@ public:
 };
 
 } // namespace Dune
+
+#endif // OPM_MULTICOMM_HEADER_INCLUDED
