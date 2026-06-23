@@ -37,6 +37,7 @@
 #include <opm/simulators/flow/Transmissibility.hpp>
 
 #include <array>
+#include <cmath>
 #include <functional>
 #include <map>
 #include <memory>
@@ -694,6 +695,17 @@ public:
             levelToLgrName[lev] = name;
         }
 
+        // Cell properties for the connection-factor (Peaceman) computation.
+        // Refined cells inherit their parent coarse cell's perm/ntg/satnum; the
+        // field props live on the (coarse) input grid, indexed by parent cell.
+        const auto& fp = this->eclState().fieldProps();
+        const auto& permx = fp.get_double("PERMX");
+        const auto& permy = fp.get_double("PERMY");
+        const auto& permz = fp.get_double("PERMZ");
+        const std::vector<double>* ntgPtr = fp.has_double("NTG") ? &fp.get_double("NTG") : nullptr;
+        const std::vector<int>*    satPtr = fp.has_int("SATNUM") ? &fp.get_int("SATNUM") : nullptr;
+        const auto& inputGrid = this->eclState().getInputGrid();
+
         std::vector<std::array<std::array<double, 3>, 8>> cellCorners(numCells);
         std::vector<std::optional<WellConnections::TrajectoryCell>> cellInfo(numCells);
 
@@ -715,7 +727,26 @@ public:
             // refined siblings); LGR wells resolve via ijk, not global_index,
             // but the well model needs distinct indices for connection ordering.
             tc.global_index = static_cast<std::size_t>(idx);
-            tc.satnum = 1; // 1-based SATNUM region (default); first cut: single region
+
+            // Perm/ntg/satnum from the parent coarse cell (refined cells inherit
+            // them); dimensions are the actual (smaller) leaf cell extents, so
+            // the Peaceman CTF/Kh are computed for the refined cell.
+            const auto parentCart = static_cast<std::size_t>(cartMapper.cartesianIndex(idx));
+            const auto ai = inputGrid.activeIndex(parentCart);
+            tc.perm = { permx[ai], permy[ai], permz[ai] };
+            tc.ntg = ntgPtr ? (*ntgPtr)[ai] : 1.0;
+            tc.satnum = satPtr ? (*satPtr)[ai] : 1; // 1-based SATNUM region
+            const auto edge = [&cellCorners, idx](int a, int b) {
+                double s = 0.0;
+                for (int d = 0; d < 3; ++d) {
+                    const double q = cellCorners[idx][a][d] - cellCorners[idx][b][d];
+                    s += q * q;
+                }
+                return std::sqrt(s);
+            };
+            // OPM corner order is binary i-fastest: 0=(0,0,0) 1=(1,0,0)
+            // 2=(0,1,0) 4=(0,0,1) -> dx,dy,dz edge lengths.
+            tc.dimensions = { edge(0, 1), edge(0, 2), edge(0, 4) };
 
             if (const auto it = leafToLevelCart.find(idx); it != leafToLevelCart.end()) {
                 const int level = it->second.first;
