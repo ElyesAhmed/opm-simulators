@@ -44,9 +44,11 @@
 #include <optional>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace Opm {
@@ -623,6 +625,15 @@ public:
                 }
             }
 
+            // WELTRAJ/COMPTRAJ wells had their connections computed against the
+            // coarse EclipseGrid at parse time, which cannot address individual
+            // refined cells. Recompute them against the refined leaf so a well
+            // trajectory perforates the correct LGR leaf cells. This is a
+            // post-process on the Schedule; the well-model solve is untouched.
+            // Done before the canary below: it legitimately reads refined cells'
+            // geometry while building the trajectory connections.
+            this->recomputeWellTrajectoriesInLgr_();
+
             // Opt-in canary (OPM_LGR_POISON_REFINED=1): poison every refined leaf
             // cell's global Cartesian index now that the grid is built and the
             // Cartesian->compressed map has been (re)built. If anything later
@@ -637,6 +648,108 @@ public:
                              "(OPM_LGR_POISON_REFINED): any late re-derivation will now fail loudly.");
             }
         }
+    }
+
+    /*!
+     * \brief Post-process WELTRAJ/COMPTRAJ wells against the refined leaf grid.
+     *
+     * For each leaf cell we supply its corner geometry and, when it is a refined
+     * (LGR) cell, its LGR-local (i,j,k) and owning LGR name. Schedule then
+     * re-intersects each trajectory against this geometry and tags single-LGR
+     * wells so the existing LGR connection path resolves them to the refined
+     * leaf cells. Only runs when the grid is refined and trajectory wells exist.
+     */
+    void recomputeWellTrajectoriesInLgr_()
+    {
+        auto& grid = *this->grid_;
+        if (grid.maxLevel() == 0) {
+            return; // no refinement -> nothing to do
+        }
+
+        // Cheap pre-check: any trajectory wells at all?
+        bool anyTraj = false;
+        for (const auto& w : this->schedule().getWellsatEnd()) {
+            if (w.getConnections().hasTrajectory()) { anyTraj = true; break; }
+        }
+        if (!anyTraj) {
+            return;
+        }
+
+        const auto& gv = this->gridView();
+        ElementMapper elemMapper(gv, Dune::mcmgElementLayout());
+        const auto& cartMapper = this->cartesianIndexMapper();
+
+        const std::size_t numCells = gv.size(0);
+
+        // leaf cell index -> (level, LGR-local cartesian) for refined cells.
+        const auto leafMappers = grid.mapLocalCartesianIndexSetsToLeafIndexSet();
+        std::unordered_map<std::size_t, std::pair<int, std::size_t>> leafToLevelCart;
+        for (std::size_t lev = 1; lev < leafMappers.size(); ++lev) {
+            for (const auto& [lgrCart, leafIdx] : leafMappers[lev]) {
+                leafToLevelCart[leafIdx] = { static_cast<int>(lev), lgrCart };
+            }
+        }
+        std::unordered_map<int, std::string> levelToLgrName;
+        for (const auto& [name, lev] : grid.getLgrNameToLevel()) {
+            levelToLgrName[lev] = name;
+        }
+
+        std::vector<std::array<std::array<double, 3>, 8>> cellCorners(numCells);
+        std::vector<std::optional<WellConnections::TrajectoryCell>> cellInfo(numCells);
+
+        for (const auto& elem : elements(gv)) {
+            const auto idx = elemMapper.index(elem);
+            const auto geom = elem.geometry();
+
+            double depth = 0.0;
+            for (int c = 0; c < 8; ++c) {
+                const auto corner = geom.corner(c);
+                cellCorners[idx][c] = { corner[0], corner[1], corner[2] };
+                depth += corner[2];
+            }
+            depth /= 8.0;
+
+            WellConnections::TrajectoryCell tc;
+            tc.depth = depth;
+            // Unique per-connection index (the parent Cartesian collides for
+            // refined siblings); LGR wells resolve via ijk, not global_index,
+            // but the well model needs distinct indices for connection ordering.
+            tc.global_index = static_cast<std::size_t>(idx);
+            tc.satnum = 1; // 1-based SATNUM region (default); first cut: single region
+
+            if (const auto it = leafToLevelCart.find(idx); it != leafToLevelCart.end()) {
+                const int level = it->second.first;
+                const std::size_t lgrCart = it->second.second;
+                const auto& dim = grid.currentData()[level]->logicalCartesianSize();
+                const std::size_t nx = dim[0];
+                const std::size_t ny = dim[1];
+                tc.ijk = { static_cast<int>(lgrCart % nx),
+                           static_cast<int>((lgrCart / nx) % ny),
+                           static_cast<int>(lgrCart / (nx * ny)) };
+                const auto nameIt = levelToLgrName.find(level);
+                tc.lgr_name = (nameIt != levelToLgrName.end()) ? nameIt->second : std::string{};
+            }
+            else {
+                std::array<int, 3> ijk{};
+                cartMapper.cartesianCoordinate(idx, ijk);
+                tc.ijk = ijk;
+                tc.lgr_name.clear();
+            }
+
+            cellInfo[idx] = tc;
+        }
+
+        auto cellInfoFn = [&cellInfo](std::size_t i)
+            -> std::optional<WellConnections::TrajectoryCell>
+        {
+            if (i < cellInfo.size()) {
+                return cellInfo[i];
+            }
+            return std::nullopt;
+        };
+
+        OpmLog::info("\nRecomputing well-trajectory connections against the refined grid");
+        this->schedule().recomputeTrajectoryConnections(cellCorners, cellInfoFn);
     }
 
     unsigned int gridEquilIdxToGridIdx(unsigned int elemIndex) const {
