@@ -723,10 +723,6 @@ public:
 
             WellConnections::TrajectoryCell tc;
             tc.depth = depth;
-            // Unique per-connection index (the parent Cartesian collides for
-            // refined siblings); LGR wells resolve via ijk, not global_index,
-            // but the well model needs distinct indices for connection ordering.
-            tc.global_index = static_cast<std::size_t>(idx);
 
             // Perm/ntg/satnum from the parent coarse cell (refined cells inherit
             // them); dimensions are the actual (smaller) leaf cell extents, so
@@ -759,12 +755,29 @@ public:
                            static_cast<int>(lgrCart / (nx * ny)) };
                 const auto nameIt = levelToLgrName.find(level);
                 tc.lgr_name = (nameIt != levelToLgrName.end()) ? nameIt->second : std::string{};
+
+                // Record the connection in the *opm-common* LGR indexing (the
+                // same encoding COMPDATL uses), so the ECL output places the well
+                // in the refined grid and the connection's global index is
+                // validated against the LGR grid (not the coarse grid).
+                if (! tc.lgr_name.empty()) {
+                    tc.lgr_grid = static_cast<int>(inputGrid.get_lgr_cell_index(tc.lgr_name));
+                    tc.global_index = inputGrid.getLGRCell(tc.lgr_name)
+                                          .getGlobalIndex(static_cast<std::size_t>(tc.ijk[0]),
+                                                          static_cast<std::size_t>(tc.ijk[1]),
+                                                          static_cast<std::size_t>(tc.ijk[2]));
+                }
+                else {
+                    tc.global_index = parentCart;
+                }
             }
             else {
                 std::array<int, 3> ijk{};
                 cartMapper.cartesianCoordinate(idx, ijk);
                 tc.ijk = ijk;
                 tc.lgr_name.clear();
+                tc.lgr_grid = 0;
+                tc.global_index = parentCart;
             }
 
             cellInfo[idx] = tc;
