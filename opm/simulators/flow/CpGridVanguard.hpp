@@ -761,7 +761,10 @@ public:
                 // in the refined grid and the connection's global index is
                 // validated against the LGR grid (not the coarse grid).
                 if (! tc.lgr_name.empty()) {
-                    tc.lgr_grid = static_cast<int>(inputGrid.get_lgr_cell_index(tc.lgr_name));
+                    // LGR grid number in the ScheduleGrid/COMPDATL convention:
+                    // GLOBAL=0, LGRs=1,2,... get_lgr_cell_index is 0-based over
+                    // the LGRs (GLOBAL excluded), so add one.
+                    tc.lgr_grid = static_cast<int>(inputGrid.get_lgr_cell_index(tc.lgr_name)) + 1;
                     tc.global_index = inputGrid.getLGRCell(tc.lgr_name)
                                           .getGlobalIndex(static_cast<std::size_t>(tc.ijk[0]),
                                                           static_cast<std::size_t>(tc.ijk[1]),
