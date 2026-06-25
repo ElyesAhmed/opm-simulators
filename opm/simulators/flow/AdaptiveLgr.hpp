@@ -18,25 +18,29 @@
 */
 /*!
  * \file
- * \brief Parsing for the experimental, opt-in adaptive-refinement request.
+ * \brief Parameter + parsing for the adaptive-refinement request used by the
+ *        flow_blackoil_adaptive executable (AdaptiveCpGridVanguard).
  *
- * This is a deliberately *separate* and *additive* helper for the AdaptiveCpGrid
- * demonstration: it lets the simulator refine a region of a deck that has **no**
- * CARFIN, reusing the exact same static-refinement machinery
- * (CpGrid::addLgrsUpdateLeafView). The request is read from the OPM_ADAPTIVE_LGR
- * environment variable so that nothing in the normal (static-LGR) parameter /
- * deck path is touched. Default (unset) -> the simulator behaves exactly as
- * before.
+ * It lets that executable refine a region of a deck that has **no** CARFIN,
+ * reusing the same static-refinement machinery (CpGrid::addLgrsUpdateLeafView).
+ * This is entirely separate from the standard flow executables / Vanguard.
  */
 #ifndef OPM_ADAPTIVE_LGR_HPP
 #define OPM_ADAPTIVE_LGR_HPP
 
 #include <array>
-#include <cstdlib>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+namespace Opm::Parameters {
+
+//! \brief Adaptive refinement boxes for flow_blackoil_adaptive (--adaptive-lgr).
+//! CARFIN-style "I1 I2 J1 J2 K1 K2 NX NY NZ" (1-based), ';'-separated boxes.
+struct AdaptiveLgr { static constexpr auto value = ""; };
+
+} // namespace Opm::Parameters
 
 namespace Opm {
 
@@ -49,12 +53,12 @@ struct AdaptiveLgrBox
     std::array<int,3> cellsPerDim{};//!< subdivisions per parent cell
 };
 
-/// Parse an adaptive-refinement spec string. Each box is "I1 I2 J1 J2 K1 K2 NX
-/// NY NZ" using the **1-based, inclusive** CARFIN convention (so "5 6 5 6 1 3 6
-/// 6 9" is exactly the CARFIN box 'LGR1' 5 6 5 6 1 3 6 6 9). Boxes are separated
-/// by ';'. Returns the boxes converted to the half-open 0-based form that
-/// CpGrid::addLgrsUpdateLeafView expects. Throws std::invalid_argument on a
-/// malformed spec.
+/// Parse an adaptive-refinement spec. Each box is "I1 I2 J1 J2 K1 K2 NX NY NZ"
+/// in the **1-based, inclusive** CARFIN convention (so "5 6 5 6 1 3 6 6 9" is
+/// exactly the CARFIN box 5 6 5 6 1 3 6 6 9). NX/NY/NZ are box totals, so the
+/// per-parent-cell subdivision is NX/(I2-I1+1) etc. -- matching the deck
+/// conversion in GenericCpGridVanguard::addLgrsUpdateLeafView. Boxes separated by
+/// ';'. Throws std::invalid_argument on a malformed spec.
 inline std::vector<AdaptiveLgrBox> parseAdaptiveLgrSpec(const std::string& spec)
 {
     std::vector<AdaptiveLgrBox> boxes;
@@ -62,29 +66,28 @@ inline std::vector<AdaptiveLgrBox> parseAdaptiveLgrSpec(const std::string& spec)
     std::string one;
     int idx = 0;
     while (std::getline(boxStream, one, ';')) {
+        if (one.find_first_not_of(" \t") == std::string::npos) {
+            continue; // skip blank segments
+        }
         std::stringstream ss(one);
         std::array<int,6> r{};
         std::array<int,3> nd{};
-        bool ok = static_cast<bool>(ss >> r[0] >> r[1] >> r[2] >> r[3] >> r[4] >> r[5]
-                                       >> nd[0] >> nd[1] >> nd[2]);
+        const bool ok = static_cast<bool>(
+            ss >> r[0] >> r[1] >> r[2] >> r[3] >> r[4] >> r[5] >> nd[0] >> nd[1] >> nd[2]);
         std::string extra;
         if (!ok || (ss >> extra)) {
             throw std::invalid_argument(
-                "OPM_ADAPTIVE_LGR: malformed box '" + one + "'. Expected nine "
-                "integers 'I1 I2 J1 J2 K1 K2 NX NY NZ' (1-based, CARFIN style); "
-                "separate multiple boxes with ';'.");
+                "--adaptive-lgr: malformed box '" + one + "'. Expected nine integers "
+                "'I1 I2 J1 J2 K1 K2 NX NY NZ' (1-based, CARFIN style); separate "
+                "multiple boxes with ';'.");
         }
-        // CARFIN NX/NY/NZ are the *total* number of refined cells across the
-        // box, so cells-per-parent-cell = NX / (I2 - I1 + 1) (matching the deck
-        // conversion in GenericCpGridVanguard::addLgrsUpdateLeafView). Require an
-        // exact division, as CARFIN does.
         const std::array<int,3> nparents{ r[1] - r[0] + 1, r[3] - r[2] + 1, r[5] - r[4] + 1 };
         for (int d = 0; d < 3; ++d) {
             if (nparents[d] <= 0 || nd[d] <= 0 || (nd[d] % nparents[d]) != 0) {
                 throw std::invalid_argument(
-                    "OPM_ADAPTIVE_LGR: box '" + one + "': the refinement count must "
-                    "be a positive multiple of the number of parent cells in each "
-                    "direction (CARFIN NX/NY/NZ are box totals).");
+                    "--adaptive-lgr: box '" + one + "': the refinement count must be a "
+                    "positive multiple of the number of parent cells per direction "
+                    "(CARFIN NX/NY/NZ are box totals).");
             }
         }
         AdaptiveLgrBox b;
@@ -95,23 +98,6 @@ inline std::vector<AdaptiveLgrBox> parseAdaptiveLgrSpec(const std::string& spec)
         boxes.push_back(std::move(b));
     }
     return boxes;
-}
-
-/// The adaptive-refinement spec from the environment, or "" when unset/blank.
-/// Reading an env var (like OPM_LGR_POISON_REFINED) keeps this fully out of the
-/// deck/parameter path.
-inline std::string adaptiveLgrSpecFromEnv()
-{
-    const char* env = std::getenv("OPM_ADAPTIVE_LGR");
-    if (env == nullptr) {
-        return {};
-    }
-    std::string s{env};
-    // blank (all whitespace) counts as unset
-    if (s.find_first_not_of(" \t\n") == std::string::npos) {
-        return {};
-    }
-    return s;
 }
 
 } // namespace Opm
