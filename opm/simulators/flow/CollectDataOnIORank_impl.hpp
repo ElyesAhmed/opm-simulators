@@ -953,9 +953,14 @@ CollectDataOnIORank(const Grid& grid, const EquilGrid* equilGrid,
     // ordinary level-zero Cartesian index for an unrefined grid.
     auto makeLevelOffsets = [](const auto& cpGrid) {
         std::vector<std::size_t> off(cpGrid.maxLevel() + 2, std::size_t{0});
-        for (int l = 0; l <= cpGrid.maxLevel(); ++l) {
-            const auto& d = cpGrid.currentData()[l]->logicalCartesianSize();
-            off[l + 1] = off[l] + static_cast<std::size_t>(d[0]) * d[1] * d[2];
+        // currentData() (per-level grids) is CpGrid-only. For other backends
+        // (ALUGrid, polyhedral) there is no LGR, so the offsets stay trivial and
+        // are unused (refined/refinedFlat are false below).
+        if constexpr (requires { cpGrid.currentData(); }) {
+            for (int l = 0; l <= cpGrid.maxLevel(); ++l) {
+                const auto& d = cpGrid.currentData()[l]->logicalCartesianSize();
+                off[l + 1] = off[l] + static_cast<std::size_t>(d[0]) * d[1] * d[2];
+            }
         }
         return off;
     };
@@ -978,17 +983,22 @@ CollectDataOnIORank(const Grid& grid, const EquilGrid* equilGrid,
         // the mapping is injective and identical on the distributed leaf and the
         // refined I/O-rank reference grid (both carry the same parent Cartesian
         // and index-in-parent per cell).
-        const bool refinedFlat = !refined && grid.leafHasParentCellIndices();
+        // leafHasParentCellIndices()/getIdxInParentCell() are CpGrid-only; for
+        // other grid backends there is no flat refined leaf, so this is disabled.
+        bool refinedFlat = false;
         std::int64_t cartProduct = 0;
         int childStride = 1;
-        if (refinedFlat) {
-            const auto& d = grid.logicalCartesianSize();
-            cartProduct = static_cast<std::int64_t>(d[0]) * d[1] * d[2];
-            int localMaxChild = 0;
-            for (const auto& elem : elements(localGridView, Dune::Partitions::interior)) {
-                localMaxChild = std::max(localMaxChild, elem.getIdxInParentCell());
+        if constexpr (requires { grid.leafHasParentCellIndices(); }) {
+            refinedFlat = !refined && grid.leafHasParentCellIndices();
+            if (refinedFlat) {
+                const auto& d = grid.logicalCartesianSize();
+                cartProduct = static_cast<std::int64_t>(d[0]) * d[1] * d[2];
+                int localMaxChild = 0;
+                for (const auto& elem : elements(localGridView, Dune::Partitions::interior)) {
+                    localMaxChild = std::max(localMaxChild, elem.getIdxInParentCell());
+                }
+                childStride = comm.max(localMaxChild) + 1;
             }
-            childStride = comm.max(localMaxChild) + 1;
         }
         auto compositeRefinedId = [cartProduct, childStride](int parentCartesian, int idxInParent) -> int {
             if (idxInParent < 0) {
@@ -1003,13 +1013,17 @@ CollectDataOnIORank(const Grid& grid, const EquilGrid* equilGrid,
         sortedCartesianIdx_.reserve(localGridView.size(0));
 
         auto localGlobalId = [&](const auto& elem) -> int {
-            if (refined) {
-                return static_cast<int>(localLevelOffsets[elem.level()])
-                    + elem.getLevelCartesianIdx();
-            }
-            if (refinedFlat) {
-                return compositeRefinedId(cartMapper.cartesianIndex(elemMapper.index(elem)),
-                                          elem.getIdxInParentCell());
+            // The level-offset / composite-id logic uses CpGrid-only entity
+            // methods; other backends fall through to the level-zero Cartesian id.
+            if constexpr (requires { elem.getLevelCartesianIdx(); elem.getIdxInParentCell(); }) {
+                if (refined) {
+                    return static_cast<int>(localLevelOffsets[elem.level()])
+                        + elem.getLevelCartesianIdx();
+                }
+                if (refinedFlat) {
+                    return compositeRefinedId(cartMapper.cartesianIndex(elemMapper.index(elem)),
+                                              elem.getIdxInParentCell());
+                }
             }
             return cartMapper.cartesianIndex(elemMapper.index(elem));
         };
@@ -1044,19 +1058,19 @@ CollectDataOnIORank(const Grid& grid, const EquilGrid* equilGrid,
             const auto equilLevelOffsets = makeLevelOffsets(*equilGrid);
             for (const auto& elem : elements(equilGrid->leafGridView())) {
                 int elemIdx = equilElemMapper.index(elem);
-                int globalId;
-                if (refined) {
-                    globalId = static_cast<int>(equilLevelOffsets[elem.level()]) + elem.getLevelCartesianIdx();
-                }
-                else if (refinedFlat) {
-                    // The I/O-rank reference grid is the full refined leaf and
-                    // carries the same parent Cartesian + index-in-parent per
-                    // cell, so the composite id matches the distributed leaf's.
-                    globalId = compositeRefinedId(equilCartMapper->cartesianIndex(elemIdx),
-                                                  elem.getIdxInParentCell());
-                }
-                else {
-                    globalId = equilCartMapper->cartesianIndex(elemIdx);
+                int globalId = equilCartMapper->cartesianIndex(elemIdx);
+                // CpGrid-only LGR id logic; other backends keep the Cartesian id.
+                if constexpr (requires { elem.getLevelCartesianIdx(); elem.getIdxInParentCell(); }) {
+                    if (refined) {
+                        globalId = static_cast<int>(equilLevelOffsets[elem.level()]) + elem.getLevelCartesianIdx();
+                    }
+                    else if (refinedFlat) {
+                        // The I/O-rank reference grid is the full refined leaf and
+                        // carries the same parent Cartesian + index-in-parent per
+                        // cell, so the composite id matches the distributed leaf's.
+                        globalId = compositeRefinedId(equilCartMapper->cartesianIndex(elemIdx),
+                                                      elem.getIdxInParentCell());
+                    }
                 }
                 globalCartesianIndex_[elemIdx] = globalId;
             }
