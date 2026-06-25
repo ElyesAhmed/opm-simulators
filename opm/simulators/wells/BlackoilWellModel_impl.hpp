@@ -1659,6 +1659,25 @@ namespace Opm {
                 jacobian.entry(perfcell, wdof) = 0.0;
             }
         }
+
+        // The reservation above keys on getMaxWellConnections(), whose
+        // schedule-derived cell indices can differ from a well's *actual*
+        // perforation cells when those were recomputed against a refined (LGR)
+        // leaf — e.g. WELTRAJ/COMPTRAJ wells on a CARFIN grid. The value phase
+        // (StandardWellEquations::extractCPRPressureMatrix) writes the coupling
+        // at well->cells() and (local_num_cells_ + well->indexOfWell()), so
+        // reserve exactly those entries here too. Otherwise extract writes an
+        // entry the sparsity never reserved -> "index N not in compressed
+        // array". Reserving extra (possibly already-present) entries is a no-op
+        // for non-LGR/COMPDATL wells.
+        for (const auto& well : well_container_) {
+            const int wdof = rdofs + well->indexOfWell();
+            jacobian.entry(wdof, wdof) = 0.0;
+            for (const int cell : well->cells()) {
+                jacobian.entry(wdof, cell) = 0.0;
+                jacobian.entry(cell, wdof) = 0.0;
+            }
+        }
     }
 
 
