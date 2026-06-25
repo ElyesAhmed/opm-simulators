@@ -31,6 +31,7 @@
 
 #include <opm/models/common/multiphasebaseproperties.hh>
 #include <opm/models/blackoil/blackoilproperties.hh>
+#include <opm/simulators/flow/AdaptiveLgr.hpp>
 #include <opm/simulators/flow/FemCpGridCompat.hpp>
 #include <opm/simulators/flow/FlowBaseVanguard.hpp>
 #include <opm/simulators/flow/GenericCpGridVanguard.hpp>
@@ -649,6 +650,68 @@ public:
                              "(OPM_LGR_POISON_REFINED): any late re-derivation will now fail loudly.");
             }
         }
+        else {
+            // No deck CARFIN. Separate, opt-in adaptive-refinement path (the
+            // AdaptiveCpGrid demonstration): refine a region requested via
+            // OPM_ADAPTIVE_LGR by reusing the same static refinement machinery.
+            // No-op when the env var is unset, so the static-LGR path above is
+            // entirely unaffected.
+            this->addAdaptiveLgrs_();
+        }
+    }
+
+    /*!
+     * \brief Opt-in adaptive refinement of a deck that has no CARFIN.
+     *
+     * Demonstrates the AdaptiveCpGrid claim at the simulator level: a region a
+     * CARFIN deck refines *at construction* can instead be refined here, *after*
+     * the coarse grid is built, by reusing the exact same static refinement
+     * machinery -- CpGrid::addLgrsUpdateLeafView with the deck's retained
+     * (sanitized) corner-point input and the default conforming builder -- so the
+     * resulting grid, and thus the simulation, matches the static-LGR run.
+     * Triggered only by the OPM_ADAPTIVE_LGR environment variable; the static
+     * path (addLgrs above) is left byte-for-byte unchanged. (The same env var
+     * makes processEclipseFormat retain the corner-point input for this no-CARFIN
+     * deck, so the builder is auto-constructed from the identical geometry the
+     * static path would use.) Serial demonstration.
+     */
+    void addAdaptiveLgrs_()
+    {
+        const std::string spec = adaptiveLgrSpecFromEnv();
+        if (spec.empty()) {
+            return;
+        }
+        const auto boxes = parseAdaptiveLgrSpec(spec);
+        if (boxes.empty()) {
+            return;
+        }
+
+        std::vector<std::array<int,3>> cellsPerDim, startIJK, endIJK;
+        std::vector<std::string> names;
+        for (const auto& b : boxes) {
+            cellsPerDim.push_back(b.cellsPerDim);
+            startIJK.push_back(b.startIJK);
+            endIJK.push_back(b.endIJK);
+            names.push_back(b.name);
+        }
+        OpmLog::info("\nAdaptive refinement (OPM_ADAPTIVE_LGR): refining "
+                     + std::to_string(boxes.size())
+                     + " box(es) on the coarse grid post-construction");
+        // Reuse the static refinement entry point. With no explicitly registered
+        // builder, CpGrid::addLgrsUpdateLeafView constructs the default
+        // conforming builder from the retained corner-point input -- exactly as
+        // for a deck CARFIN -- so the refined geometry is identical.
+        this->grid_->addLgrsUpdateLeafView(cellsPerDim, startIJK, endIJK, names);
+
+        // The same post-refinement bookkeeping the static path does (kept in
+        // sync with addLgrs() above): refresh the leaf view, rebuild the now
+        // stale Cartesian->compressed map so wells land on the right leaf cell,
+        // refresh depths/thickness, and recompute any WELTRAJ wells on the leaf.
+        this->updateGridView_();
+        this->updateCartesianToCompressedMapping_();
+        this->updateCellDepths_();
+        this->updateCellThickness_();
+        this->recomputeWellTrajectoriesInLgr_();
     }
 
     /*!
