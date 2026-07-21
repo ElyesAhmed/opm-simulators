@@ -33,9 +33,14 @@
 #include <memory>
 #include <type_traits>
 
+
 #if HAVE_AVX2_EXTENSION
+// The mixed-precision preconditioner backend (bsr.c/prec.c/bslv.c) is only
+// compiled on AVX2-capable x86; guard everything that references it so other
+// platforms (e.g. arm64) still link.
 #include <opm/simulators/linalg/mixed/PreconditionerWrapper.hpp>
 #endif
+
 
 namespace Opm {
 
@@ -111,7 +116,7 @@ struct StandardPreconditioners<Operator, Dune::Amg::SequentialInformation, typen
                 return std::make_shared<MixedPreconditioner<M,V,V>>(op.getmat(),true);
             }
         });
-#endif
+#endif // HAVE_AVX2_EXTENSION
         F::addCreator("legacy-mixed-ilu0", [](const O& op, const P& prm, const std::function<V()>&, std::size_t) {
             DUNE_UNUSED_PARAMETER(prm);
             DUNE_UNUSED_PARAMETER(op);
