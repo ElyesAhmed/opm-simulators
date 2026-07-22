@@ -46,6 +46,10 @@ namespace Opm::Parameters {
 //! so the rebuilt run must reproduce the continuous run.
 struct AdaptiveRebuildStep { static constexpr int value = -1; };
 
+//! \brief Refinement spec (same CARFIN-style syntax as --adaptive-lgr) that
+//! replaces the mark set at the rebuild step. Empty = keep the initial spec.
+struct AdaptiveRebuildLgr { static constexpr auto value = ""; };
+
 } // namespace Opm::Parameters
 
 namespace Opm::Properties {
@@ -96,6 +100,22 @@ public:
         Parameters::Register<Parameters::AdaptiveRebuildStep>(
             "Report step at which the dynamic driver tears down and rebuilds "
             "the simulator (dynamic-refinement phase 1); -1 disables.");
+        Parameters::Register<Parameters::AdaptiveRebuildLgr>(
+            "Refinement spec applied at the rebuild step (CARFIN-style, see "
+            "--adaptive-lgr); empty keeps the initial spec.");
+    }
+
+    //! Mark-set override for the rebuild (process-wide: the driver sets it
+    //! before constructing the second simulator world).
+    static inline std::string rebuildSpecOverride{};
+
+    std::string adaptiveLgrSpec() const override
+    {
+        if (rebuildSpecOverride == "none") {   // un-mark everything: coarsen
+            return {};
+        }
+        return rebuildSpecOverride.empty()
+            ? Base::adaptiveLgrSpec() : rebuildSpecOverride;
     }
 };
 
@@ -209,6 +229,13 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
                 const auto state = extractAdaptiveState<TypeTag>(*sim);
                 const Action::State actionState = sim->vanguard().actionState();
                 const UDQState udqState = sim->vanguard().udqState();
+
+                // S0b (minimal): a new mark set for world #2, if given.
+                const std::string newSpec =
+                    Parameters::Get<Parameters::AdaptiveRebuildLgr>();
+                if (!newSpec.empty()) {
+                    AdaptiveDynamicVanguard<TypeTag>::rebuildSpecOverride = newSpec;
+                }
 
                 // S2: tear down world #1, build world #2 from the parsed
                 // model description (vanguard refines during construction).

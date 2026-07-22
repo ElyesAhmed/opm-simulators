@@ -74,13 +74,18 @@ public:
             "';'-separated). Empty (default) => behaves like flow_blackoil.");
     }
 
+    //! \brief The refinement spec to apply; overridable so a dynamic driver
+    //! can substitute a new mark set on a mid-run rebuild.
+    virtual std::string adaptiveLgrSpec() const
+    { return Parameters::Get<Parameters::AdaptiveLgr>(); }
+
     //! \brief Add deck LGRs (base) then any --adaptive-lgr refinement.
     void addLgrs()
     {
         // Honour a deck CARFIN if present (an adaptive deck normally has none).
         Base::addLgrs();
 
-        const std::string spec = Parameters::Get<Parameters::AdaptiveLgr>();
+        const std::string spec = this->adaptiveLgrSpec();
         if (spec.empty()) {
             return;
         }

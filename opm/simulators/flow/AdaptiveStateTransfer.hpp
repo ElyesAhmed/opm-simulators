@@ -127,15 +127,44 @@ remapAdaptiveState(const AdaptiveStateMap& state,
     const auto stableIds = grid.currentData().back()->stableCellId();
     const std::size_t n = stableIds.size();
 
+    // stableCellId packing (CpGridData::stableCellId, design D3): refined cell
+    // = refinedTag | parentCart<<childBits | childIdx; coarse cell = plain
+    // Cartesian index.
+    constexpr int childBits = 20;
+    constexpr std::int64_t refinedTag = std::int64_t(1) << 62;
+
+    // Restriction buckets: plain average of the old refined children per
+    // parent Cartesian index (phase 1; pv-weighted avg and max/min ops are the
+    // next increment).
+    std::unordered_map<std::int64_t, std::pair<AdaptiveCellState, int>> parentAvg;
+    for (const auto& [id, cs] : state) {
+        if (id & refinedTag) {
+            auto& [acc, cnt] = parentAvg[(id & ~refinedTag) >> childBits];
+            acc.pressure += cs.pressure; acc.swat += cs.swat; acc.sgas += cs.sgas;
+            acc.rs += cs.rs; acc.rv += cs.rv; acc.temperature += cs.temperature;
+            ++cnt;
+        }
+    }
+
     std::vector<double> pressure(n), swat(n), sgas(n), rs(n), rv(n), temp(n);
     for (std::size_t c = 0; c < n; ++c) {
-        const auto it = state.find(stableIds[c]);
-        if (it == state.end()) {
+        const std::int64_t id = stableIds[c];
+        AdaptiveCellState cs;
+        if (const auto it = state.find(id); it != state.end()) {
+            cs = it->second;                                  // exact match
+        } else if ((id & refinedTag)
+                   && state.count((id & ~refinedTag) >> childBits)) {
+            cs = state.at((id & ~refinedTag) >> childBits);   // prolong: parent value
+        } else if (const auto pa = parentAvg.find(id); pa != parentAvg.end()) {
+            cs = pa->second.first;                            // restrict: child average
+            const double inv = 1.0 / pa->second.second;
+            cs.pressure *= inv; cs.swat *= inv; cs.sgas *= inv;
+            cs.rs *= inv; cs.rv *= inv; cs.temperature *= inv;
+        } else {
             throw std::logic_error("adaptive state transfer: no source state for cell "
                                    + std::to_string(c) + " (stable id "
-                                   + std::to_string(stableIds[c]) + ")");
+                                   + std::to_string(id) + ")");
         }
-        const auto& cs = it->second;
         pressure[c] = cs.pressure;
         swat[c] = cs.swat;
         sgas[c] = cs.sgas;
