@@ -130,6 +130,21 @@ public:
         this->updateCartesianToCompressedMapping_();
         this->updateCellDepths_();
         this->updateCellThickness_();
+
+        // Wells in the refined region (plan S6b): COMPDAT wells carry no
+        // trajectory to replay, so synthesize an equivalent one from their
+        // connection cells (coarse input-grid geometry -- the polyline is
+        // purely geometric) and then re-derive every trajectory well's
+        // connections against the refined leaf grid.
+        if (this->grid_->maxLevel() > 0) {
+            this->schedule().synthesizeWellTrajectories(
+                [&inputGrid](std::size_t globalIdx)
+                { return inputGrid.getCellCenter(globalIdx); },
+                [&inputGrid](std::size_t globalIdx)
+                { return inputGrid.getCellDims(globalIdx); });
+
+            this->recomputeWellTrajectoriesInLgr_();
+        }
     }
 };
 

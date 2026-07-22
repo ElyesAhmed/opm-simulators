@@ -36,6 +36,7 @@
 #include <opm/simulators/flow/GenericCpGridVanguard.hpp>
 #include <opm/simulators/flow/Transmissibility.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <functional>
@@ -760,7 +761,11 @@ public:
                 // same encoding COMPDATL uses), so the ECL output places the well
                 // in the refined grid and the connection's global index is
                 // validated against the LGR grid (not the coarse grid).
-                if (! tc.lgr_name.empty()) {
+                const auto& lgrLabels = inputGrid.get_all_lgr_labels();
+                if (! tc.lgr_name.empty()
+                    && std::find(lgrLabels.begin(), lgrLabels.end(),
+                                 tc.lgr_name) != lgrLabels.end())
+                {
                     // LGR grid number in the ScheduleGrid/COMPDATL convention:
                     // GLOBAL=0, LGRs=1,2,... get_lgr_cell_index is 0-based over
                     // the LGRs (GLOBAL excluded), so add one.
@@ -769,6 +774,17 @@ public:
                                           .getGlobalIndex(static_cast<std::size_t>(tc.ijk[0]),
                                                           static_cast<std::size_t>(tc.ijk[1]),
                                                           static_cast<std::size_t>(tc.ijk[2]));
+                }
+                else if (! tc.lgr_name.empty()) {
+                    // Adaptive (non-deck) LGR: the input EclipseGrid knows
+                    // nothing about it, so there is no COMPDATL grid numbering
+                    // to encode. Keep a non-zero grid number (the refinement
+                    // level) so the connection is recognizably refined, and use
+                    // the LGR-local Cartesian index as its global index. The
+                    // runtime lookup (compressedIndexForInteriorLGR) only needs
+                    // the LGR-local ijk + the CpGrid LGR name, both recorded.
+                    tc.lgr_grid = level;
+                    tc.global_index = lgrCart;
                 }
                 else {
                     tc.global_index = parentCart;
@@ -797,6 +813,27 @@ public:
 
         OpmLog::info("\nRecomputing well-trajectory connections against the refined grid");
         this->schedule().recomputeTrajectoryConnections(cellCorners, cellInfoFn);
+
+        // Summarize the outcome (last report step) so refined-well placement
+        // is visible in the log.
+        for (const auto& w : this->schedule().getWellsatEnd()) {
+            const auto& cs = w.getConnections();
+            if (! cs.hasTrajectory()) {
+                continue;
+            }
+            std::string msg = "  well " + w.name() + ": "
+                + std::to_string(cs.size()) + " connection(s)";
+            if (w.is_lgr_well()) {
+                msg += " in LGR " + w.get_lgr_well_tag().value();
+            }
+            for (const auto& c : cs) {
+                msg += "\n    (" + std::to_string(c.getI() + 1) + ","
+                    + std::to_string(c.getJ() + 1) + ","
+                    + std::to_string(c.getK() + 1) + ") lgr_grid "
+                    + std::to_string(c.get_lgr_level());
+            }
+            OpmLog::info(msg);
+        }
     }
 
     unsigned int gridEquilIdxToGridIdx(unsigned int elemIndex) const {
