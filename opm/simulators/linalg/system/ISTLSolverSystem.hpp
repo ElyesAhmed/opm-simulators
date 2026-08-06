@@ -200,7 +200,8 @@ private:
         // populate wellLayout_.pressureControlled: reading it afterwards
         // would leave that flag one call stale.
         const auto& prm = this->prm_[this->activeSolverNum_];
-        wellWeightType_ = prm.get("preconditioner.well_weight_type", std::string{"cellavg"});
+        const auto wellOpts = coarseSpaceTree(prm);
+        wellWeightType_ = wellOpts.get("well_weight_type", std::string{"cellavg"});
         if (wellWeightType_ != "unit" && wellWeightType_ != "cellavg"
             && wellWeightType_ != "cellblockavg" && wellWeightType_ != "quasiimpes") {
             OPM_THROW(std::invalid_argument,
@@ -211,7 +212,7 @@ private:
         // Give a pressure-controlled well a trivial coarse equation, as the
         // classic CPRW does.  Off keeps the contracted equation for every well.
         wellLayout_.identityOnPressureControl
-            = prm.get("preconditioner.well_identity_on_pressure_control", false);
+            = wellOpts.get("well_identity_on_pressure_control", false);
 
         wellBMatrices_.clear();
         wellCMatrices_.clear();
@@ -453,15 +454,15 @@ private:
         }
     }
 
-    // Where the reservoir sub-solver sits depends on the preconditioner: the
-    // fixed three-stage one keeps it at the top, the general one nests it under
-    // the coarse solver.  Only the weights are read from it here.
-    Opm::PropertyTree reservoirSolverTree(const Opm::PropertyTree& prm) const
+    // The keys describing the coarse space and its weighting.  general_system_cpr
+    // keeps them beside the coarse solver; system_cpr keeps them at the top of
+    // the preconditioner and its weighting inside the reservoir solver.
+    Opm::PropertyTree coarseSpaceTree(const Opm::PropertyTree& prm) const
     {
-        if (auto general = prm.get_child_optional("preconditioner.coarse_solver.reservoir_solver")) {
+        if (auto general = prm.get_child_optional("preconditioner.coarsesolver")) {
             return *general;
         }
-        return prm.get_child("preconditioner.reservoir_solver");
+        return prm.get_child("preconditioner");
     }
 
     void createSystemSolver(const Opm::PropertyTree& prm)
