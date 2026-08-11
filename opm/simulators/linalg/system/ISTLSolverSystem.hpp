@@ -467,10 +467,22 @@ private:
 
     void createSystemSolver(const Opm::PropertyTree& prm)
     {
-        // Derive weights from the reservoir sub-block config (which uses CPR internally)
-        auto resSolverPrm = reservoirSolverTree(prm);
-        std::function<ResVector<Scalar>()> resWeightCalc
-            = this->getWeightsCalculator(resSolverPrm, pressureIndex);
+        std::function<ResVector<Scalar>()> resWeightCalc;
+        if (prm.get("preconditioner.type", std::string{}) == "general_system_cpr") {
+            // The general layout names the weighting directly at the top of the
+            // preconditioner rather than through a nested CPR sub-tree, so hand
+            // the base class the two keys it reads instead of teaching it a
+            // second entry point.
+            Opm::PropertyTree cprPrm;
+            cprPrm.put("preconditioner.type", std::string{"cpr"});
+            cprPrm.put("preconditioner.weight_type",
+                       prm.get("preconditioner.weight_type", std::string{"trueimpes"}));
+            resWeightCalc = this->getWeightsCalculator(cprPrm, pressureIndex);
+        } else {
+            // Derive weights from the reservoir sub-block config (which uses CPR internally)
+            resWeightCalc = this->getWeightsCalculator(
+                prm.get_child("preconditioner.reservoir_solver"), pressureIndex);
+        }
 
         // The well part of the weights is filled here too: the CPRW pressure
         // stage restricts the well rows with it, and re-reads it on every
