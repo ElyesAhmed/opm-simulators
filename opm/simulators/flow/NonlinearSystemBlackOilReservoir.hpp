@@ -28,6 +28,9 @@
 
 #include <opm/simulators/flow/NonlinearSystem.hpp>
 
+#include <opm/simulators/flow/AdaptiveLinearSolveReduction.hpp>
+#include <opm/simulators/flow/APosterioriBalancingCriteria.hpp>
+#include <opm/simulators/flow/APosterioriSpatialTemporalEstimator.hpp>
 #include <opm/simulators/flow/BlackoilModelConvergenceMonitor.hpp>
 #include <opm/simulators/flow/NonlinearSystemNldd.hpp>
 #include <opm/simulators/flow/BlackoilModelProperties.hpp>
@@ -44,7 +47,9 @@
 
 #include <opm/simulators/wells/BlackoilWellModel.hpp>
 
+#include <array>
 #include <memory>
+#include <optional>
 #include <tuple>
 #include <vector>
 
@@ -159,6 +164,28 @@ public:
                               const int minIter,
                               const int maxIter,
                               const SimulatorTimerInterface& timer) override;
+
+    //! Evaluate eta_sp / eta_time for the current Newton iterate; on the
+    //! converged iterate, flush the per-iteration error-component table
+    //! (only if --enable-aposteriori-estimators).
+    void evalAposterioriEstimators(const SimulatorTimerInterface& timer, bool converged);
+
+    //! The space/time-balance dt suggestion (eq. Criteria_space_time_balance) from the
+    //! last converged step, in seconds; empty unless both
+    //! --enable-aposteriori-estimators and --enable-aposteriori-timestep-control
+    //! are set.  Read by SimulatorFullyImplicit to (optionally) override the
+    //! next AdaptiveTimeStepping step size.
+    std::optional<Scalar> aposterioriSuggestedNextStep() const
+    { return aposteriori_suggested_dt_; }
+
+    //! Production default (false): the caller should treat
+    //! aposterioriSuggestedNextStep() as a LIMITER only -- apply
+    //! min(nativeDt, *aposterioriSuggestedNextStep()) -- so AdaptiveTimeStepping's
+    //! own growth heuristic governs all growth and the estimator can only
+    //! shrink the next step. true (--enable-aposteriori-timestep-growth-override):
+    //! the caller should apply the suggestion directly, in both directions.
+    bool aposterioriTimestepGrowthOverrideEnabled() const
+    { return this->param_.aposteriori_timestep_growth_override_; }
 
     /// Called once per nonlinear iteration.
     /// This model will perform a Newton-Raphson update, changing reservoir_state
@@ -313,6 +340,43 @@ private:
     Scalar maxResidualAllowed() const { return this->param_.max_residual_allowed_; }
     double linear_solve_setup_time_;
     std::vector<bool> wasSwitched_;
+
+    //! \brief Inexact-Newton adaptive tolerance for the linear solve.
+    AdaptiveLinearSolveReduction<Scalar> adaptive_linear_reduction_;
+
+    //! \brief A posteriori eta_sp / eta_time estimators (diagnostic; only if
+    //!        --enable-aposteriori-estimators).
+    std::unique_ptr<APosterioriSpatialTemporalEstimator<TypeTag>> aposteriori_estimator_;
+    APosteriori::BalancingTargets<Scalar> aposteriori_targets_;
+    //! per-Newton-iteration (eta_sp_mimetic, eta_sp_T1, eta_sp_T1+T3, eta_time, eta_lin_CNVproxy, eta_lin_weighted)
+    std::vector<std::array<Scalar, 7>> aposteriori_rows_;
+    //! max-over-components mass-balance residual from the last convergence
+    //! check (getReservoirConvergence), fed into the Criteria_newton diagnostic
+    //! -- previously hardcoded to 0.0, which made the "non-negotiable" MB
+    //! condition always pass regardless of the actual state.
+    Scalar last_mass_balance_residual_ {0};
+    //! space/time-balance dt suggestion from the last converged step, exposed to the
+    //! timestepper when --enable-aposteriori-timestep-control is set.
+    std::optional<Scalar> aposteriori_suggested_dt_;
+
+    //! eta_lin and max(eta_sp,eta_time) at the most recent Newton iterate, for
+    //! the Criteria_alg linear-solve forcing term
+    //! (--enable-aposteriori-linear-tolerance). Reset to 0 at each timestep init.
+    Scalar aposteriori_eta_lin_prev_     {0};
+    Scalar aposteriori_max_sptime_prev_  {0};
+
+    //! Set when the last linear solve failed the weighted Criteria_alg check
+    //! (q > 1.2) after the allowed re-solves: the increment is kept but the
+    //! a posteriori Newton acceptance is forbidden for that iteration.
+    bool aposteriori_alg_unmet_ {false};
+
+    //! Cumulative estimator rescale over the current report period (product of
+    //! dtNew/dt). If it drops below a floor the override is suspended for the
+    //! rest of the period. Both reset per report period.
+    int    aposteriori_period_steps_    {0};
+    bool   aposteriori_ctrl_suspended_  {false};
+    int    aposteriori_last_report_step_ {-1};
+    int    aposteriori_total_ctrl_steps_ {0};
 };
 
 } // namespace Opm

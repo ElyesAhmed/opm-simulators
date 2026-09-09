@@ -75,6 +75,32 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     maxSinglePrecisionTimeStep_ = Parameters::Get<Parameters::MaxSinglePrecisionDays<Scalar>>() * 24 * 60 * 60;
     min_strict_cnv_iter_ = Parameters::Get<Parameters::MinStrictCnvIter>();
     min_strict_mb_iter_ = Parameters::Get<Parameters::MinStrictMbIter>();
+    adaptive_linear_solver_reduction_ = Parameters::Get<Parameters::AdaptiveLinearSolverReduction>();
+    adaptive_linear_solver_reduction_gamma_ = Parameters::Get<Parameters::AdaptiveLinearSolverReductionGamma<Scalar>>();
+    adaptive_linear_solver_reduction_max_ = Parameters::Get<Parameters::AdaptiveLinearSolverReductionMax<Scalar>>();
+    adaptive_linear_solver_reduction_min_iter_ = Parameters::Get<Parameters::AdaptiveLinearSolverReductionMinIter>();
+    enable_aposteriori_estimators_ = Parameters::Get<Parameters::EnableAposterioriEstimators>();
+    enable_aposteriori_newton_stopping_ = Parameters::Get<Parameters::EnableAposterioriNewtonStopping>();
+    enable_aposteriori_linear_tolerance_ = Parameters::Get<Parameters::EnableAposterioriLinearTolerance>();
+    aposteriori_rigorous_lin_ = Parameters::Get<Parameters::AposterioriRigorousLin>();
+    aposteriori_cheap_norms_ = Parameters::Get<Parameters::AposterioriCheapNorms>();
+    aposteriori_first_eval_iter_ = Parameters::Get<Parameters::AposterioriFirstEvalIter>();
+    enable_aposteriori_timestep_control_ = Parameters::Get<Parameters::EnableAposterioriTimestepControl>();
+    aposteriori_gamma_time_ = Parameters::Get<Parameters::AposterioriGammaTime<Scalar>>();
+    aposteriori_gamma_time_upper_ = Parameters::Get<Parameters::AposterioriGammaTimeUpper<Scalar>>();
+    aposteriori_weight_exponent_ = Parameters::Get<Parameters::AposterioriWeightExponent<Scalar>>();
+    aposteriori_use_lifted_relperm_ = Parameters::Get<Parameters::AposterioriUseLiftedRelperm>();
+    aposteriori_use_bubble_correction_ = Parameters::Get<Parameters::AposterioriUseBubbleCorrection>();
+    aposteriori_use_connection_ls_gradient_ = Parameters::Get<Parameters::AposterioriUseConnectionLSGradient>();
+    aposteriori_gamma_lin_ = Parameters::Get<Parameters::AposterioriGammaLin<Scalar>>();
+    aposteriori_gamma_alg_ = Parameters::Get<Parameters::AposterioriGammaAlg<Scalar>>();
+    aposteriori_alg_max_resolves_ = Parameters::Get<Parameters::AposterioriAlgMaxResolves>();
+    aposteriori_tol_mb_ = Parameters::Get<Parameters::AposterioriTolMb<Scalar>>();
+    aposteriori_epsilon_ = Parameters::Get<Parameters::AposterioriEpsilon<Scalar>>();
+    aposteriori_max_grow_ = Parameters::Get<Parameters::AposterioriMaxGrow<Scalar>>();
+    aposteriori_max_shrink_ = Parameters::Get<Parameters::AposterioriMaxShrink<Scalar>>();
+    aposteriori_timestep_growth_override_ =
+        Parameters::Get<Parameters::EnableAposterioriTimestepGrowthOverride>();
     solve_welleq_initially_ = Parameters::Get<Parameters::SolveWelleqInitially>();
     pre_solve_network_ = Parameters::Get<Parameters::PreSolveNetwork>();
     update_equations_scaling_ = Parameters::Get<Parameters::UpdateEquationsScaling>();
@@ -236,6 +262,146 @@ void BlackoilModelParameters<Scalar>::registerParameters()
          "can be used for the MB convergence criterion. "
          "Default -1 means that the relaxed tolerance is used when maximum "
          "number of Newton iterations are reached.");
+    Parameters::Register<Parameters::AdaptiveLinearSolverReduction>
+        ("Use an inexact-Newton (Eisenstat--Walker) adaptive relative tolerance "
+         "for the Newton linear solve: the linear system is solved only as "
+         "accurately as the current nonlinear (linearization) error. The "
+         "converged solution is unchanged; only the number of linear iterations "
+         "is affected. Disabled by default.");
+    Parameters::Register<Parameters::AdaptiveLinearSolverReductionGamma<Scalar>>
+        ("Safety factor gamma in (0,1] for the adaptive linear-solve forcing term");
+    Parameters::Register<Parameters::AdaptiveLinearSolverReductionMax<Scalar>>
+        ("Loosest relative residual reduction permitted for the adaptive linear "
+         "solve (upper clamp on the forcing term)");
+    Parameters::Register<Parameters::AdaptiveLinearSolverReductionMinIter>
+        ("Engage the adaptive linear tolerance only when the previous linear "
+         "solve took at least this many iterations. On problems where the "
+         "preconditioner (e.g. CPR-AMG) already overshoots the tolerance in a "
+         "handful of iterations, loosening it saves no time and degrades the "
+         "Newton update, so the static tolerance is kept.");
+    Parameters::Register<Parameters::EnableAposterioriEstimators>
+        ("Evaluate the a posteriori spatial (eta_sp) and temporal (eta_time) "
+         "error estimators on each converged step and print the space/time "
+         "balancing table (diagnostic; does not change the solution).");
+    Parameters::Register<Parameters::EnableAposterioriNewtonStopping>
+        ("Allow the weighted a posteriori Criteria_newton to stop Newton when "
+         "the current state fails only the standard reservoir CNV test. "
+         "Material balance, wells, group/network controls, severe failures, "
+         "and the minimum-iteration requirement remain mandatory. Requires "
+         "--enable-aposteriori-estimators=true; default false.");
+    Parameters::Register<Parameters::EnableAposterioriLinearTolerance>
+        ("Drive the inexact-Newton linear-solve tolerance from the a posteriori "
+         "algebraic criterion Criteria_alg: relative-reduction target = "
+         "Gamma_alg * max(eta_sp, eta_time) / eta_lin (solve only until the "
+         "algebraic error is small vs. the discretization error), instead of "
+         "the CNV-ratio Eisenstat-Walker term of "
+         "--adaptive-linear-solver-reduction. Requires "
+         "--enable-aposteriori-estimators=true; shares the "
+         "--adaptive-linear-solver-reduction-* clamps and guard. Default false.");
+    Parameters::Register<Parameters::AposterioriRigorousLin>
+        ("Build eta_lin from the rigorous Newton-linearized flux defect "
+         "(a two-pass local Jacobian-vector product, the single biggest "
+         "per-iteration estimator cost). Default true. False skips it and "
+         "uses the cheap iterate-to-iterate flux-change proxy -- enough for "
+         "the Newton-stopping decision, and much faster.");
+    Parameters::Register<Parameters::AposterioriCheapNorms>
+        ("Evaluate every *,K energy-norm term (eta_D, eta_time, eta_lin's "
+         "flux term, and the eta_lin iterate-diff proxy) cheaply: the "
+         "T1-only Pi0 moment with the diagonal of K and no stability term, "
+         "in place of the full mimetic matrix z^T M_K z / full-tensor P0 "
+         "form. Default false (full rigour, all terms on the same footing). "
+         "Provided so both can be tested. eta_lin's accumulation-defect "
+         "term uses the paper's c_KK^{-1/2} formula either way.");
+    Parameters::Register<Parameters::AposterioriFirstEvalIter>
+        ("Skip the per-iteration a posteriori estimator evaluation "
+         "(compute() and the rigorous eta_lin Jacobian capture) on Newton "
+         "iterations before this one. The early iterates cannot be a "
+         "Criteria_newton accept anyway (plateau guard + min-iteration), so "
+         "evaluating them only costs time. 1 (default) evaluates every "
+         "iteration.");
+    Parameters::Register<Parameters::EnableAposterioriTimestepControl>
+        ("Drive the next time-step size from the a posteriori space/time-balance "
+         "rescale (eq. Criteria_space_time_balance) instead of only reporting "
+         "it. Requires --enable-aposteriori-estimators=true; a no-op "
+         "otherwise. Only the suggested next dt is affected -- Newton and "
+         "linear-solver stopping are unchanged. Applied inside "
+         "AdaptiveTimeStepping's substep loop, so it governs every substep "
+         "(not only the first of each report period).");
+    Parameters::Register<Parameters::AposterioriGammaTime<Scalar>>
+        ("Lower edge of the eta_time/eta_sp balancing band (eq. "
+         "Criteria_space_time_balance). Below it the space/time-balance rescale grows "
+         "the next dt.");
+    Parameters::Register<Parameters::AposterioriGammaTimeUpper<Scalar>>
+        ("Upper edge of the eta_time/eta_sp balancing band. Above it the "
+         "space/time-balance rescale shrinks the next dt.");
+    Parameters::Register<Parameters::AposterioriWeightExponent<Scalar>>
+        ("Neumann-scaled near-well weight exponent l in (0,2) (eq. eq:eps_norm). "
+         "l=0 (default) disables the near-well D_K^l weight; the estimators "
+         "then treat well cells the same as any other cell.");
+    Parameters::Register<Parameters::AposterioriUseLiftedRelperm>
+        ("Evaluate lambda_beta at the lifted (H1) vertex-patch-average "
+         "saturation via the real MaterialLaw, instead of the FV cell "
+         "mobility, so u_alpha mimics the continuous flux consistently.");
+    Parameters::Register<Parameters::AposterioriUseBubbleCorrection>
+        ("Bubble-correct the lifted point saturation/pressure to the FV cell "
+         "mean before evaluating relperm (eq. eq:averaging_bubble, "
+         "point-value form).");
+    Parameters::Register<Parameters::AposterioriUseConnectionLSGradient>
+        ("Use a transmissibility-weighted least-squares fit of the raw "
+         "connection pressure drops for grad p_hat instead of the default "
+         "H1 vertex-patch lift (eq. eq:averaging) -- for comparison.");
+    Parameters::Register<Parameters::AposterioriGammaLin<Scalar>>
+        ("Admissible relative linearization error Gamma_lin in (0,1] (eq. "
+         "Criteria_newton): the a posteriori Newton stop needs "
+         "eta_lin <= Gamma_lin*max(eta_sp,eta_time).");
+    Parameters::Register<Parameters::AposterioriGammaAlg<Scalar>>
+        ("Admissible relative algebraic error Gamma_alg in (0,1] (eq. "
+         "Criteria_alg): used by --enable-aposteriori-linear-tolerance as the "
+         "linear-solve forcing term Gamma_alg*max(eta_sp,eta_time)/eta_alg^(0).");
+    Parameters::Register<Parameters::AposterioriAlgMaxResolves>
+        ("Tighter linear re-solves --enable-aposteriori-linear-tolerance may "
+         "perform when the measured weighted eta_alg exceeds 1.2 * "
+         "Gamma_alg*max(eta_sp,eta_time). If it still fails, the increment is "
+         "kept but estimator-based Newton acceptance is disabled that iteration. "
+         "1 (default) = one guarded re-solve; 0 = gate Newton acceptance only.");
+    Parameters::Register<Parameters::AposterioriTolMb<Scalar>>
+        ("Material-balance tolerance for the a posteriori Criteria_newton "
+         "gate. <=0 (default) means use the simulator's own --tolerance-mb, "
+         "so the a posteriori stop can never accept a state OPM itself would "
+         "reject on MB (the paper's non-negotiable MB condition). A positive "
+         "value overrides it -- large values relax the gate and let "
+         "Criteria_newton stop Newton before MB has strictly converged, "
+         "trading global mass conservation for iteration count. Experimental; "
+         "requires --enable-aposteriori-newton-stopping=true.");
+    Parameters::Register<Parameters::AposterioriEpsilon<Scalar>>
+        ("Neumann-scaling parameter epsilon > 0 (eq. eq:eps_norm), used in "
+         "the nonlinear-accumulation-defect term of eta_lin. Recommended: 1.");
+    Parameters::Register<Parameters::AposterioriMaxGrow<Scalar>>
+        ("Maximum per-rescale growth factor the space/time-balance override "
+         "may request for the next dt (only meaningful with "
+         "--enable-aposteriori-timestep-control=true). Default 2.0 sits at or "
+         "below AdaptiveTimeStepping's own empirically observed growth cap "
+         "(~2.2x); a value above that lets the override request more growth "
+         "than the solver's own heuristic considers safe, which can increase "
+         "oscillation/chop events and total nonlinear work instead of "
+         "reducing it -- tune down (e.g. 1.25-1.5) on decks where that "
+         "happens.");
+    Parameters::Register<Parameters::AposterioriMaxShrink<Scalar>>
+        ("Minimum per-rescale factor (i.e. maximum single-rescale cut) the "
+         "space/time-balance override may request for the next dt. Default "
+         "0.5 (at most a 2x cut per rescale). Applies in both the limiter "
+         "and the bidirectional-growth-override mode.");
+    Parameters::Register<Parameters::EnableAposterioriTimestepGrowthOverride>
+        ("Production default (false): the a posteriori override only ever "
+         "LIMITS AdaptiveTimeStepping's own native suggestion -- "
+         "min(native, estimator) -- so OPM's own convergence-history-based "
+         "growth heuristic governs all growth, and the estimator can only "
+         "shrink a step when eta_time is excessive relative to eta_sp. Set "
+         "true for the experimental mode where the estimator's rescale "
+         "directly overrides the native suggestion in both directions, "
+         "bounded by --aposteriori-max-grow/--aposteriori-max-shrink. "
+         "Requires --enable-aposteriori-timestep-control=true; a no-op "
+         "otherwise.");
     Parameters::Register<Parameters::SolveWelleqInitially>
         ("Fully solve the well equations before each iteration of the reservoir model");
     Parameters::Register<Parameters::PreSolveNetwork>

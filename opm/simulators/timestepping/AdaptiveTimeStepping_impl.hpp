@@ -965,6 +965,22 @@ run()
             dt_estimate = maybeRestrictTimeStepGrowth_(dt, dt_estimate, restarts);
             restarts = 0;         // solver converged, reset restarts counter
 
+            // Estimator-steered time-step control
+            // (--enable-aposteriori-timestep-control): apply the a posteriori
+            // space/time-balance rescale from the substep just solved to the
+            // NEXT substep -- here, inside the substep loop, so it governs
+            // every substep and not only the first one of each report period.
+            if (const auto apostDt = solver_().model().aposterioriSuggestedNextStep()) {
+                dt_estimate = solver_().model().aposterioriTimestepGrowthOverrideEnabled()
+                    ? *apostDt
+                    : std::min(dt_estimate, *apostDt);
+                // Never let the estimator drive dt below the solver minimum:
+                // a too-tight space/time band would otherwise stall the run
+                // (proposed dt < minTimeStep). Clamp and continue -- the
+                // reported eta_time then simply exceeds the target band.
+                dt_estimate = std::max(dt_estimate, minTimeStep_());
+            }
+
             maybeReportSubStep_(substep_report);
             if (this->final_step_ && this->substep_timer_.done()) {
                 // if the time step is done we do not need to write it as this will be done

@@ -100,6 +100,173 @@ struct MaxSinglePrecisionDays { static constexpr Scalar value = 20.0; };
 
 struct MinStrictCnvIter { static constexpr int value = -1; };
 struct MinStrictMbIter { static constexpr int value = -1; };
+
+// Inexact-Newton adaptive tolerance for the linear solve (Eisenstat--Walker).
+struct AdaptiveLinearSolverReduction { static constexpr bool value = false; };
+
+template<class Scalar>
+struct AdaptiveLinearSolverReductionGamma { static constexpr Scalar value = 0.9; };
+
+template<class Scalar>
+struct AdaptiveLinearSolverReductionMax { static constexpr Scalar value = 0.1; };
+
+// Only loosen the linear tolerance if the previous linear solve took at least
+// this many iterations (below it the preconditioner already overshoots and
+// loosening only hurts the Newton update).
+struct AdaptiveLinearSolverReductionMinIter { static constexpr int value = 10; };
+
+// Evaluate the a posteriori spatial (eta_sp) and temporal (eta_time) error
+// estimators on each converged step and print the balancing table.
+struct EnableAposterioriEstimators { static constexpr bool value = false; };
+
+// Replace only the reservoir CNV stopping test by Criteria_newton. Material
+// balance, wells, groups, network balancing, minimum iterations, and severe
+// convergence failures remain governed by the standard OPM checks.
+struct EnableAposterioriNewtonStopping { static constexpr bool value = false; };
+
+// Drive the inexact-Newton linear-solve tolerance from Criteria_alg: target =
+// Gamma_alg * max(eta_sp,eta_time) / eta_alg^(0), with eta_alg^(0) the weighted
+// algebraic estimator of the well-eliminated residual (evaluated after
+// wellModel().linearize()). The weighted eta_alg after the solve is measured
+// and logged but NOT enforced by default -- at the current eta_sp magnitude
+// (c_KK^{-1/2} near-well weight) the target sits far below eta_alg of even a
+// machine-tight solve. --aposteriori-alg-max-resolves>0 opts into an
+// experimental one tighter re-solve. Requires --enable-aposteriori-estimators.
+struct EnableAposterioriLinearTolerance { static constexpr bool value = false; };
+
+// Build eta_lin from the rigorous Newton-linearized flux defect (Theta_lin
+// via a two-pass local Jacobian-vector product in recordLinearizationDefect).
+// Default true. Setting it false skips recordLinearizationDefect entirely --
+// the single biggest per-iteration estimator cost -- and eta_lin falls back
+// to the cheap iterate-to-iterate flux-change proxy. The proxy is enough for
+// the Newton-stopping decision (eta_lin only needs to be small relative to
+// Gamma_lin*max(eta_sp,eta_time)); the rigorous term is only worth its cost
+// when eta_lin itself is being reported/studied.
+struct AposterioriRigorousLin { static constexpr bool value = true; };
+
+// Evaluate ALL the *,K energy-norm terms (eta_D, eta_time, eta_lin's flux
+// term, and the eta_lin iterate-diff proxy) on the same footing. Default
+// false = full rigour: eta_D / eta_lin-flux via the mimetic matrix
+// z^T M_K z (full permeability tensor + stability term), eta_time / proxy
+// via the full-tensor P0 form D_K^l |K| (v.K^{-1}v). True = the cheap
+// approximation for all of them: eta_D / eta_lin-flux drop to the T1-only
+// Pi0 moment (diagonal K, no stability), eta_time / proxy to the diagonal
+// |K_diag^{-1/2} v|. eta_lin's accumulation-defect term follows the paper's
+// own c_KK^{-1/2} scalar formula either way.
+struct AposterioriCheapNorms { static constexpr bool value = false; };
+
+// Skip the (expensive) per-iteration estimator evaluation -- compute() and
+// recordLinearizationDefect() -- on Newton iterations before this one. The
+// early iterates are never a Criteria_newton accept candidate (the plateau
+// guard needs >=2 evaluated rows and iteration>=2 anyway), so evaluating
+// them only costs time. 1 = evaluate every iteration (default, unchanged
+// behaviour).
+struct AposterioriFirstEvalIter { static constexpr int value = 1; };
+
+// Actually drive the next AdaptiveTimeStepping step size from the a
+// posteriori space/time-balance rescale (eq. Criteria_space_time_balance)
+// instead of only reporting it. Requires EnableAposterioriEstimators; a
+// no-op otherwise. Newton/linear stopping are NOT affected -- only the
+// suggested next dt. Applied inside AdaptiveTimeStepping's substep loop, so
+// it governs every substep. A runaway (a report period over-refined past
+// ~40 substeps, or >250 estimator substeps over the run) latches the
+// override OFF for the rest of the run and native control resumes.
+struct EnableAposterioriTimestepControl { static constexpr bool value = false; };
+
+// Lower/upper edge of the space/time balancing band, eq. Criteria_space_time_balance:
+// gamma_time * eta_sp <= eta_time <= Gamma_time * eta_sp.
+template<class Scalar>
+struct AposterioriGammaTime { static constexpr Scalar value = 0.5; };
+template<class Scalar>
+struct AposterioriGammaTimeUpper { static constexpr Scalar value = 2.0; };
+
+// The Neumann-scaled weight exponent l in (0,2) (eq. eq:eps_norm / Assumption
+// assum:ell): D_K^l bounds the near-well weight d_Lambda^l. l=0 (default)
+// reproduces the plain energy norm with no near-well damping.
+template<class Scalar>
+struct AposterioriWeightExponent { static constexpr Scalar value = 0.0; };
+
+// Evaluate lambda_beta(s_hat) at the lifted vertex-patch saturation via the
+// real MaterialLaw, instead of the FV cell mobility (see rem:est in the paper
+// -- this is what makes u_alpha mimic -lambda(s) K grad(p) consistently).
+struct AposterioriUseLiftedRelperm { static constexpr bool value = true; };
+
+// Point-value bubble correction of the lifted saturation/pressure to the FV
+// cell mean (eq. eq:averaging_bubble, point-value form only).
+struct AposterioriUseBubbleCorrection { static constexpr bool value = true; };
+
+// Use the transmissibility-weighted least-squares fit of the raw connection
+// pressure drops for grad p_hat instead of the default vertex patch-average
+// (H1) lift -- for comparing the two reconstructions.
+struct AposterioriUseConnectionLSGradient { static constexpr bool value = false; };
+
+// The admissible relative linearization error Gamma_lin in (0,1] (eq.
+// Criteria_newton): eta_lin <= Gamma_lin * max(eta_sp, eta_time).
+template<class Scalar>
+struct AposterioriGammaLin { static constexpr Scalar value = 0.1; };
+
+// The admissible relative algebraic error Gamma_alg in (0,1] (eq.
+// Criteria_alg): used by --enable-aposteriori-linear-tolerance as the
+// linear-solve forcing term Gamma_alg * max(eta_sp,eta_time) / eta_alg^(0).
+template<class Scalar>
+struct AposterioriGammaAlg { static constexpr Scalar value = 0.1; };
+
+// How many tighter linear re-solves --enable-aposteriori-linear-tolerance may
+// do when the weighted eta_alg exceeds 1.2 * Gamma_alg*max(eta_sp,eta_time)
+// after the first solve. If it still fails, the increment is kept but
+// estimator-based Newton acceptance is disabled for that iteration. 1 (default)
+// = at most one guarded re-solve; 0 = never re-solve (just gate Newton
+// acceptance). Each re-solve re-runs the Krylov solve and the weighted eta_alg
+// eval, so keep this small.
+struct AposterioriAlgMaxResolves { static constexpr int value = 0; };
+
+// Material-balance tolerance for the a posteriori Criteria_newton gate. The
+// paper makes MB non-negotiable, so the default (<= 0) means "use the
+// simulator's own tolerance_mb_" -- identical to OPM's own convergence
+// requirement, i.e. the a posteriori criterion can never accept a state OPM
+// itself would reject on MB. A positive value overrides it: larger relaxes
+// the gate (the extreme, ~1.0, disables it -- the field-scaled MB residual
+// is always below that), letting Criteria_newton stop Newton before MB has
+// converged to the strict tolerance. That trades global mass conservation
+// for iteration count and can drift field totals over a run -- experimental.
+template<class Scalar>
+struct AposterioriTolMb { static constexpr Scalar value = -1.0; };
+
+// The Neumann-scaling parameter epsilon > 0 (eq. eq:eps_norm), used in the
+// nonlinear-accumulation-defect term of eta_lin. Paper recommendation: 1.
+template<class Scalar>
+struct AposterioriEpsilon { static constexpr Scalar value = 1.0; };
+
+// Maximum per-rescale growth/shrink factor applied to the suggested next dt
+// (eq. Criteria_space_time_balance). Only reached when
+// EnableAposterioriTimestepGrowthOverride=true (bidirectional/experimental
+// mode); the production default (that flag false) never lets the estimator
+// request more growth than AdaptiveTimeStepping's own native suggestion --
+// see that flag's doc comment. Default maxGrow=1.25 is a conservative choice
+// for the experimental bidirectional mode: a comparison on SPE9 (2026-09-04)
+// found that a maxGrow of 3.0 saturated on nearly every step (this deck's
+// eta_time/eta_sp ratio sits far below the default band), making the raw
+// override strictly more aggressive than AdaptiveTimeStepping's own
+// heuristic (~2.2x observed cap) and producing MORE Newton/linear iterations
+// and oscillation events than leaving timestep control off entirely.
+template<class Scalar>
+struct AposterioriMaxGrow { static constexpr Scalar value = 1.25; };
+template<class Scalar>
+struct AposterioriMaxShrink { static constexpr Scalar value = 0.5; };
+
+// Production default (false): the a posteriori override acts purely as a
+// LIMITER on AdaptiveTimeStepping's own native suggestion --
+// min(nativeDt, estimatorDt) -- so OPM's own convergence-history-based
+// growth heuristic (and --solver-max-growth) governs all growth, and the
+// estimator can only ever SHRINK a step, when eta_time is excessive relative
+// to eta_sp. A small eta_time/eta_sp ratio (the common case observed so far)
+// therefore cannot force aggressive growth on its own.
+// Set true to instead let the estimator's rescale directly override the
+// native suggestion in both directions (bounded by AposterioriMaxGrow /
+// AposterioriMaxShrink) -- an experimental mode for studying the estimator's
+// own growth policy in isolation from AdaptiveTimeStepping's heuristic.
+struct EnableAposterioriTimestepGrowthOverride { static constexpr bool value = false; };
+
 struct SolveWelleqInitially { static constexpr bool value = true; };
 struct PreSolveNetwork { static constexpr bool value = true; };
 struct UpdateEquationsScaling { static constexpr bool value = false; };
@@ -294,6 +461,82 @@ public:
 
     /// Minimum number of Newton iterations before we can use relaxed MB convergence criterion
     int min_strict_mb_iter_;
+
+    /// Use an inexact-Newton (Eisenstat--Walker) adaptive tolerance for the linear solve
+    bool adaptive_linear_solver_reduction_;
+
+    /// Safety factor for the adaptive linear-solve forcing term
+    Scalar adaptive_linear_solver_reduction_gamma_;
+
+    /// Loosest relative reduction permitted for the adaptive linear solve
+    Scalar adaptive_linear_solver_reduction_max_;
+
+    /// Minimum previous-solve linear iteration count for the adaptive linear tolerance to engage
+    int adaptive_linear_solver_reduction_min_iter_;
+
+    /// Evaluate and print the a posteriori eta_sp / eta_time balancing table
+    bool enable_aposteriori_estimators_;
+
+    /// Allow Criteria_newton to accept an iterate that fails only standard CNV
+    bool enable_aposteriori_newton_stopping_;
+
+    /// Drive the linear-solve tolerance from the Criteria_alg target
+    /// Gamma_alg * max(eta_sp, eta_time) / eta_alg^(0)
+    bool enable_aposteriori_linear_tolerance_;
+
+    /// Build eta_lin rigorously (recordLinearizationDefect); false => cheap proxy
+    bool aposteriori_rigorous_lin_;
+
+    /// Evaluate all *,K energy norms cheaply (diagonal K, no stability term)
+    bool aposteriori_cheap_norms_;
+
+    /// Skip per-iteration estimator evaluation before this Newton iteration
+    int aposteriori_first_eval_iter_;
+
+    /// Actually drive the next timestep size from the a posteriori estimators
+    bool enable_aposteriori_timestep_control_;
+
+    /// Lower/upper edge of the eta_time/eta_sp balancing band
+    Scalar aposteriori_gamma_time_;
+    Scalar aposteriori_gamma_time_upper_;
+
+    /// Neumann-scaled near-well weight exponent l (0 = inactive)
+    Scalar aposteriori_weight_exponent_;
+
+    /// Evaluate lambda_beta at the lifted (vertex patch-average) saturation
+    bool aposteriori_use_lifted_relperm_;
+
+    /// Bubble-correct the lifted point value to the FV cell mean
+    bool aposteriori_use_bubble_correction_;
+
+    /// Use the connection-drop LS gradient instead of the H1 vertex-patch lift
+    bool aposteriori_use_connection_ls_gradient_;
+
+    /// Admissible relative linearization error Gamma_lin
+    Scalar aposteriori_gamma_lin_;
+
+    /// Admissible relative algebraic error Gamma_alg (linear-solve forcing term)
+    Scalar aposteriori_gamma_alg_;
+
+    /// Max extra tighter linear re-solves to enforce the weighted Criteria_alg
+    int aposteriori_alg_max_resolves_;
+
+    /// MB tolerance for the Criteria_newton gate (<=0 => use tolerance_mb_)
+    Scalar aposteriori_tol_mb_;
+
+    /// Neumann-scaling parameter epsilon > 0
+    Scalar aposteriori_epsilon_;
+
+    /// Max per-rescale growth/shrink factor on the suggested next dt
+    /// (only reached when aposteriori_timestep_growth_override_ is true)
+    Scalar aposteriori_max_grow_;
+    Scalar aposteriori_max_shrink_;
+
+    /// false (production default): override acts as a limiter,
+    /// min(native AdaptiveTimeStepping suggestion, estimator suggestion) --
+    /// true (experimental): estimator suggestion applied directly, both
+    /// directions, bounded by aposteriori_max_grow_/aposteriori_max_shrink_
+    bool aposteriori_timestep_growth_override_;
 
     /// Solve well equation initially
     bool solve_welleq_initially_;

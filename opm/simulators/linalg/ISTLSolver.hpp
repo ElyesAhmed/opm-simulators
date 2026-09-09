@@ -58,6 +58,7 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -453,13 +454,26 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
             {
                 OPM_TIMEBLOCK(flexibleSolverApply);
                 assert(flexibleSolver_[activeSolverNum_].solver_);
-                flexibleSolver_[activeSolverNum_].solver_->apply(x, *rhs_, result);
+                if (linearSolveReductionOverride_.has_value()) {
+                    // Inexact-Newton adaptive tolerance: relax the linear solve
+                    // to the current nonlinear (linearization) error level.
+                    flexibleSolver_[activeSolverNum_].solver_->apply(
+                        x, *rhs_, *linearSolveReductionOverride_, result);
+                }
+                else {
+                    flexibleSolver_[activeSolverNum_].solver_->apply(x, *rhs_, result);
+                }
             }
 
             iterations_ = result.iterations;
 
             // Check convergence, iterations etc.
             return checkConvergence(result);
+        }
+
+        void setLinearSolveReduction(std::optional<double> reduction) override
+        {
+            linearSolveReductionOverride_ = reduction;
         }
 
 
@@ -699,6 +713,12 @@ std::unique_ptr<Matrix> blockJacobiAdjacency(const Grid& grid,
         mutable int iterations_;
         mutable int solveCount_;
         std::any parallelInformation_;
+
+        // Optional runtime override of the linear solve relative reduction,
+        // set by the inexact-Newton adaptive tolerance (see
+        // AdaptiveLinearSolveReduction).  std::nullopt means "use the
+        // statically configured tolerance".
+        std::optional<double> linearSolveReductionOverride_;
 
         // non-const to be able to scale the linear system
         Matrix* matrix_;
