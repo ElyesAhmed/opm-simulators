@@ -230,12 +230,14 @@ EclGenericWriter(const Schedule& schedule,
                  const Dune::CartesianIndexMapper<Grid>& cartMapper,
                  const Dune::CartesianIndexMapper<EquilGrid>* equilCartMapper,
                  bool enableAsyncOutput,
-                 bool enableEsmry )
+                 bool enableEsmry,
+                 const EquilGrid* collectGrid,
+                 const Dune::CartesianIndexMapper<EquilGrid>* collectCartMapper )
     : collectOnIORank_(grid,
-                       equilGrid,
+                       collectGrid ? collectGrid : equilGrid,
                        gridView,
                        cartMapper,
-                       equilCartMapper,
+                       collectCartMapper ? collectCartMapper : equilCartMapper,
                        summaryConfig.fip_regions_interreg_flow())
     , grid_           (grid)
     , gridView_       (gridView)
@@ -244,6 +246,7 @@ EclGenericWriter(const Schedule& schedule,
     , cartMapper_     (cartMapper)
     , equilCartMapper_(equilCartMapper)
     , equilGrid_      (equilGrid)
+    , collectGrid_    (collectGrid ? collectGrid : equilGrid)
 {
     // Make sure outputNnc_ vector has at least 1 entry in all ranks.
     outputNnc_.resize(1);
@@ -280,7 +283,33 @@ writeInit()
     if (collectOnIORank_.isIORank()) {
         std::map<std::string, std::vector<int>> integerVectors;
         if (collectOnIORank_.isParallel()) {
-            integerVectors.emplace("MPI_RANK", collectOnIORank_.globalRanks());
+            const auto& leafRanks = collectOnIORank_.globalRanks();
+            if (collectGrid_ != nullptr && collectGrid_->maxLevel() > 0) {
+                // For a refined grid the gather reference (collectGrid_) is the
+                // leaf grid, so globalRanks_ is leaf-sized.  MPI_RANK in the INIT
+                // belongs to the level-zero (main) grid, so reduce it: each leaf
+                // cell contributes its owning rank to its level-zero origin (all
+                // children of a refined cell share one rank - the box is
+                // rank-interior).  Without this MPI_RANK is written at leaf size
+                // into the main-grid slot, mismatching the main grid.
+                std::vector<int> mpiRank(collectGrid_->currentData().front()->size(0), 0);
+                const auto leafView = collectGrid_->leafGridView();
+                Dune::MultipleCodimMultipleGeomTypeMapper<std::decay_t<decltype(leafView)>>
+                    leafMapper(leafView, Dune::mcmgElementLayout());
+                for (const auto& elem : elements(leafView)) {
+                    const auto leafIdx = leafMapper.index(elem);
+                    const auto originIdx = elem.getOrigin().index();
+                    if (originIdx >= 0
+                        && static_cast<std::size_t>(originIdx) < mpiRank.size()
+                        && static_cast<std::size_t>(leafIdx) < leafRanks.size()) {
+                        mpiRank[originIdx] = leafRanks[leafIdx];
+                    }
+                }
+                integerVectors.emplace("MPI_RANK", std::move(mpiRank));
+            }
+            else {
+                integerVectors.emplace("MPI_RANK", leafRanks);
+            }
         }
 
         if (const auto& lgrs = this->eclState_.getLgrs(); lgrs.size() > 0) {
@@ -984,13 +1013,31 @@ doWriteOutput(const int                          reportStepNum,
     }
 
     std::vector<Opm::RestartValue> restartValues{};
-    // only serial, only CpGrid (for now)
-    if ( !isParallel && !needsReordering && (this->eclState_.getLgrs().size()>0) && (this->grid_.maxLevel()>0) ) {
-        // Level cells that appear on the leaf grid view get the data::Solution values from there.
-        // Other cells (i.e., parent cells that vanished due to refinement) get rubbish values for now.
-        // Only data::Solution is restricted to the level grids. Well, GroupAndNetwork, Aquifer are
-        // not modified in this method.
+    const bool haveLgrCellOutput = !needsReordering
+        && (this->eclState_.getLgrs().size() > 0)
+        // The leaf solution is split onto the per-level grids using a grid that
+        // carries the level hierarchy. That is the simulation grid in serial /
+        // the rank-interior path, but with refine-before-redistribute the
+        // distributed simulation grid is the flat leaf (maxLevel() == 0); there
+        // the I/O-rank reference grid (collectGrid_) holds the hierarchy and the
+        // parallel branch below splits on it instead. So accept either.
+        && ( (this->grid_.maxLevel() > 0)
+             || (this->collectGrid_ != nullptr && this->collectGrid_->maxLevel() > 0) );
+    // Split the leaf solution onto the per-level grids.  Level cells that appear
+    // on the leaf grid view get the data::Solution values from there; other
+    // cells (parent cells that vanished due to refinement) get rubbish values
+    // for now.  Only data::Solution is restricted to the level grids; well,
+    // group/network and aquifer data are not modified here.
+    if ( !isParallel && haveLgrCellOutput ) {
         Opm::Lgr::extractRestartValueLevelGrids<Grid>(this->grid_, restartValue, restartValues);
+    }
+    else if ( isParallel && haveLgrCellOutput
+              && this->collectOnIORank_.isIORank()
+              && (this->collectGrid_ != nullptr)
+              && (this->collectGrid_->maxLevel() > 0) ) {
+        // In parallel the leaf solution has been gathered onto the I/O rank's
+        // refined output grid (collectGrid_); split it there.
+        Opm::Lgr::extractRestartValueLevelGrids<EquilGrid>(*this->collectGrid_, restartValue, restartValues);
     }
     else {
         restartValues.reserve(1); // minimum size

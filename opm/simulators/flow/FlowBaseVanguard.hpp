@@ -308,7 +308,20 @@ protected:
             std::array<double,dimensionworld> centroid;
             const auto rank = this->gridView().comm().rank();
             const auto maxLevel = this->gridView().grid().maxLevel();
-            bool useEclipse = !isCpGrid || (isCpGrid && (rank == 0) && (maxLevel == 0));
+            // refine-before-redistribute: the distributed grid is the flat
+            // refined leaf (maxLevel()==0 but it carries refined cells).  Reading
+            // the centroid from the Eclipse input grid by Cartesian index would
+            // give every refined sibling the *parent* coarse-cell centre (siblings
+            // share a Cartesian index) - a wrong centroid that collapses the
+            // transmissibility distance vector and yields NaN where the parent
+            // cell has zero permeability.  Use the per-leaf-cell geometry centroid
+            // (LookUpCellCentroid) for such a leaf instead.
+            bool refinedFlatLeaf = false;
+            if constexpr (std::is_same_v<Grid, Dune::CpGrid>) {
+                refinedFlatLeaf = this->gridView().grid().leafHasParentCellIndices();
+            }
+            bool useEclipse = !isCpGrid ||
+                (isCpGrid && (rank == 0) && (maxLevel == 0) && !refinedFlatLeaf);
             if (useEclipse)
             {
                 centroid =  this->eclState().getInputGrid().getCellCenter(cartMapper.cartesianIndex(elemIdx));

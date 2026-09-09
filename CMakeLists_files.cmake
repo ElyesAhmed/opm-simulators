@@ -1012,6 +1012,9 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/flow/CollectDataOnIORank.hpp
   opm/simulators/flow/CollectDataOnIORank_impl.hpp
   opm/simulators/flow/CompositionalContainer.hpp
+  opm/simulators/flow/AdaptiveCpGridVanguard.hpp
+  opm/simulators/flow/AdaptiveStateTransfer.hpp
+  opm/simulators/flow/AdaptiveLgr.hpp
   opm/simulators/flow/ConvergenceOutputConfiguration.hpp
   opm/simulators/flow/countGlobalCells.hpp
   opm/simulators/flow/CpGridVanguard.hpp

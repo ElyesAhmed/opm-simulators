@@ -498,6 +498,23 @@ public:
                              "default tuning (--enable-tuning=false).");
             }
         }
+
+        // Opt-in LGR canary, post-init variant (OPM_LGR_POISON_REFINED_POSTINIT=1):
+        // the one-time materialization (CartesianIndexMapper -> globalCell ->
+        // props/EQUIL/trans/rock) is now complete, so poison the refined leaf
+        // cells' global Cartesian index here. If the *solve* still completes,
+        // it never re-derives a refined cell's property from globalCell() after
+        // init (the invariant we want); if it fails, it pinpoints a per-step
+        // dependency to replace later with an LGR-convertible index. Default off.
+        // poisonRefinedGlobalCell is a CpGrid-only LGR diagnostic; guard it at
+        // compile time so non-CpGrid backends (ALUGrid, polyhedral) still build.
+        if constexpr (requires { this->simulator().vanguard().grid().poisonRefinedGlobalCell(-1); }) {
+            if (std::getenv("OPM_LGR_POISON_REFINED_POSTINIT") != nullptr) {
+                this->simulator().vanguard().grid().poisonRefinedGlobalCell(-1);
+                OpmLog::info("\n[canary] post-finishInit: poisoned refined leaf cells' global "
+                             "Cartesian index; a clean solve proves no post-init re-derivation.");
+            }
+        }
     }
 
     /*!
@@ -515,14 +532,12 @@ public:
         // also updated.
         this->eclWriter().mutableOutputModule().invalidateLocalData();
 
-        // For CpGrid with LGRs, ecl/vtk output is not supported yet.
-        const auto& grid = this->simulator().vanguard().gridView().grid();
-
-        using GridType = std::remove_cv_t<std::remove_reference_t<decltype(grid)>>;
-        constexpr bool isCpGrid = std::is_same_v<GridType, Dune::CpGrid>;
-        if (!isCpGrid || (grid.maxLevel() == 0)) {
-            this->eclWriter_->evalSummaryState(!this->episodeWillBeOver());
-        }
+        // Evaluate the summary state for CpGrid with LGRs as well.  In serial
+        // the CollectDataOnIORank maps are the identity and the leaf-grid data
+        // is written directly; in parallel the name-keyed summary data (wells,
+        // groups, region values) is gathered to the I/O rank while cell-based
+        // restart/block output on refined grids is still being wired up.
+        this->eclWriter_->evalSummaryState(!this->episodeWillBeOver());
 
         {
             OPM_TIMEBLOCK(applyActions);
@@ -632,16 +647,10 @@ public:
         // the initial solution.
         this->thresholdPressures_.finishInit();
 
-        // For CpGrid with LGRs, ecl-output is not supported yet.
-        const auto& grid = this->simulator().vanguard().gridView().grid();
-
-        using GridType = std::remove_cv_t<std::remove_reference_t<decltype(grid)>>;
-        constexpr bool isCpGrid = std::is_same_v<GridType, Dune::CpGrid>;
-        // Skip - for now -  calculate the initial fip values for CpGrid with LGRs.
-        if (!isCpGrid || (grid.maxLevel() == 0)) {
-            if (this->simulator().episodeIndex() == 0) {
-                eclWriter_->writeInitialFIPReport();
-            }
+        // Compute the initial FIP report (also for CpGrid with LGRs) so the
+        // in-place reference values are available for the summary balance.
+        if (this->simulator().episodeIndex() == 0) {
+            eclWriter_->writeInitialFIPReport();
         }
     }
 

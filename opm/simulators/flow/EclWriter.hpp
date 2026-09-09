@@ -176,7 +176,29 @@ public:
                     ? &simulator.vanguard().equilCartesianIndexMapper()
                     : nullptr),
                    Parameters::Get<Parameters::EnableAsyncEclOutput>(),
-                   Parameters::Get<Parameters::EnableEsmry>())
+                   Parameters::Get<Parameters::EnableEsmry>(),
+                   // Refined I/O-rank reference grid for the cell-data gather
+                   // (equals equilGrid unless this is a parallel LGR run). Only
+                   // the CpGrid vanguard provides eclOutputGrid(); other grid
+                   // backends (ALUGrid, polyhedral) have no LGR refinement, so
+                   // fall back to the equilGrid -- guarded at compile time so
+                   // those backends still build.
+                   ((simulator.vanguard().grid().comm().rank() == 0)
+                    ? [&simulator]() -> const EquilGrid* {
+                          if constexpr (requires { simulator.vanguard().eclOutputGrid(); })
+                              return &simulator.vanguard().eclOutputGrid();
+                          else
+                              return &simulator.vanguard().equilGrid();
+                      }()
+                    : nullptr),
+                   ((simulator.vanguard().grid().comm().rank() == 0)
+                    ? [&simulator]() -> const Dune::CartesianIndexMapper<EquilGrid>* {
+                          if constexpr (requires { simulator.vanguard().eclOutputCartesianIndexMapper(); })
+                              return &simulator.vanguard().eclOutputCartesianIndexMapper();
+                          else
+                              return &simulator.vanguard().equilCartesianIndexMapper();
+                      }()
+                    : nullptr))
         , simulator_(simulator)
     {
 #if HAVE_MPI

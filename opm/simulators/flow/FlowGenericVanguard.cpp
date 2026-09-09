@@ -137,6 +137,7 @@ FlowGenericVanguard::FlowGenericVanguard(SimulationModelParams&& params)
 
     ownersFirst_ = Parameters::Get<Parameters::OwnerCellsFirst>();
     edgeConformal_ = Parameters::Get<Parameters::EdgeConformal>();
+    refineBeforeRedistribute_ = Parameters::Get<Parameters::RefineBeforeRedistribute>();
 
 #if HAVE_MPI
     numOverlap_ = Parameters::Get<Parameters::NumOverlap>();
@@ -486,6 +487,11 @@ void FlowGenericVanguard::registerParameters_()
         ("Order cells owned by rank before ghost/overlap cells.");
     Parameters::Register<Parameters::EdgeConformal>
         ("Edge conformal cornerpoint processing.");
+    Parameters::Register<Parameters::RefineBeforeRedistribute>
+        ("Experimental: for LGR decks, refine the global grid before load "
+         "balancing (refine-then-distribute) instead of the default "
+         "rank-interior refine-after-distribute. Only works in serial / "
+         "single-rank runs; the fork does not yet distribute a refined grid.");
 
 #if HAVE_MPI
     Parameters::Register<Parameters::AddCorners>
