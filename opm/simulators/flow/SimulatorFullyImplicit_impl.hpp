@@ -36,6 +36,7 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <limits>
 #include <sstream>
@@ -469,6 +470,10 @@ runStep(SimulatorTimer& timer)
             events.hasEvent(ScheduleEvents::WELL_STATUS_CHANGE);
         auto stepReport = adaptiveTimeStepping_->step(timer, *solver_, event, tuningUpdater);
         report_ += stepReport;
+        // Estimator-steered time-step control (--enable-aposteriori-timestep-control)
+        // is applied INSIDE AdaptiveTimeStepping's substep loop (see
+        // AdaptiveTimeStepping_impl.hpp) so it governs every substep, not only the
+        // first of each report period. Nothing to do here.
 #ifdef RESERVOIR_COUPLING_ENABLED
         // If the master ended its schedule first (e.g. an END keyword truncates the master
         // SCHEDULE), the slave received the terminate signal and disconnected its
