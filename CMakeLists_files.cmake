@@ -465,6 +465,10 @@ list (APPEND TEST_SOURCE_FILES
   tests/models/test_tasklets.cpp
   tests/models/test_tasklets_failure.cpp
   tests/test_ALQState.cpp
+  tests/test_adaptive_linear_solve_reduction.cpp
+  tests/test_aposteriori_balancing.cpp
+  tests/test_aposteriori_estimator_compile.cpp
+  tests/test_aposteriori_reconstruction.cpp
   tests/test_aquifergridutils.cpp
   tests/test_aqantrc_flow_keyword.cpp
   tests/test_blackoil_amg.cpp
@@ -989,6 +993,10 @@ list (APPEND PUBLIC_HEADER_FILES
   opm/simulators/flow/AluGridCartesianIndexMapper.hpp
   opm/simulators/flow/AluGridLevelCartesianIndexMapper.hpp
   opm/simulators/flow/AluGridVanguard.hpp
+  opm/simulators/flow/APosterioriBalancingCriteria.hpp
+  opm/simulators/flow/APosterioriReconstruction.hpp
+  opm/simulators/flow/APosterioriSpatialTemporalEstimator.hpp
+  opm/simulators/flow/AdaptiveLinearSolveReduction.hpp
   opm/simulators/flow/Banners.hpp
   opm/simulators/flow/BaseAquiferModel.hpp
   opm/simulators/flow/BioeffectsContainer.hpp

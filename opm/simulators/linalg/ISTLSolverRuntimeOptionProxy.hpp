@@ -132,6 +132,11 @@ public:
         return istlSolver_->solve(x);
     }
 
+    void setLinearSolveReduction(std::optional<double> reduction) override
+    {
+        istlSolver_->setLinearSolveReduction(reduction);
+    }
+
     int iterations() const override
     {
         return istlSolver_->iterations();

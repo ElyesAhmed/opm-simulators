@@ -99,6 +99,58 @@ add_test_compareECLFiles(
     spe1
 )
 
+# Inexact-Newton adaptive linear-solve tolerance must not change the converged
+# solution: run SPE1CASE2 with --adaptive-linear-solver-reduction=true and
+# compare against the *standard* reference. Only the linear iteration count
+# should differ.
+add_test_compareECLFiles(
+  CASENAME
+    spe12_adaptive_linsolve
+  FILENAME
+    SPE1CASE2
+  SIMULATOR
+    flow
+  DEV_SIMULATOR
+    flow_blackoil
+  ABS_TOL
+    ${abs_tol}
+  REL_TOL
+    ${coarse_rel_tol}
+  DIR
+    spe1
+  PREFIX
+    adaptiveLinSolve
+  TEST_ARGS
+    --adaptive-linear-solver-reduction=true
+)
+
+# The a posteriori tau^2-law dt override (--enable-aposteriori-timestep-control)
+# must actually reach AdaptiveTimeStepping, not just be computed and logged: on
+# an "easy" deck like SPE1 the built-in growth-factor cap absorbs both the
+# override and OPM's own heuristic identically, so that case alone cannot tell
+# the mechanism apart from a no-op. SPE9 has genuine convergence variability
+# (some report periods need several Newton iterations), giving the override
+# room to diverge from the standard trajectory -- which this test checks for.
+if(EXISTS ${OPM_TESTS_ROOT}/spe9/SPE9.DATA)
+  find_package(Python3 COMPONENTS Interpreter)
+  if(Python3_Interpreter_FOUND)
+    add_test(
+      NAME
+        aposteriori_timestep_adaptivity
+      COMMAND
+        ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_aposteriori_timestep_adaptivity.py
+        --exe $<TARGET_FILE:flow_blackoil>
+        --deck ${OPM_TESTS_ROOT}/spe9/SPE9.DATA
+        --workdir ${BASE_RESULT_PATH}/aposteriori_timestep_adaptivity
+    )
+    set_tests_properties(aposteriori_timestep_adaptivity PROPERTIES
+      TIMEOUT 600
+      LABELS "aposteriori"
+    )
+  endif()
+endif()
+
 add_test_compareECLFiles(
   CASENAME
     spe1case1_water

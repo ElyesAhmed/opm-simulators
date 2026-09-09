@@ -21,6 +21,8 @@
 #include <opm/simulators/linalg/FlowLinearSolverParameters.hpp>
 #include <opm/simulators/linalg/PropertyTree.hpp>
 
+#include <optional>
+
 namespace Opm
 {
 
@@ -148,6 +150,20 @@ public:
      * - setMatrix(const SparseMatrixAdapter& M)
      */
     virtual bool solve(Vector& x) = 0;
+
+    /**
+     * \brief Override the relative residual reduction used by the next solve().
+     *
+     * Passing \c std::nullopt (the default state) restores the statically
+     * configured tolerance.  Used by the inexact-Newton adaptive linear
+     * tolerance.  The default implementation is a no-op, so back-ends that
+     * cannot honour a runtime tolerance (e.g. some GPU solvers) simply ignore
+     * it and keep their configured tolerance.
+     *
+     * \param reduction  The relative reduction target, or \c std::nullopt.
+     */
+    virtual void setLinearSolveReduction(std::optional<double> /*reduction*/)
+    {}
 
     /**
      * \brief Get the number of iterations used in the last solve.
