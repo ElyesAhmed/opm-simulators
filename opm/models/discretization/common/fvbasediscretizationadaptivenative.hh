@@ -137,9 +137,10 @@ public:
         grid.postAdapt();
 
         // --- (5) rebuild the vanguard's Cartesian machinery -----------------
-        // NB: the leaf grid view auto-reflects grid.adapt() -- do NOT recreate
-        // it (Transmissibility etc. hold a reference to it).
+        // rebuildAfterAdapt refreshes the vanguard leaf grid view IN PLACE
+        // (object identity kept for Transmissibility's reference).
         this->simulator_.vanguard().rebuildAfterAdapt();
+        this->gridView_ = this->simulator_.gridView();
         this->elementMapper_.update(this->gridView_);
         this->vertexMapper_.update(this->gridView_);
 
