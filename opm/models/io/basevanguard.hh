@@ -39,6 +39,7 @@
 #endif
 
 #include <memory>
+#include <new>
 
 namespace Opm {
 
@@ -144,6 +145,23 @@ protected:
         {
             gridView_ = std::make_unique<GridView>(asImp_().grid().leafGridView());
         }
+    }
+
+    //! Reconstruct the leaf grid view AT THE SAME ADDRESS after an in-place
+    //! grid.adapt(): destroy the old GridView and copy-construct a fresh one in
+    //! its storage. Keeps the object identity (so long-lived const-references
+    //! stay valid) while giving it fresh internal iterator state -- an in-place
+    //! copy-ASSIGNMENT is not enough for dune-ALUGrid. Only used by grids that
+    //! adapt without a full vanguard rebuild.
+    void reconstructGridViewInPlace_()
+    {
+        if (!gridView_) {
+            updateGridView_();
+            return;
+        }
+        GridView* p = gridView_.get();
+        p->~GridView();
+        ::new (static_cast<void*>(p)) GridView(asImp_().grid().leafGridView());
     }
 
 private:
