@@ -24,6 +24,7 @@
 #include <opm/simulators/flow/FlowMain.hpp>
 #include <opm/simulators/flow/Main.hpp>
 #include <opm/simulators/flow/AdaptiveCpGridVanguard.hpp>
+#include <opm/simulators/flow/AdaptiveLgr.hpp>
 #include <opm/simulators/flow/AdaptiveRefinementProtection.hpp>
 #include <opm/simulators/flow/AdaptiveStateTransfer.hpp>
 #include <opm/simulators/flow/WellFingerprint.hpp>
@@ -39,6 +40,12 @@
 #include <opm/models/blackoil/blackoillocalresidualtpfa.hh>
 #include <opm/models/discretization/common/tpfalinearizer.hh>
 
+#include <dune/grid/common/mcmgmapper.hh>
+#include <dune/grid/common/partitionset.hh>
+#include <dune/grid/common/rangegenerators.hh>
+
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -47,6 +54,8 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 namespace Opm::Parameters {
@@ -268,127 +277,116 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
         // transaction, but "validate the checkable part before destroy").
         auto preflightSpec = [&](const std::string& spec) -> bool {
             auto* sim = flowMain->getSimulatorPtr();
-            const auto& mapper = sim->vanguard().cartesianIndexMapper();
-            const auto& gdims = mapper.cartesianDimensions();
+            const auto& gdims = sim->vanguard().cartesianIndexMapper().cartesianDimensions();
             const long NXg = gdims[0], NYg = gdims[1], NZg = gdims[2];
 
-            // SAME protected set the estimator marks against
-            // (AdaptiveRefinementProtection.hpp): well completions + future
-            // connections + per-vertical-well k-spans + exact SOURCE cells +
-            // optional OPM_APOST_PROTECT_HALO dilation.
+            // (1) grammar + subdivision -- the SAME parser the grid builder uses
+            // (AdaptiveLgr.hpp::parseAdaptiveLgrSpec), not a second copy. Typed
+            // boxes: startIJK 0-based inclusive, endIJK 0-based EXCLUSIVE,
+            // cellsPerDim = per-parent factor.
+            std::vector<Opm::AdaptiveLgrBox> boxes;
+            try {
+                boxes = Opm::parseAdaptiveLgrSpec(spec);
+            } catch (const std::exception& e) {
+                OpmLog::error(std::string("preflight: ") + e.what());
+                return false;
+            }
+            if (boxes.empty()) {
+                OpmLog::error("preflight: empty refinement spec.");
+                return false;
+            }
+
+            // (2) shared protected set (AdaptiveRefinementProtection.hpp)
             int phalo = 0;
             if (const char* hs = std::getenv("OPM_APOST_PROTECT_HALO"))
                 phalo = std::max(0, std::atoi(hs));
             const auto protVec = buildProtectedRefinementCells(
                 sim->vanguard().schedule(),
-                {static_cast<int>(NXg), static_cast<int>(NYg), static_cast<int>(NZg)},
-                phalo);   // ascending
+                {static_cast<int>(NXg), static_cast<int>(NYg), static_cast<int>(NZg)}, phalo);
             const auto isProt = [&](long i, long j, long k) {
                 return std::binary_search(protVec.begin(), protVec.end(),
                     static_cast<int>((k * NYg + j) * NXg + i));
             };
 
-            // ---- strict tokeniser: every token must be a COMPLETE signed
-            // integer; a partial token ("2x"), a stray separator run at the
-            // end, or a wrong field count all fail explicitly.
-            std::vector<std::array<long, 9>> boxes;   // i1 i2 j1 j2 k1 k2 fi fj fk
-            long long refinedLeaf = 0, coarseRefined = 0;
-            std::size_t p = 0;
-            const auto skipSep = [&]() { while (p < spec.size()
-                && (spec[p] == ' ' || spec[p] == '\t' || spec[p] == ';')) ++p; };
-            const auto nextTok = [&](long& out) -> int {   // 1 ok, 0 end, -1 bad
-                skipSep();
-                if (p >= spec.size()) return 0;
-                std::size_t q = p;
-                while (q < spec.size() && spec[q] != ' ' && spec[q] != '\t'
-                       && spec[q] != ';') ++q;
-                const std::string tok = spec.substr(p, q - p);
-                std::size_t used = 0;
-                try {
-                    out = std::stol(tok, &used);
-                } catch (...) { return -1; }
-                if (used != tok.size()) return -1;   // "2x", "3.5", "--"
-                p = q;
-                return 1;
-            };
-            long v[9];
-            for (;;) {
-                const int r0 = nextTok(v[0]);
-                if (r0 == 0) break;
-                if (r0 < 0) {
-                    OpmLog::error("preflight: malformed token in refinement spec.");
-                    return false;
-                }
-                for (int t = 1; t < 9; ++t) {
-                    if (nextTok(v[t]) != 1) {
-                        OpmLog::error("preflight: refinement box has fewer than 9 "
-                                      "integer fields.");
-                        return false;
-                    }
-                }
-                const long i1 = v[0] - 1, i2 = v[1] - 1, j1 = v[2] - 1, j2 = v[3] - 1;
-                const long k1 = v[4] - 1, k2 = v[5] - 1;
-                const long nx = v[6], ny = v[7], nz = v[8];
+            long long coarseRefined = 0, refinedLeaf = 0;
+            for (std::size_t bi = 0; bi < boxes.size(); ++bi) {
+                const auto& b = boxes[bi];
+                const long i1 = b.startIJK[0], j1 = b.startIJK[1], k1 = b.startIJK[2];
+                const long i2 = b.endIJK[0] - 1, j2 = b.endIJK[1] - 1, k2 = b.endIJK[2] - 1;
+
                 if (i1 < 0 || j1 < 0 || k1 < 0 || i2 >= NXg || j2 >= NYg || k2 >= NZg
                     || i2 < i1 || j2 < j1 || k2 < k1) {
-                    OpmLog::error("preflight: refinement box outside the coarse grid.");
+                    OpmLog::error(fmt::format("preflight: box {} outside the coarse grid.", b.name));
                     return false;
                 }
-                const long ci = i2 - i1 + 1, cj = j2 - j1 + 1, ck = k2 - k1 + 1;
-                if (nx <= 0 || ny <= 0 || nz <= 0
-                    || nx % ci != 0 || ny % cj != 0 || nz % ck != 0) {
-                    OpmLog::error("preflight: box subdivision is not a positive integer "
-                                  "multiple of the parent cell count (non-conforming).");
-                    return false;
-                }
-                // per-parent subdivision factor for this box (uniform)
-                const long fi = nx / ci, fj = ny / cj, fk = nz / ck;
                 for (long k = k1; k <= k2; ++k)
                 for (long j = j1; j <= j2; ++j)
                 for (long i = i1; i <= i2; ++i)
                     if (isProt(i, j, k)) {
-                        OpmLog::error("preflight: refinement box enters a protected "
-                                      "cell (well completion / trajectory span / "
-                                      "SOURCE / halo). Refusing.");
+                        OpmLog::error(fmt::format("preflight: box {} enters a protected cell "
+                            "(well completion / same-well k-span / SOURCE / halo) at "
+                            "({},{},{}). Refusing.", b.name, i + 1, j + 1, k + 1));
                         return false;
                     }
-                for (const auto& b : boxes) {
-                    const bool ov = i1 <= b[1] && b[0] <= i2 && j1 <= b[3] && b[2] <= j2
-                                 && k1 <= b[5] && b[4] <= k2;
-                    if (ov) {
-                        OpmLog::error("preflight: refinement boxes overlap.");
+                // (3) box-pair rules -- exactly the ConformingBlockBuilder logic:
+                //  * volumetric overlap (all 3 dims overlap) is rejected;
+                //  * boxes that interact (touch-or-overlap in EVERY dim) must
+                //    have equal cellsPerDim in each dim where they OVERLAP
+                //    (touch-only dims are unconstrained).
+                for (std::size_t bj = 0; bj < bi; ++bj) {
+                    const auto& a = boxes[bj];
+                    bool interacts = true, volOverlap = true;
+                    bool ovDim[3];
+                    for (int c = 0; c < 3; ++c) {
+                        const bool gap = a.endIJK[c] <= b.startIJK[c]
+                                      || b.endIJK[c] <= a.startIJK[c];
+                        // endIJK exclusive: "touch" is endIJK[c] == startIJK[c].
+                        const bool touchOrOverlap =
+                            a.endIJK[c] >= b.startIJK[c] && b.endIJK[c] >= a.startIJK[c];
+                        ovDim[c] = a.startIJK[c] < b.endIJK[c]
+                                && b.startIJK[c] < a.endIJK[c];
+                        static_cast<void>(gap);
+                        interacts = interacts && touchOrOverlap;
+                        volOverlap = volOverlap && ovDim[c];
+                    }
+                    if (volOverlap) {
+                        OpmLog::error(fmt::format("preflight: boxes {} and {} overlap.",
+                                                  a.name, b.name));
                         return false;
                     }
-                    // face-adjacent boxes must share the per-parent subdivision
-                    // factor along every axis, else the touching coarse/fine
-                    // interface is non-conforming.
-                    const bool ti = (i2 + 1 == b[0] || b[1] + 1 == i1)
-                        && !(j2 < b[2] || b[3] < j1) && !(k2 < b[4] || b[5] < k1);
-                    const bool tj = (j2 + 1 == b[2] || b[3] + 1 == j1)
-                        && !(i2 < b[0] || b[1] < i1) && !(k2 < b[4] || b[5] < k1);
-                    const bool tk = (k2 + 1 == b[4] || b[5] + 1 == k1)
-                        && !(i2 < b[0] || b[1] < i1) && !(j2 < b[2] || b[3] < j1);
-                    if ((ti || tj || tk)
-                        && (fi != b[6] || fj != b[7] || fk != b[8])) {
-                        OpmLog::error("preflight: face-adjacent refinement boxes have "
-                                      "different subdivision factors (non-conforming "
-                                      "shared interface).");
-                        return false;
-                    }
+                    if (interacts)
+                        for (int c = 0; c < 3; ++c)
+                            if (ovDim[c] && a.cellsPerDim[c] != b.cellsPerDim[c]) {
+                                OpmLog::error(fmt::format(
+                                    "preflight: boxes {} and {} meet with different "
+                                    "subdivision factors ({} vs {}) in direction {} "
+                                    "-- non-conforming shared interface.",
+                                    a.name, b.name, a.cellsPerDim[c], b.cellsPerDim[c], c));
+                                return false;
+                            }
                 }
-                boxes.push_back({i1, i2, j1, j2, k1, k2, fi, fj, fk});
+                const long ci = i2 - i1 + 1, cj = j2 - j1 + 1, ck = k2 - k1 + 1;
                 coarseRefined += ci * cj * ck;
-                refinedLeaf += nx * ny * nz;
+                refinedLeaf += static_cast<long long>(ci) * cj * ck
+                    * b.cellsPerDim[0] * b.cellsPerDim[1] * b.cellsPerDim[2];
             }
+
+            // (4) projected-leaf budget -- ENFORCED here, not just logged.
             const long long base = NXg * NYg * NZg;
             const long long totalLeaf = base - coarseRefined + refinedLeaf;
-            OpmLog::info("preflight OK  |  boxes " + std::to_string(boxes.size())
-                + "  base active " + std::to_string(base)
-                + "  marked parents " + std::to_string(coarseRefined)
-                + "  child cells " + std::to_string(refinedLeaf)
-                + "  -> final leaf ~" + std::to_string(totalLeaf)
-                + "  (subject to ACTNUM).  No box enters a protected cell; "
-                  "all subdivisions conforming.");
+            if (const char* mx = std::getenv("OPM_APOST_MAX_LEAF_CELLS")) {
+                const long long lim = std::atoll(mx);
+                if (lim > 0 && totalLeaf > lim) {
+                    OpmLog::error(fmt::format("preflight: projected leaf grid {} exceeds "
+                        "OPM_APOST_MAX_LEAF_CELLS={}.", totalLeaf, lim));
+                    return false;
+                }
+            }
+            OpmLog::info(fmt::format(
+                "preflight OK  |  boxes {}  base active {}  marked parents {}  "
+                "child cells {}  -> final leaf ~{}  (subject to ACTNUM).  "
+                "No box enters a protected cell; interfaces conforming.",
+                boxes.size(), base, coarseRefined, refinedLeaf, totalLeaf));
             return true;
         };
 
@@ -508,17 +506,32 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
                     OpmLog::warning("OPM_APOST_VALIDATE=warn: continuing despite a "
                                     "per-parent / well-fingerprint failure.");
 
-                // Every SOURCE coordinate must still resolve to exactly ONE
-                // interior leaf cell (it is protected from refinement, so it
-                // must stay coarse -- otherwise FlowProblemBlackoil would apply
-                // the deck rate once per child, review 2026-09-10).
-                for (long g : srcCells) {
-                    const int comp = sim2->vanguard().compressedIndexForInterior(
-                        static_cast<int>(g));
-                    if (comp < 0) {
-                        OpmLog::error("SOURCE cell (global " + std::to_string(g)
-                            + ") has no interior leaf cell after rebuild.");
-                        ok = false;
+                // Every SOURCE coordinate must resolve to EXACTLY ONE interior
+                // leaf cell after the rebuild -- it is protected, so it must
+                // stay coarse; more than one leaf means the source was refined
+                // and FlowProblemBlackoil would apply the deck rate per child
+                // (reviews 2026-09-10: a single compressedIndexForInterior()
+                // lookup proves existence, not uniqueness).
+                if (!srcCells.empty()) {
+                    std::unordered_map<long, int> leafPerSource;
+                    const auto& cim2 = sim2->vanguard().cartesianIndexMapper();
+                    const auto& gv2 = sim2->vanguard().gridView();
+                    auto mapper2 = Dune::MultipleCodimMultipleGeomTypeMapper<
+                        std::decay_t<decltype(gv2)>>(gv2, Dune::mcmgElementLayout());
+                    for (const auto& e : elements(gv2, Dune::Partitions::interior)) {
+                        const long cart = static_cast<long>(
+                            cim2.cartesianIndex(mapper2.index(e)));
+                        if (std::binary_search(srcCells.begin(), srcCells.end(), cart))
+                            ++leafPerSource[cart];
+                    }
+                    for (long g : srcCells) {
+                        const int n = leafPerSource.count(g) ? leafPerSource[g] : 0;
+                        if (n != 1) {
+                            OpmLog::error(fmt::format(
+                                "SOURCE cell (global {}) maps to {} interior leaf "
+                                "cell(s) after rebuild (must be exactly 1).", g, n));
+                            ok = false;
+                        }
                     }
                 }
             } catch (const std::exception& e) {
