@@ -178,6 +178,19 @@ public:
     void update(bool global, TransUpdateQuantities update_quantities = TransUpdateQuantities::All,
                 const std::function<unsigned int(unsigned int)>& map = {}, bool applyNncMultRegT = false);
 
+    /*!
+     * \brief Replace the cell-centroid provider and drop the centroid cache.
+     *
+     * Needed after an in-place grid adaptation: the provider returned by
+     * FlowBaseVanguard::cellCentroids_() captures the CartesianIndexMapper BY
+     * VALUE, so the one stored at construction is sized to the pre-adapt grid.
+     */
+    void setCentroids(std::function<std::array<double,dimWorld>(int)> centroids)
+    {
+        centroids_ = std::move(centroids);
+        centroids_cache_.clear();
+    }
+
 protected:
     void updateFromEclState_(bool global);
 
