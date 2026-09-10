@@ -95,23 +95,44 @@ captureWellFingerprint(const Schedule& schedule, int episode)
 //! well status; CF / Kh / depth within an absolute+relative tolerance. A
 //! non-finite value fails explicitly (NaN comparisons are all false, so the
 //! old `s>0 ? ... : true` could accept them -- reviews 2026-09-10).
+//!
+//! CF (SI transmissibility, ~1e-13..1e-11 m^3) and Kh (SI perm.thickness,
+//! ~1e-14..1e-12 m^3) need an absolute floor, not just a relative tolerance:
+//! a legitimately-unchanged completion recomputed through a different code
+//! path differs at FP round-off, which is many ULP on a ~1e-12 magnitude.
+//! The floors below are ~5 orders under a typical value (a difference that
+//! small is a zero-flow connection); the relative tolerance still catches a
+//! real change. All tolerances must be finite and non-negative.
 inline bool
 verifyWellFingerprint(const std::vector<WellFingerprint>& before,
                       const std::vector<WellFingerprint>& after,
                       double relTolCFKh = 1e-9,
-                      bool throwOnFail = false)
+                      bool throwOnFail = false,
+                      double absTolCF = 1.0e-18,
+                      double absTolKh = 1.0e-19,
+                      double absTolDepth = 1.0e-6)
 {
     const auto find = [](const std::vector<WellFingerprint>& v, const std::string& n)
         -> const WellFingerprint* {
         for (const auto& f : v) if (f.name == n) return &f;
         return nullptr;
     };
+
+    if (!(std::isfinite(relTolCFKh) && relTolCFKh >= 0.0)
+        || !(std::isfinite(absTolCF) && absTolCF >= 0.0)
+        || !(std::isfinite(absTolKh) && absTolKh >= 0.0)
+        || !(std::isfinite(absTolDepth) && absTolDepth >= 0.0)) {
+        OpmLog::error("verifyWellFingerprint: non-finite / negative tolerance");
+        if (throwOnFail)
+            throw std::runtime_error("dynamic refinement: bad well-fingerprint tolerance");
+        return false;
+    }
+
     // |a-b| <= eabs + erel*max(|a|,|b|); non-finite -> not close.
     const auto close = [&](double a, double b, double eabs) {
         if (!std::isfinite(a) || !std::isfinite(b)) return false;
         return std::abs(a - b) <= eabs + relTolCFKh * std::max(std::abs(a), std::abs(b));
     };
-    const auto reltol = [&](double a, double b) { return close(a, b, 0.0); };
 
     bool ok = true;
     std::string msg = "well fingerprint (candidate vs pre-rebuild):";
@@ -142,9 +163,10 @@ verifyWellFingerprint(const std::vector<WellFingerprint>& before,
             if (ac.lgrLevel   != bc.lgrLevel)   d += fmt::format(" lgr {}->{}", bc.lgrLevel, ac.lgrLevel);
             if (ac.state      != bc.state)      d += fmt::format(" state {}->{}", bc.state, ac.state);
             if (ac.dir        != bc.dir)        d += fmt::format(" dir {}->{}", bc.dir, ac.dir);
-            if (!reltol(ac.CF, bc.CF))          d += fmt::format(" CF {:.6e}->{:.6e}", bc.CF, ac.CF);
-            if (!reltol(ac.Kh, bc.Kh))          d += fmt::format(" Kh {:.6e}->{:.6e}", bc.Kh, ac.Kh);
-            if (!close(ac.depth, bc.depth, 1e-6)) d += fmt::format(" depth {:.4f}->{:.4f}", bc.depth, ac.depth);
+            if (!close(ac.CF, bc.CF, absTolCF)) d += fmt::format(" CF {:.6e}->{:.6e}", bc.CF, ac.CF);
+            if (!close(ac.Kh, bc.Kh, absTolKh)) d += fmt::format(" Kh {:.6e}->{:.6e}", bc.Kh, ac.Kh);
+            if (!close(ac.depth, bc.depth, absTolDepth))
+                d += fmt::format(" depth {:.4f}->{:.4f}", bc.depth, ac.depth);
             if (!d.empty()) { msg += fmt::format("\n  {} conn[{}]:{}", b.name, c, d); ok = false; }
         }
     }
