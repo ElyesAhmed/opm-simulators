@@ -334,6 +334,19 @@ public:
         cartesianIndexMapper_->updateCartesianIndex(nc);
         cartesianCellId_ = std::move(nc);
 
+        // The equil-grid <-> simulation-grid reorder is only defined for the
+        // initial grid. After an in-place adapt every downstream per-cell array
+        // (dofTotalVolume_, referencePorosity_, the transferred solution) is
+        // leaf-indexed consistently, so collapse the reorder to the identity,
+        // sized to the new leaf count.
+        const std::size_t newN = em.size();
+        ordering_.resize(newN);
+        equilGridToGrid_.resize(newN);
+        for (std::size_t i = 0; i < newN; ++i) {
+            ordering_[i] = static_cast<unsigned int>(i);
+            equilGridToGrid_[i] = static_cast<unsigned int>(i);
+        }
+
         this->updateCartesianToCompressedMapping_();
         this->updateCellDepths_();
         this->updateCellThickness_();
