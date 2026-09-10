@@ -290,6 +290,20 @@ public:
     void setRestoreStateHook(std::function<void(int)> hook)
     { restoreStateHook_ = std::move(hook); }
 
+    /** \brief The adaptive time stepper's current suggested next substep size
+     * (SI, seconds); -1 when there is no adaptive stepper. Used by the dynamic
+     * grid-adaptation driver to carry the timestep rhythm across a world
+     * rebuild -- a fresh init otherwise restarts the substep ramp from TSINIT,
+     * which changes the post-rebuild time discretisation and its temporal
+     * error. */
+    double suggestedNextStep() const
+    { return adaptiveTimeStepping_ ? adaptiveTimeStepping_->suggestedNextStep() : -1.0; }
+
+    /** \brief Seed the adaptive time stepper's suggested next substep size
+     * (SI, seconds). No-op without an adaptive stepper or for dt <= 0. */
+    void setSuggestedNextStep(double dt)
+    { if (adaptiveTimeStepping_ && dt > 0.0) adaptiveTimeStepping_->setSuggestedNextStep(dt); }
+
     /** \brief Stop the timers and emit the final OPMRST output.
      *
      * Called by \ref run after the report-step loop finishes.  Stops

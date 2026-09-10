@@ -27,6 +27,8 @@
 #include <opm/simulators/flow/AdaptiveStateTransfer.hpp>
 #include <opm/simulators/flow/python/PyMain.hpp>
 
+#include <opm/common/OpmLog/OpmLog.hpp>
+
 #include <opm/input/eclipse/Schedule/Action/State.hpp>
 #include <opm/input/eclipse/Schedule/UDQ/UDQState.hpp>
 #include <opm/input/eclipse/Schedule/Well/WellTestState.hpp>
@@ -35,8 +37,12 @@
 #include <opm/models/blackoil/blackoillocalresidualtpfa.hh>
 #include <opm/models/discretization/common/tpfalinearizer.hh>
 
+#include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <memory>
+#include <string>
 
 namespace Opm::Parameters {
 
@@ -49,6 +55,13 @@ struct AdaptiveRebuildStep { static constexpr int value = -1; };
 //! \brief Refinement spec (same CARFIN-style syntax as --adaptive-lgr) that
 //! replaces the mark set at the rebuild step. Empty = keep the initial spec.
 struct AdaptiveRebuildLgr { static constexpr auto value = ""; };
+
+//! \brief Algorithm 6.1 h-adaptivity: let the a posteriori spatial estimator
+//! drive the refinement. After every report step the estimator's marked-REFINE
+//! bounding box (apost_refine_request.txt) is read; when it changes, the
+//! simulator world is rebuilt on that box. Requires the --enable-aposteriori-*
+//! estimator to be active. -1 disables; N = act only from report step N on.
+struct AdaptiveEstimatorDriven { static constexpr int value = -1; };
 
 } // namespace Opm::Parameters
 
@@ -103,6 +116,10 @@ public:
         Parameters::Register<Parameters::AdaptiveRebuildLgr>(
             "Refinement spec applied at the rebuild step (CARFIN-style, see "
             "--adaptive-lgr); empty keeps the initial spec.");
+        Parameters::Register<Parameters::AdaptiveEstimatorDriven>(
+            "Algorithm 6.1 h-adaptivity: from this report step on, let the a "
+            "posteriori spatial estimator's marked-REFINE box drive grid "
+            "rebuilds (requires --enable-aposteriori-*); -1 disables.");
     }
 
     //! Mark-set override for the rebuild (process-wide: the driver sets it
@@ -214,44 +231,174 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
     int status = flowMain->executeInitStep();
     if (status == EXIT_SUCCESS) {
         const int rebuildStep = Parameters::Get<Parameters::AdaptiveRebuildStep>();
+        const int estDrivenFrom = Parameters::Get<Parameters::AdaptiveEstimatorDriven>();
+
+        // Algorithm 6.1 h-adaptivity: the estimator publishes its marked-REFINE
+        // box to this file on every converged report step; we read it back at
+        // the next step boundary.
+        const std::string reqPath = "apost_refine_request.txt";
+        if (estDrivenFrom >= 0) {
+            ::setenv("OPM_APOST_REFINE_REQUEST", reqPath.c_str(), /*overwrite=*/1);
+            std::remove(reqPath.c_str());   // drop any stale request from a prior run
+        }
+        auto readRefineRequest = [&reqPath]() -> std::string {
+            std::ifstream is(reqPath);
+            std::string line;
+            if (is && std::getline(is, line)) {
+                const auto b = line.find_first_not_of(" \t\r\n");
+                if (b == std::string::npos) return {};
+                const auto e = line.find_last_not_of(" \t\r\n");
+                return line.substr(b, e - b + 1);
+            }
+            return {};
+        };
+        // The spec the current grid was built on (empty = unrefined base run).
+        std::string appliedSpec = Parameters::Get<Parameters::AdaptiveLgr>();
+
+        // Tear down world #1, rebuild it refined on `spec`, remap state.
+        // Returns false on ANY refusal/failure; every such path sets `status`
+        // to a non-zero exit code so the run is not reported as a success.
+        auto rebuildOn = [&](const std::string& spec, int step) -> bool {
+            auto* sim = flowMain->getSimulatorPtr();
+
+            // Path-dependent physics is NOT carried across the rebuild yet.
+            // Guard every unsupported history-dependent feature and refuse
+            // BEFORE the old simulator is touched (Copilot/ChatGPT review
+            // 2026-09-10: an unsupported deck must fail, not silently shorten).
+            const char* unsupported = nullptr;
+            if (sim->problem().materialLawManager()->hysteresisConfig().enableHysteresis())
+                unsupported = "saturation-function hysteresis";
+            else if (sim->vanguard().eclState().aquifer().active())
+                unsupported = "analytic/numeric aquifers";
+            if (unsupported) {
+                OpmLog::error(std::string("flow_blackoil_adaptive_dynamic: the deck uses ")
+                    + unsupported + " -- its path-dependent state is not transferred "
+                    "across a grid rebuild. Refusing the rebuild (run fails).");
+                status = EXIT_FAILURE;
+                return false;
+            }
+
+            const auto state = extractAdaptiveState<TypeTag>(*sim);
+            const auto invBefore = blackOilComponentInventory<TypeTag>(*sim);
+            const Action::State actionState = sim->vanguard().actionState();
+            const UDQState udqState = sim->vanguard().udqState();
+            // Carry the adaptive time stepper's rhythm across the rebuild: a
+            // fresh init restarts the substep ramp from TSINIT, which changes
+            // the post-rebuild time discretisation and its temporal error (an
+            // identity rebuild otherwise differs from the continuous run by
+            // ~10% in the well rates purely from this).
+            const double nextDt = flowMain->getStepDriverPtr()
+                ? flowMain->getStepDriverPtr()->suggestedNextStep() : -1.0;
+
+            AdaptiveDynamicVanguard<TypeTag>::rebuildSpecOverride =
+                spec.empty() ? std::string{"none"} : spec;
+
+            // NOTE (review 2026-09-10): this is NOT yet a transaction -- the old
+            // simulator is destroyed here, before the candidate is validated.
+            // A failed candidate init / inventory check below cannot roll back
+            // to the coarse run; it can only fail the whole run cleanly.
+            flowMain.reset();
+            try {
+                flowMain = mainObject->rebuildFlowBlackoil(snapshot, actionState, udqState);
+                status = flowMain->executeInitStep();
+            } catch (const std::exception& e) {
+                OpmLog::error(std::string("flow_blackoil_adaptive_dynamic: candidate "
+                    "simulator construction failed: ") + e.what());
+                status = EXIT_FAILURE;
+                return false;
+            }
+            if (status != EXIT_SUCCESS) {
+                return false;
+            }
+            auto* sim2 = flowMain->getSimulatorPtr();
+
+            bool ok = false;
+            try {
+                const auto sol = remapAdaptiveState<TypeTag>(state, *sim2);
+                injectAdaptiveState<TypeTag>(*sim2, sol, step);
+
+                // Strict conservativeness gate: constant intensive prolongation
+                // must preserve every black-oil component inventory (child pore
+                // volumes partition the parent's). tol must be finite & > 0.
+                double invTol = 1e-10;
+                if (const char* s = std::getenv("OPM_APOST_INVENTORY_TOL")) {
+                    const double v = std::atof(s);
+                    if (std::isfinite(v) && v > 0.0) invTol = v;
+                }
+                const auto invAfter = blackOilComponentInventory<TypeTag>(*sim2);
+                ok = verifyComponentInventory(invBefore, invAfter, invTol,
+                                              /*throwOnFail=*/false);
+            } catch (const std::exception& e) {
+                OpmLog::error(std::string("flow_blackoil_adaptive_dynamic: state "
+                    "remap/inject failed: ") + e.what());
+                ok = false;
+            }
+            if (!ok) {
+                OpmLog::error("flow_blackoil_adaptive_dynamic: rebuild rejected "
+                              "(state transfer not validated). Run fails.");
+                status = EXIT_FAILURE;
+                return false;
+            }
+
+            flowMain->getSimTimer()->setCurrentStepNum(step);
+            if (flowMain->getStepDriverPtr()) {
+                flowMain->getStepDriverPtr()->setSuggestedNextStep(nextDt);
+            }
+            appliedSpec = spec;
+            return true;
+        };
 
         // One executeStep() per report step. runStep returns a continue flag
         // (false = schedule EXIT), not an exit status; errors throw.
+        //
+        // Phase-1 limitation: the state-transfer machinery snapshots the parsed
+        // model once, but Schedule::synthesizeWellTrajectories() mutates the
+        // shared schedule in place during the first refined build, so a SECOND
+        // teardown re-resolves already-synthetic trajectories against yet
+        // another leaf and wells fall off the grid. Until the snapshot also
+        // deep-copies the schedule, cap estimator-driven adaptation at one
+        // rebuild -- enough to demonstrate Algorithm 6.1's spatial marking
+        // driving a real grid change.
+        // ONE guard for every refined-grid construction, whatever triggered it
+        // (--adaptive-rebuild-step, or the estimator). The state-transfer
+        // snapshot is taken once and Schedule::synthesizeWellTrajectories()
+        // mutates the shared schedule in place on the first refined build, so a
+        // second teardown re-resolves already-synthetic trajectories against
+        // another leaf and wells fall off the grid. Serial only: the marking is
+        // rank-local and there is no global Dörfler / gather / canonical spec.
+        if ((estDrivenFrom >= 0 || rebuildStep >= 0)
+            && flowMain->getSimulatorPtr()->gridView().comm().size() > 1) {
+            OpmLog::error("flow_blackoil_adaptive_dynamic: mid-run grid adaptation "
+                          "(--adaptive-rebuild-step / --adaptive-estimator-driven) "
+                          "is serial-only. Run with one MPI rank.");
+            return EXIT_FAILURE;
+        }
+        bool worldRebuilt = false;
         bool continueLooping = true;
         while (continueLooping && !flowMain->getSimTimer()->done()) {
             const int step = flowMain->getSimTimer()->currentStepNum();
-            if (step == rebuildStep) {
-                // ---- the adaptation event (S2-S5, identity mark set) ----
-                auto* sim = flowMain->getSimulatorPtr();
 
-                // S3: extract per-cell state keyed by stable cell id, and
-                // carry over the evolving schedule-state objects.
-                const auto state = extractAdaptiveState<TypeTag>(*sim);
-                const Action::State actionState = sim->vanguard().actionState();
-                const UDQState udqState = sim->vanguard().udqState();
-
-                // S0b (minimal): a new mark set for world #2, if given.
+            if (!worldRebuilt && step == rebuildStep) {
+                // ---- fixed-schedule adaptation event (S2-S5) ----
                 const std::string newSpec =
                     Parameters::Get<Parameters::AdaptiveRebuildLgr>();
-                if (!newSpec.empty()) {
-                    AdaptiveDynamicVanguard<TypeTag>::rebuildSpecOverride = newSpec;
-                }
-
-                // S2: tear down world #1, build world #2 from the parsed
-                // model description (vanguard refines during construction).
-                flowMain.reset();
-                flowMain = mainObject->rebuildFlowBlackoil(snapshot, actionState, udqState);
-                status = flowMain->executeInitStep();
-                if (status != EXIT_SUCCESS) {
+                if (!rebuildOn(newSpec.empty() ? appliedSpec : newSpec, step)) {
                     break;
                 }
-
-                // S4+S5: remap onto the new leaf and inject through the
-                // restart machinery; position clock, episode and timer.
-                auto* sim2 = flowMain->getSimulatorPtr();
-                const auto sol = remapAdaptiveState<TypeTag>(state, *sim2);
-                injectAdaptiveState<TypeTag>(*sim2, sol, step);
-                flowMain->getSimTimer()->setCurrentStepNum(step);
+                worldRebuilt = true;
+            }
+            else if (!worldRebuilt && estDrivenFrom >= 0 && step >= estDrivenFrom) {
+                // ---- Algorithm 6.1 estimator-driven adaptation ----
+                const std::string want = readRefineRequest();
+                if (!want.empty() && want != appliedSpec) {
+                    OpmLog::info("\n[Algorithm 6.1] estimator-driven refinement at "
+                                 "report step " + std::to_string(step)
+                                 + ": rebuilding grid on box '" + want + "'");
+                    if (!rebuildOn(want, step)) {
+                        break;
+                    }
+                    worldRebuilt = true;
+                }
             }
             continueLooping = (flowMain->executeStep() != 0);
         }
