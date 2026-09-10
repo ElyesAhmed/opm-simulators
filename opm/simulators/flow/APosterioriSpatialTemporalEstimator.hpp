@@ -1730,6 +1730,33 @@ private:
                 a = b;
             }
         }
+        // Optional protective HALO around every protected cell
+        // (OPM_APOST_PROTECT_HALO, default 0). A point source / well is a flux
+        // singularity whose eta_sp,K over-read spills 2-3 cells out; refining
+        // that ring is still next to the singularity and destabilises the
+        // solve. A halo keeps the whole near-singularity ring coarse so the
+        // marks land on the real front instead.
+        if (const char* hs = std::getenv("OPM_APOST_PROTECT_HALO")) {
+            const int ph = std::max(0, std::atoi(hs));
+            for (int pass = 0; pass < ph; ++pass) {
+                std::vector<char> g = fullProt;
+                for (int k = 0; k < dims[2]; ++k)
+                for (int j = 0; j < dims[1]; ++j)
+                for (int i = 0; i < dims[0]; ++i) {
+                    if (!fullProt[cartIndex_(i, j, k, dims)]) continue;
+                    for (int d = 0; d < 3; ++d) {
+                        if (dims[d] <= 1) continue;
+                        for (int s : {-1, 1}) {
+                            std::array<int, 3> a{i, j, k};
+                            a[d] += s;
+                            if (a[d] < 0 || a[d] >= dims[d]) continue;
+                            g[cartIndex_(a[0], a[1], a[2], dims)] = 1;
+                        }
+                    }
+                }
+                fullProt.swap(g);
+            }
+        }
         const auto isProt = [&](int cart) {
             return cart >= 0 && static_cast<std::size_t>(cart) < ncart
                 && fullProt[static_cast<std::size_t>(cart)] != 0;
