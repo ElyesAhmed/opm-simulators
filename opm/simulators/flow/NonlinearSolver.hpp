@@ -182,6 +182,10 @@ struct NonlinearSolverParameters
                 OPM_THROW_NOLOG(TimeSteppingBreakdown, msg);
             }
 
+            if constexpr (requires { model_->acceptAposterioriStep(timer); }) {
+                model_->acceptAposterioriStep(timer);
+            }
+
             report.converged = true;
             return report;
         }

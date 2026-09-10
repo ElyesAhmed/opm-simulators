@@ -193,7 +193,9 @@
 #include <string>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -551,19 +553,61 @@ public:
     //!     0 keep,
     //!    -1 derefine: eta_sp,K <= zetaDeref * max_K eta_sp,K}.
     //! Uses the mimetic per-cell spatial estimator cellEta_[.][0].
+    //! Well cells are excluded entirely -- neither marked nor counted towards
+    //! max_K -- because the spatial estimator over-reads near wells (near-well
+    //! weight, omitted well-source Taylor defect), so h-refining there chases
+    //! an indicator artefact, not a real discretisation error.
     //! Returns {nRefine, nDerefine}; fills \p marks when non-null.
     std::pair<int, int> refinementMarks(Scalar zetaRef, Scalar zetaDeref,
                                         std::vector<int>* marks = nullptr) const
     {
         const std::size_t nc = cellEta_.size();
         if (marks) marks->assign(nc, 0);
+        auto isWellCell = [this](std::size_t i) {
+            return std::binary_search(wellCells_.begin(), wellCells_.end(),
+                                      static_cast<int>(i));
+        };
         double emax = 0.0;
-        for (const auto& e : cellEta_) emax = std::max(emax, e[0]);
+        for (std::size_t i = 0; i < nc; ++i) {
+            if (isWellCell(i)) continue;
+            emax = std::max(emax, cellEta_[i][0]);
+        }
         if (!(emax > 0.0)) return {0, 0};
+
+        // Bulk (cumulative Dörfler) marking when env OPM_APOST_BULK_THETA is set:
+        // REFINE the smallest cell set whose sum of eta_sp,K^2 reaches
+        // theta * sum_K eta_sp,K^2. Falls back to the max-threshold rule below
+        // when theta is unset/invalid. Derefine still uses zetaDeref*max.
+        double theta = -1.0;
+        if (const char* s = std::getenv("OPM_APOST_BULK_THETA")) theta = std::atof(s);
+        if (theta > 0.0 && theta < 1.0) {
+            double total = 0.0;
+            std::vector<std::pair<double, std::size_t>> ord;
+            ord.reserve(nc);
+            for (std::size_t i = 0; i < nc; ++i) {
+                if (isWellCell(i)) continue;
+                const double e2 = cellEta_[i][0] * cellEta_[i][0];
+                total += e2;
+                ord.emplace_back(e2, i);
+            }
+            std::sort(ord.begin(), ord.end(),
+                      [](const auto& a, const auto& b) { return a.first > b.first; });
+            const double tD = static_cast<double>(zetaDeref) * emax;
+            double acc = 0.0;
+            int nR = 0, nD = 0;
+            const double target = theta * total;
+            for (const auto& [e2, i] : ord) {
+                if (acc < target) { acc += e2; if (marks) (*marks)[i] = 1; ++nR; }
+                else if (std::sqrt(e2) <= tD) { if (marks) (*marks)[i] = -1; ++nD; }
+            }
+            return {nR, nD};
+        }
+
         const double tR = static_cast<double>(zetaRef) * emax;
         const double tD = static_cast<double>(zetaDeref) * emax;
         int nR = 0, nD = 0;
         for (std::size_t i = 0; i < nc; ++i) {
+            if (isWellCell(i)) continue;
             const double e = cellEta_[i][0];
             int m = 0;
             if (e >= tR) { m = 1; ++nR; }
@@ -589,6 +633,267 @@ public:
                 os << ',' << (d < dim ? g.center[std::min(d, dim - 1)] : Scalar{0});
             os << ',' << cellEta_[i][0] << ',' << marks[i] << '\n';
         }
+    }
+
+    //! Algorithm 6.1 h-refinement request. Marked cells are padded by a
+    //! coarse-cell halo and overlapping/touching patches are merged before
+    //! emitting CARFIN-style boxes. A halo keeps the coarse/fine transition
+    //! away from the high-error cell; one-cell LGR islands next to wells can
+    //! perturb well rates more than the local discretization error they remove.
+    //! OPM_APOST_REFINE_HALO overrides the default one-cell halo (zero restores
+    //! the old one-box-per-mark behavior). At most \p maxBoxes seed cells are
+    //! retained before padding; OPM_APOST_MAX_BOXES overrides that limit.
+    //!   "I1 I2 J1 J2 K1 K2 NX NY NZ"  per box (NX/NY/NZ are box totals)
+    std::string refinementBoxSpec(Scalar zetaRef, int sub = 2, int maxBoxes = 128) const
+    {
+        if (const char* s = std::getenv("OPM_APOST_MAX_BOXES")) {
+            const int v = std::atoi(s);
+            if (v > 0) maxBoxes = v;
+        }
+        std::vector<int> marks;
+        const auto counts = refinementMarks(zetaRef, Scalar{0}, &marks);
+        if (counts.first == 0) return {};
+
+        // Marked cells, largest eta_sp,K first.
+        std::vector<std::size_t> flagged;
+        for (std::size_t c = 0; c < marks.size(); ++c)
+            if (marks[c] == 1) flagged.push_back(c);
+        std::sort(flagged.begin(), flagged.end(),
+                  [this](std::size_t a, std::size_t b)
+                  { return cellEta_[a][0] > cellEta_[b][0]; });
+        if (static_cast<int>(flagged.size()) > maxBoxes)
+            flagged.resize(maxBoxes);
+
+        const auto& mapper = simulator_.vanguard().cartesianIndexMapper();
+        const auto& dims = mapper.cartesianDimensions();
+
+        int halo = 1;
+        if (const char* value = std::getenv("OPM_APOST_REFINE_HALO")) {
+            halo = std::max(0, std::atoi(value));
+        }
+
+        struct Box {
+            std::array<int, 3> lo;
+            std::array<int, 3> hi;
+        };
+        std::vector<std::array<int, 3>> wellIJK;
+        wellIJK.reserve(wellCells_.size());
+        for (int cell : wellCells_) {
+            std::array<int, 3> ijk{0, 0, 0};
+            mapper.cartesianCoordinate(cell, ijk);
+            wellIJK.push_back(ijk);
+        }
+        const auto containsWell = [&wellIJK](const Box& box) {
+            return std::ranges::any_of(wellIJK, [&box](const auto& ijk) {
+                return ijk[0] >= box.lo[0] && ijk[0] <= box.hi[0]
+                    && ijk[1] >= box.lo[1] && ijk[1] <= box.hi[1]
+                    && ijk[2] >= box.lo[2] && ijk[2] <= box.hi[2];
+            });
+        };
+
+        std::vector<Box> boxes;
+        boxes.reserve(flagged.size());
+        for (std::size_t c : flagged) {
+            std::array<int, 3> ijk{0, 0, 0};
+            mapper.cartesianCoordinate(static_cast<int>(c), ijk);
+            Box box;
+            for (int d = 0; d < 3; ++d) {
+                box.lo[d] = std::max(0, ijk[d] - halo);
+                box.hi[d] = std::min(dims[d] - 1, ijk[d] + halo);
+            }
+            // Programmatic LGR wells cannot mix GLOBAL and LGR completions.
+            // Keep automatically generated patch boundaries away from wells;
+            // a user may still request a coherent well-containing block
+            // explicitly through --adaptive-lgr.
+            if (!containsWell(box)) {
+                boxes.push_back(box);
+            }
+        }
+
+        // Merge boxes whose closures touch, unless the rectangular union would
+        // engulf a well. Overlapping boxes cannot be emitted separately; in
+        // that rare case retain the higher-priority box and discard the other.
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (std::size_t i = 0; i < boxes.size(); ++i) {
+                for (std::size_t j = i + 1; j < boxes.size(); ++j) {
+                    bool touch = true;
+                    bool overlap = true;
+                    for (int d = 0; d < 3; ++d) {
+                        touch = touch
+                            && boxes[i].lo[d] <= boxes[j].hi[d] + 1
+                            && boxes[j].lo[d] <= boxes[i].hi[d] + 1;
+                        overlap = overlap
+                            && boxes[i].lo[d] <= boxes[j].hi[d]
+                            && boxes[j].lo[d] <= boxes[i].hi[d];
+                    }
+                    if (!touch) {
+                        continue;
+                    }
+                    Box joined = boxes[i];
+                    for (int d = 0; d < 3; ++d) {
+                        joined.lo[d] = std::min(joined.lo[d], boxes[j].lo[d]);
+                        joined.hi[d] = std::max(joined.hi[d], boxes[j].hi[d]);
+                    }
+                    if (containsWell(joined)) {
+                        if (overlap) {
+                            boxes.erase(boxes.begin() + static_cast<std::ptrdiff_t>(j));
+                            changed = true;
+                            break;
+                        }
+                        continue;
+                    }
+                    boxes[i] = joined;
+                    boxes.erase(boxes.begin() + static_cast<std::ptrdiff_t>(j));
+                    changed = true;
+                    break;
+                }
+                if (changed) {
+                    break;
+                }
+            }
+        }
+
+        std::string spec;
+        for (const auto& box : boxes) {
+            if (!spec.empty()) spec += " ; ";
+            for (int d = 0; d < 3; ++d) {
+                if (d > 0) spec += ' ';
+                spec += std::to_string(box.lo[d] + 1) + ' '
+                      + std::to_string(box.hi[d] + 1);
+            }
+            for (int d = 0; d < 3; ++d) {
+                spec += ' ' + std::to_string((box.hi[d] - box.lo[d] + 1) * sub);
+            }
+        }
+        return spec;
+    }
+
+    // ---------------------------------------------------------------------
+    //  One-rebuild h-adaptivity path: time-accumulated Dorfler marking +
+    //  schedule-wide protected-well mask + exact mask->box packing.
+    //  Kept SEPARATE from refinementMarks()/refinementBoxSpec() above so the
+    //  existing per-step indicator reports are unchanged.
+    // ---------------------------------------------------------------------
+
+    //! Schedule-wide protected well-completion cells, as GLOBAL Cartesian
+    //! indices. A generated refinement box will never contain one of these.
+    //! Call once (driver, before the estimator-driven grid generator runs);
+    //! the set must be stable, not rebuilt from the active well set.
+    void setProtectedRefinementCells(std::vector<int> cartesianIdx)
+    {
+        std::sort(cartesianIdx.begin(), cartesianIdx.end());
+        cartesianIdx.erase(std::unique(cartesianIdx.begin(), cartesianIdx.end()),
+                           cartesianIdx.end());
+        protectedCartesian_ = std::move(cartesianIdx);
+    }
+
+    const std::vector<int>& protectedRefinementCells() const { return protectedCartesian_; }
+
+    //! Accumulate E_K^2 += eta_sp,K^2 for every interior cell. Call once per
+    //! ACCEPTED (converged) time step, after compute(dt, commitHistory=true).
+    void accumulateSpatialEnergy()
+    {
+        const std::size_t nc = cellEta_.size();
+        if (accumulatedSpatialEnergy_.size() != nc)
+            accumulatedSpatialEnergy_.assign(nc, 0.0);
+        for (std::size_t i = 0; i < nc; ++i)
+            accumulatedSpatialEnergy_[i] += cellEta_[i][0] * cellEta_[i][0];
+    }
+
+    void resetAccumulatedSpatialEnergy()
+    { std::fill(accumulatedSpatialEnergy_.begin(), accumulatedSpatialEnergy_.end(), 0.0); }
+
+    //! Commit the latest converged iterate as temporal history. This is kept
+    //! separate from compute() because Newton convergence may still be rejected
+    //! by the outer adaptive timestep acceptance test.
+    void commitTemporalHistory()
+    {
+        if (!havePrevIter_)
+            return;
+        prevU_.swap(prevIterU_);
+        havePrev_ = true;
+    }
+
+    bool accumulatedSpatialEnergyAvailable() const
+    {
+        return !accumulatedSpatialEnergy_.empty()
+            && std::any_of(accumulatedSpatialEnergy_.begin(),
+                           accumulatedSpatialEnergy_.end(),
+                           [](double v) { return v > 0.0; });
+    }
+
+    //! {nCoarseCellsInFinalMask, nSeedCellsAfterProtectionBeforeHalo}. Purely for
+    //! logging -- refinementBoxSpecAccumulated() does the real work.
+    std::pair<int, int> refinementMarksAccumulated(double theta) const
+    {
+        std::vector<char> mask;
+        std::array<int, 3> dims{1, 1, 1};
+        int nSeed = 0;
+        buildRefineMask_(theta, mask, dims, &nSeed);
+        int nMask = 0;
+        for (char c : mask) if (c) ++nMask;
+        return {nMask, nSeed};
+    }
+
+    //! Fraction of the TOTAL accumulated spatial energy captured by the most
+    //! recent buildRefineMask_() selection (protected cells excluded, before
+    //! halo). Diagnostic only.
+    double lastRetainedEnergyFraction() const { return lastRetainedEnergyFraction_; }
+
+    //! CARFIN-style box spec covering the time-accumulated Dorfler-marked
+    //! cells, with the schedule-wide protected wells carved out. Boxes are
+    //! disjoint, their union equals the (post-halo, post-protection) mask
+    //! exactly, and no box contains a protected completion cell. Returns "" if
+    //! nothing is marked. \p sub 0 => read OPM_APOST_REFINE_FACTOR (default 2).
+    std::string refinementBoxSpecAccumulated(double theta, int sub = 0) const
+    {
+        if (sub <= 0) {
+            sub = 2;
+            if (const char* s = std::getenv("OPM_APOST_REFINE_FACTOR")) {
+                const int v = std::atoi(s);
+                if (v > 1) sub = v;
+            }
+        }
+        std::vector<char> mask;
+        std::array<int, 3> dims{1, 1, 1};
+        buildRefineMask_(theta, mask, dims, nullptr);
+        if (std::none_of(mask.begin(), mask.end(), [](char c) { return c != 0; }))
+            return {};
+
+        const auto boxes = packMaskIntoBoxes_(mask, dims);
+
+        // ---- invariants (abort loudly rather than emit a bad request) ----
+        std::vector<char> cover(mask.size(), 0);
+        for (const auto& b : boxes) {
+            for (int k = b.lo[2]; k <= b.hi[2]; ++k)
+            for (int j = b.lo[1]; j <= b.hi[1]; ++j)
+            for (int i = b.lo[0]; i <= b.hi[0]; ++i) {
+                const std::size_t c = cartIndex_(i, j, k, dims);
+                if (cover[c])
+                    throw std::logic_error("APosterioriEstimator: refinement boxes overlap");
+                cover[c] = 1;
+                if (isProtectedCart_(static_cast<int>(c)))
+                    throw std::logic_error("APosterioriEstimator: refinement box contains a "
+                                           "protected well-completion cell");
+            }
+        }
+        for (std::size_t c = 0; c < mask.size(); ++c)
+            if (static_cast<bool>(cover[c]) != static_cast<bool>(mask[c]))
+                throw std::logic_error("APosterioriEstimator: box union != refinement mask");
+
+        std::string spec;
+        for (const auto& b : boxes) {
+            if (!spec.empty()) spec += " ; ";
+            for (int d = 0; d < 3; ++d) {
+                if (d > 0) spec += ' ';
+                spec += std::to_string(b.lo[d] + 1) + ' ' + std::to_string(b.hi[d] + 1);
+            }
+            for (int d = 0; d < 3; ++d)
+                spec += ' ' + std::to_string((b.hi[d] - b.lo[d] + 1) * sub);
+        }
+        return spec;
     }
 
     void recordLinearizationDefect(Scalar dt, const BVector& dx)
@@ -1358,6 +1663,189 @@ public:
     void resetNewtonIterateHistory() { havePrevIter_ = false; }
 
 private:
+    // ---- one-rebuild h-adaptivity: mask + box helpers --------------------
+    struct MaskBox { std::array<int, 3> lo; std::array<int, 3> hi; };
+
+    static std::size_t cartIndex_(int i, int j, int k, const std::array<int, 3>& dims)
+    {
+        return static_cast<std::size_t>((static_cast<std::int64_t>(k) * dims[1] + j)
+                                        * dims[0] + i);
+    }
+
+    bool isProtectedCart_(int cart) const
+    {
+        return std::binary_search(protectedCartesian_.begin(),
+                                  protectedCartesian_.end(), cart);
+    }
+
+    //! Steps 1-5 of the plan: Dorfler-mark from accumulatedSpatialEnergy_,
+    //! drop protected cells, dilate by the halo, drop protected cells again
+    //! (dilation may have re-added them). Output: a coarse Cartesian Boolean
+    //! \p mask (row-major i-fastest) and the coarse \p dims. When \p nSeed is
+    //! non-null it receives the post-protection, pre-halo Dorfler count.
+    void buildRefineMask_(double theta, std::vector<char>& mask,
+                          std::array<int, 3>& dims, int* nSeed) const
+    {
+        const auto& mapper = simulator_.vanguard().cartesianIndexMapper();
+        const auto& cdims  = mapper.cartesianDimensions();
+        for (int d = 0; d < 3; ++d)
+            dims[d] = (d < static_cast<int>(cdims.size())) ? static_cast<int>(cdims[d]) : 1;
+        const std::size_t ncart =
+            static_cast<std::size_t>(dims[0]) * dims[1] * dims[2];
+        mask.assign(ncart, 0);
+        if (nSeed) *nSeed = 0;
+
+        const std::size_t nc = std::min(accumulatedSpatialEnergy_.size(), cellEta_.size());
+        if (nc == 0 || !(theta > 0.0 && theta < 1.0)) return;
+
+        // ---- FULL protected mask, built BEFORE Dorfler ranking -------------
+        // Point completions PLUS the whole vertical (i,j) interval a vertical
+        // well spans. Previously the column interval was carved out only AFTER
+        // ranking/denominator, so an intervening high-energy cell could satisfy
+        // the target and then be deleted, silently losing captured energy
+        // (review 2026-09-10). The SAME set is excluded from ranking, from the
+        // denominator, and from the post-halo subtraction.
+        std::vector<char> fullProt(ncart, 0);
+        {
+            std::vector<std::array<int, 3>> prot;
+            prot.reserve(protectedCartesian_.size());
+            for (int cart : protectedCartesian_) {
+                if (cart < 0 || static_cast<std::size_t>(cart) >= ncart) continue;
+                fullProt[static_cast<std::size_t>(cart)] = 1;
+                prot.push_back({cart % dims[0], (cart / dims[0]) % dims[1],
+                                cart / (dims[0] * dims[1])});
+            }
+            std::sort(prot.begin(), prot.end());
+            for (std::size_t a = 0; a < prot.size();) {
+                std::size_t b = a;
+                int kmin = prot[a][2], kmax = prot[a][2];
+                while (b < prot.size() && prot[b][0] == prot[a][0]
+                       && prot[b][1] == prot[a][1]) {
+                    kmin = std::min(kmin, prot[b][2]);
+                    kmax = std::max(kmax, prot[b][2]);
+                    ++b;
+                }
+                for (int k = kmin; k <= kmax; ++k)
+                    fullProt[cartIndex_(prot[a][0], prot[a][1], k, dims)] = 1;
+                a = b;
+            }
+        }
+        const auto isProt = [&](int cart) {
+            return cart >= 0 && static_cast<std::size_t>(cart) < ncart
+                && fullProt[static_cast<std::size_t>(cart)] != 0;
+        };
+
+        // Dorfler: smallest cell set with sum E_K^2 >= theta * total, over
+        // NON-protected interior cells only. totalAll is the full estimator
+        // energy (incl. protected) so lastRetainedEnergyFraction_ is honest.
+        std::vector<std::pair<double, int>> ord;      // (E_K^2, cartIdx)
+        ord.reserve(nc);
+        double total = 0.0, totalAll = 0.0;
+        for (std::size_t i = 0; i < nc; ++i) {
+            const double e2 = accumulatedSpatialEnergy_[i];
+            if (!(e2 > 0.0)) continue;
+            totalAll += e2;
+            std::array<int, 3> ijk{0, 0, 0};
+            mapper.cartesianCoordinate(static_cast<int>(i), ijk);
+            const int cart = static_cast<int>(cartIndex_(ijk[0], ijk[1], ijk[2], dims));
+            if (isProt(cart)) continue;
+            total += e2;
+            ord.emplace_back(e2, cart);
+        }
+        if (!(total > 0.0)) { lastRetainedEnergyFraction_ = 0.0; return; }
+        std::sort(ord.begin(), ord.end(),
+                  [](const auto& a, const auto& b) { return a.first > b.first; });
+
+        // Optional hard budget on the number of refined coarse cells
+        // (OPM_APOST_MAX_REFINED_CELLS); the highest-energy seeds are kept.
+        std::size_t cellBudget = ord.size();
+        if (const char* s = std::getenv("OPM_APOST_MAX_REFINED_CELLS")) {
+            const long v = std::atol(s);
+            if (v > 0) cellBudget = static_cast<std::size_t>(v);
+        }
+
+        const double target = theta * total;
+        double acc = 0.0;
+        std::size_t nSel = 0;
+        for (const auto& [e2, cart] : ord) {
+            if (acc >= target || nSel >= cellBudget) break;
+            acc += e2;
+            ++nSel;
+            mask[static_cast<std::size_t>(cart)] = 1;
+        }
+        lastRetainedEnergyFraction_ = (totalAll > 0.0) ? acc / totalAll : 0.0;
+        if (nSeed)
+            for (char c : mask) if (c) ++(*nSeed);
+
+        // Halo dilation (only along axes that actually have >1 coarse cell).
+        int halo = 1;
+        if (const char* v = std::getenv("OPM_APOST_REFINE_HALO"))
+            halo = std::max(0, std::atoi(v));
+        for (int pass = 0; pass < halo; ++pass) {
+            std::vector<char> grown = mask;
+            for (int k = 0; k < dims[2]; ++k)
+            for (int j = 0; j < dims[1]; ++j)
+            for (int i = 0; i < dims[0]; ++i) {
+                if (!mask[cartIndex_(i, j, k, dims)]) continue;
+                for (int d = 0; d < 3; ++d) {
+                    if (dims[d] <= 1) continue;
+                    for (int s : {-1, 1}) {
+                        std::array<int, 3> a{i, j, k};
+                        a[d] += s;
+                        if (a[d] < 0 || a[d] >= dims[d]) continue;
+                        grown[cartIndex_(a[0], a[1], a[2], dims)] = 1;
+                    }
+                }
+            }
+            mask.swap(grown);
+        }
+
+        // Subtract the SAME full protected mask again -- halo dilation can have
+        // re-introduced protected cells.
+        for (std::size_t c = 0; c < ncart; ++c)
+            if (fullProt[c]) mask[c] = 0;
+    }
+
+    //! Pack a Boolean coarse-cell mask into disjoint axis-aligned boxes whose
+    //! union is exactly the mask. Greedy: grow in i, then whole rows in j,
+    //! then whole planes in k. All boxes share the same subdivision factor, so
+    //! touching faces stay conforming.
+    std::vector<MaskBox> packMaskIntoBoxes_(const std::vector<char>& maskIn,
+                                            const std::array<int, 3>& dims) const
+    {
+        std::vector<char> m = maskIn;   // consumed as boxes are claimed
+        std::vector<MaskBox> boxes;
+        const auto get = [&](int i, int j, int k) -> char& {
+            return m[cartIndex_(i, j, k, dims)];
+        };
+        for (int k0 = 0; k0 < dims[2]; ++k0)
+        for (int j0 = 0; j0 < dims[1]; ++j0)
+        for (int i0 = 0; i0 < dims[0]; ++i0) {
+            if (!get(i0, j0, k0)) continue;
+            int i1 = i0;
+            while (i1 + 1 < dims[0] && get(i1 + 1, j0, k0)) ++i1;
+            int j1 = j0;
+            for (bool grow = true; grow && j1 + 1 < dims[1]; ) {
+                for (int i = i0; i <= i1; ++i)
+                    if (!get(i, j1 + 1, k0)) { grow = false; break; }
+                if (grow) ++j1;
+            }
+            int k1 = k0;
+            for (bool grow = true; grow && k1 + 1 < dims[2]; ) {
+                for (int j = j0; j <= j1 && grow; ++j)
+                    for (int i = i0; i <= i1; ++i)
+                        if (!get(i, j, k1 + 1)) { grow = false; break; }
+                if (grow) ++k1;
+            }
+            for (int k = k0; k <= k1; ++k)
+                for (int j = j0; j <= j1; ++j)
+                    for (int i = i0; i <= i1; ++i)
+                        get(i, j, k) = 0;
+            boxes.push_back(MaskBox{{i0, j0, k0}, {i1, j1, k1}});
+        }
+        return boxes;
+    }
+
     //! Continuous constitutive component flux, eq. (constitutive_flux):
     //!   v_hat_beta = -lambda_beta(s_hat) K (grad p_hat_beta - rho_beta g grad z),
     //!   u_w = b_w v_w,   u_o = b_o v_o + r_v b_g v_g,   u_g = b_g v_g + r_s b_o v_o,
@@ -1572,6 +2060,25 @@ private:
     bool useBubbleCorrection_ {true};
     Scalar ell_ {0};
     std::vector<int> wellCells_;
+
+    //! sum_n eta_sp,K,n^2 per compressed interior cell -- the time-accumulated
+    //! spatial energy E_K^2 used for Dorfler marking in the one-rebuild
+    //! h-adaptivity path (accumulateSpatialEnergy() / *Accumulated()). The
+    //! implemented eta_sp,K already carries sqrt(tau_n), so its square already
+    //! contributes the time-step weight -- do NOT multiply by tau_n again.
+    std::vector<double> accumulatedSpatialEnergy_;
+
+    //! Sorted GLOBAL Cartesian indices of every well-completion cell that
+    //! appears anywhere in the remaining schedule (schedule-wide protected
+    //! mask). Refinement boxes must never contain one of these -- a coarse
+    //! completion cell must stay GLOBAL, never become LGR. Set once by the
+    //! driver via setProtectedRefinementCells(); NOT rebuilt per Newton step.
+    std::vector<int> protectedCartesian_;
+
+    //! Fraction of total accumulated spatial energy the last mask selection
+    //! captured (diagnostic; set by buildRefineMask_, which is const).
+    mutable double lastRetainedEnergyFraction_ {0.0};
+
     std::array<std::vector<Scalar>, 3> vtxP_;   //!< vertex patch-average phase pressures
     std::array<std::vector<Scalar>, 2> vtxS_;   //!< vertex patch-average (s_w, s_g)
 

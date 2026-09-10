@@ -170,6 +170,10 @@ public:
     //! (only if --enable-aposteriori-estimators).
     void evalAposterioriEstimators(const SimulatorTimerInterface& timer, bool converged);
 
+    //! Commit accepted-step-only a posteriori state after the outer timestep
+    //! acceptance test has passed.
+    void acceptAposterioriStep(const SimulatorTimerInterface& timer);
+
     //! The space/time-balance dt suggestion (eq. Criteria_space_time_balance) from the
     //! last converged step, in seconds; empty unless both
     //! --enable-aposteriori-estimators and --enable-aposteriori-timestep-control
@@ -377,6 +381,14 @@ private:
     bool   aposteriori_ctrl_suspended_  {false};
     int    aposteriori_last_report_step_ {-1};
     int    aposteriori_total_ctrl_steps_ {0};
+
+    //! The schedule-wide protected well-completion mask is built once, on the
+    //! first converged estimator evaluation, and handed to the estimator.
+    bool   aposteriori_protected_built_ {false};
+
+    //! Last report step for which an apost_refine_history.txt line was written
+    //! (one entry per report step, not per accepted substep).
+    int    aposteriori_refine_hist_step_ {-1};
 };
 
 } // namespace Opm
