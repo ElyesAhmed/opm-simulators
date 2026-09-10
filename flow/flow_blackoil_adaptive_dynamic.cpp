@@ -280,6 +280,11 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
                 static_cast<void>(wn);
                 for (auto gi : cells) prot.push_back(static_cast<long>(gi));
             }
+            for (std::size_t rs = 0; rs < sched.size(); ++rs)
+                for (const auto& [ijk, sc] : sched[rs].source()) {
+                    static_cast<void>(sc);
+                    prot.push_back((static_cast<long>(ijk[2]) * NYg + ijk[1]) * NXg + ijk[0]);
+                }
             std::sort(prot.begin(), prot.end());
             prot.erase(std::unique(prot.begin(), prot.end()), prot.end());
             const auto isProt = [&](long i, long j, long k) {
