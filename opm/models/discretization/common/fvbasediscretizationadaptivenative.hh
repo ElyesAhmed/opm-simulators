@@ -29,6 +29,10 @@
 
 #include <opm/models/discretization/common/fvbasediscretization.hh>
 
+#include <opm/common/OpmLog/OpmLog.hpp>
+
+#include <fmt/format.h>
+
 #include <cstddef>
 #include <memory>
 #include <stdexcept>
@@ -109,16 +113,36 @@ public:
             return;
         }
 
+        // The problem marks leaf entities (grid.mark(+/-1, e)) and returns the
+        // count. 0 => nothing to do.
         const unsigned marked = this->simulator_.problem().markForGridAdaptation();
         if (marked == 0) {
             return;
         }
 
-        throw std::runtime_error(
-            "FvBaseDiscretizationAdaptiveNative::adaptGrid: the problem marked "
-            + std::to_string(marked) + " cell(s) for adaptation, but the native "
-            "execution path (mesh adapt + conservative state transfer) is not "
-            "yet implemented.");
+        auto& grid = this->simulator_.vanguard().grid();
+        const std::size_t nBefore = this->gridView_.size(/*codim=*/0);
+
+        // PHASE 1: exercise the ALUGrid in-place adaptation lifecycle and
+        // confirm the leaf view changes. Conservative state transfer is NOT
+        // done yet, so the solution vector would be stale -- stop cleanly with
+        // evidence rather than solve on garbage.
+        const bool preOk = grid.preAdapt();
+        const bool changed = grid.adapt();
+        grid.postAdapt();
+
+        this->gridView_ = this->simulator_.gridView();
+        const std::size_t nAfter = this->gridView_.size(/*codim=*/0);
+
+        OpmLog::info(fmt::format(
+            "[alu-hadapt PHASE 1] marked={}  preAdapt={}  adapt-changed={}  "
+            "leaf cells {} -> {}",
+            marked, preOk, changed, nBefore, nAfter));
+
+        throw std::runtime_error(fmt::format(
+            "FvBaseDiscretizationAdaptiveNative::adaptGrid PHASE 1: grid adapted "
+            "in place ({} -> {} leaf cells), conservative state transfer not yet "
+            "implemented -- stopping.", nBefore, nAfter));
     }
 };
 

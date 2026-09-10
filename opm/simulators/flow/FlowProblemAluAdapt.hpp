@@ -25,6 +25,18 @@
 
 #include <opm/simulators/flow/FlowProblemBlackoil.hpp>
 
+#include <opm/common/OpmLog/OpmLog.hpp>
+
+#include <dune/grid/common/mcmgmapper.hh>
+#include <dune/grid/common/partitionset.hh>
+
+#include <fmt/format.h>
+
+#include <array>
+#include <cstdlib>
+#include <sstream>
+#include <string>
+
 namespace Opm {
 
 /*!
@@ -56,13 +68,60 @@ public:
     /*!
      * \brief Number of leaf cells marked for refinement/coarsening this step.
      *
-     * PHASE 0: always 0 (adaptation execution not implemented). PHASE 5 will
-     * dispatch to the estimator-driven SpatialMarker (default) or the
-     * saturation-variation heuristic (--adapt-indicator=saturation).
+     * PHASE 1: if OPM_ALU_ADAPT_TEST_BOX="i1 i2 j1 j2 k1 k2" (1-based inclusive)
+     * is set, mark the leaf cells of that logical-Cartesian box for refinement,
+     * ONCE, and return the count -- a fixed-box driver to exercise the
+     * mesh-adaptation lifecycle before the estimator SpatialMarker (Phase 5)
+     * and the conservative transfer (Phase 2) exist.
+     *
+     * Deliberately shadows MultiPhaseBaseProblem::markForGridAdaptation() (a
+     * saturation-variation heuristic that marks inside a per-phase loop and
+     * miscounts) -- that returns later behind --adapt-indicator=saturation.
      */
     unsigned markForGridAdaptation()
     {
-        return 0;
+        const char* spec = std::getenv("OPM_ALU_ADAPT_TEST_BOX");
+        if (spec == nullptr || aluAdaptTestBoxDone_) {
+            return 0;
+        }
+        std::array<int, 6> b{};
+        {
+            std::istringstream is(spec);
+            for (int& v : b) {
+                if (!(is >> v)) {
+                    OpmLog::warning("OPM_ALU_ADAPT_TEST_BOX: expected 6 integers "
+                                    "'i1 i2 j1 j2 k1 k2' (1-based inclusive).");
+                    return 0;
+                }
+            }
+        }
+        auto& grid = this->simulator().vanguard().grid();
+        const auto& gridView = this->simulator().vanguard().gridView();
+        const auto& mapper = this->simulator().vanguard().cartesianIndexMapper();
+        const auto& dims = mapper.cartesianDimensions();
+
+        Dune::MultipleCodimMultipleGeomTypeMapper<std::decay_t<decltype(gridView)>>
+            elemMapper(gridView, Dune::mcmgElementLayout());
+
+        unsigned n = 0;
+        for (const auto& e : elements(gridView, Dune::Partitions::interior)) {
+            const int cart = mapper.cartesianIndex(elemMapper.index(e));
+            const int i = cart % dims[0];
+            const int j = (cart / dims[0]) % dims[1];
+            const int k = cart / (dims[0] * dims[1]);
+            if (i + 1 >= b[0] && i + 1 <= b[1] &&
+                j + 1 >= b[2] && j + 1 <= b[3] &&
+                k + 1 >= b[4] && k + 1 <= b[5]) {
+                grid.mark(1, e);
+                ++n;
+            }
+        }
+        aluAdaptTestBoxDone_ = true;
+        OpmLog::info(fmt::format(
+            "[alu-hadapt PHASE 1] OPM_ALU_ADAPT_TEST_BOX i{}-{} j{}-{} k{}-{} "
+            "-> marked {} leaf cell(s) for refinement",
+            b[0], b[1], b[2], b[3], b[4], b[5], n));
+        return grid.comm().sum(n);
     }
 
     /*!
@@ -76,6 +135,9 @@ public:
     {
         Base::gridChanged();
     }
+
+private:
+    bool aluAdaptTestBoxDone_ {false};
 };
 
 } // namespace Opm
