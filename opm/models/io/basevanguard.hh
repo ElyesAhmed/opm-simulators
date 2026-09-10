@@ -146,6 +146,20 @@ protected:
         }
     }
 
+    //! Refresh the leaf grid view IN PLACE after an in-place grid.adapt(),
+    //! keeping the GridView object's identity so long-lived references to it
+    //! (e.g. Transmissibility) stay valid. Only used by grids that adapt
+    //! without a full vanguard rebuild (dune-ALUGrid).
+    void refreshGridViewInPlace_()
+    {
+        if (gridView_) {
+            *gridView_ = asImp_().grid().leafGridView();
+        }
+        else {
+            updateGridView_();
+        }
+    }
+
 private:
     Implementation& asImp_()
     { return *static_cast<Implementation*>(this); }

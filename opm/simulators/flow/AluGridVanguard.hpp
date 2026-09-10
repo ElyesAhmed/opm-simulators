@@ -334,6 +334,10 @@ public:
         cartesianIndexMapper_->updateCartesianIndex(nc);
         cartesianCellId_ = std::move(nc);
 
+        // refresh the leaf grid view in place (keeps the object identity that
+        // Transmissibility / the discretization hold references to)
+        this->refreshGridViewInPlace_();
+
         // The equil-grid <-> simulation-grid reorder is only defined for the
         // initial grid. After an in-place adapt every downstream per-cell array
         // (dofTotalVolume_, referencePorosity_, the transferred solution) is
