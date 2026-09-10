@@ -285,7 +285,9 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
     snapshot.eclSummaryConfig_ = FlowGenericVanguard::modelParams_.eclSummaryConfig_;
 
     int status = flowMain->executeInitStep();
-    if (status == EXIT_SUCCESS) {
+    // NOSIM / --enable-dry-run initializes the grid but intentionally does
+    // not create a step driver. Do not enter stepping or finalize a null one.
+    if (status == EXIT_SUCCESS && flowMain->getStepDriverPtr()) {
         const int rebuildStep = Parameters::Get<Parameters::AdaptiveRebuildStep>();
         const int estDrivenFrom = Parameters::Get<Parameters::AdaptiveEstimatorDriven>();
 
