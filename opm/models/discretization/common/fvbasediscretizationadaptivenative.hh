@@ -176,6 +176,7 @@ public:
             }
         }
 
+
         // --- (7) rebuild discretization geometry/caches/matrix --------------
         this->resetLinearizer();
         this->finishInit();
@@ -184,6 +185,11 @@ public:
         problem.gridChanged();
 
         // --- recompute intensive quantities from the transferred state ------
+        this->invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
+
+        // explicit per-cell state (max sat, rock-compaction mult) that
+        // beginTimeStep normally maintains -- needs valid intensive quantities.
+        problem.finishAdaptExplicitQuantities();
         this->invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
 
         for (auto& module : this->outputModules_) {

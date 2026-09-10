@@ -129,14 +129,28 @@ public:
     {
         Base::gridChanged();
 
+        // Rebuild every per-cell quantity against the adapted leaf grid. The
+        // leaf assigners (LookUpData) map a refined child to its level-0
+        // ancestor, so region numbers / porosity / rock / relperm params are
+        // inherited from the parent.
+        this->readMaterialParameters_();     // pvtnum, satnum, poro, rock, materialLaw
+
+        // The centroid provider captured a value-copy of the pre-adapt
+        // CartesianIndexMapper -- rebuild it from the (in-place updated) mapper.
+        this->transmissibilities_.setCentroids(
+            this->simulator().vanguard().cellCentroids());
         this->transmissibilities_.update(/*global=*/true);
 
-        this->referencePorosity_[1] = this->referencePorosity_[0];
-        this->updateReferencePorosity_();
-        this->rockFraction_[1] = this->rockFraction_[0];
-        this->updateRockFraction_();
         this->updatePffDofData_();
         this->model().linearizer().updateDiscretizationParameters();
+    }
+
+    //! Called AFTER intensive quantities have been recomputed on the adapted
+    //! grid: rebuild the explicit per-cell state that beginTimeStep normally
+    //! maintains (max oil/water saturation, rock-compaction trans multiplier).
+    void finishAdaptExplicitQuantities()
+    {
+        this->updateExplicitQuantities_(/*first_step_after_restart=*/true);
     }
 
     //! Called AFTER gridChanged(): component-inventory conservation gate.
