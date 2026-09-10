@@ -389,6 +389,10 @@ private:
     //! Last report step for which an apost_refine_history.txt line was written
     //! (one entry per report step, not per accepted substep).
     int    aposteriori_refine_hist_step_ {-1};
+
+    //! Last report step for which OPM_APOST_DUMP_EVERY_REPORT wrote a per-cell
+    //! estimator CSV (apost_cells_report<N>.csv).
+    int    aposteriori_dump_report_step_ {-1};
 };
 
 } // namespace Opm

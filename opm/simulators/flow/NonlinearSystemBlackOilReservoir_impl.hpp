@@ -770,6 +770,16 @@ acceptAposterioriStep(const SimulatorTimerInterface& timer)
     aposteriori_estimator_->commitTemporalHistory();
     aposteriori_estimator_->accumulateSpatialEnergy();
 
+    // OPM_APOST_DUMP_EVERY_REPORT=1: one per-cell estimator CSV per REPORT step
+    // (apost_cells_report<N>.csv), for time-sequence plots of where eta_sp sits
+    // relative to the saturation/pressure fields. Independent of refinement.
+    if (!this->grid_.comm().rank() && std::getenv("OPM_APOST_DUMP_EVERY_REPORT")
+        && timer.reportStepNum() != aposteriori_dump_report_step_) {
+        aposteriori_dump_report_step_ = timer.reportStepNum();
+        aposteriori_estimator_->dumpCellEstimators(
+            fmt::format("apost_cells_report{}.csv", timer.reportStepNum()));
+    }
+
     const char* rq = std::getenv("OPM_APOST_REFINE_REQUEST");
     if (!rq || this->grid_.comm().rank())
         return;
