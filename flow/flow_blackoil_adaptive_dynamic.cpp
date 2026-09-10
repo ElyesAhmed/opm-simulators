@@ -24,7 +24,9 @@
 #include <opm/simulators/flow/FlowMain.hpp>
 #include <opm/simulators/flow/Main.hpp>
 #include <opm/simulators/flow/AdaptiveCpGridVanguard.hpp>
+#include <opm/simulators/flow/AdaptiveRefinementProtection.hpp>
 #include <opm/simulators/flow/AdaptiveStateTransfer.hpp>
+#include <opm/simulators/flow/WellFingerprint.hpp>
 #include <opm/simulators/flow/python/PyMain.hpp>
 
 #include <opm/common/OpmLog/OpmLog.hpp>
@@ -270,67 +272,59 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
             const auto& gdims = mapper.cartesianDimensions();
             const long NXg = gdims[0], NYg = gdims[1], NZg = gdims[2];
 
-            // schedule-wide protected completion cells (global Cartesian)
-            std::vector<long> prot;
-            const auto& sched = sim->vanguard().schedule();
-            for (const auto& w : sched.getWellsatEnd())
-                for (const auto& c : w.getConnections())
-                    prot.push_back(static_cast<long>(c.global_index()));
-            for (const auto& [wn, cells] : sched.getPossibleFutureConnections()) {
-                static_cast<void>(wn);
-                for (auto gi : cells) prot.push_back(static_cast<long>(gi));
-            }
-            for (std::size_t rs = 0; rs < sched.size(); ++rs)
-                for (const auto& [ijk, sc] : sched[rs].source()) {
-                    static_cast<void>(sc);
-                    prot.push_back((static_cast<long>(ijk[2]) * NYg + ijk[1]) * NXg + ijk[0]);
-                }
-            // OPM_APOST_PROTECT_HALO: same near-singularity ring the estimator
-            // keeps coarse -- the preflight must not reject a box that only
-            // touches the halo, and must reject one that enters it.
+            // SAME protected set the estimator marks against
+            // (AdaptiveRefinementProtection.hpp): well completions + future
+            // connections + per-vertical-well k-spans + exact SOURCE cells +
+            // optional OPM_APOST_PROTECT_HALO dilation.
             int phalo = 0;
             if (const char* hs = std::getenv("OPM_APOST_PROTECT_HALO"))
                 phalo = std::max(0, std::atoi(hs));
-            for (int pass = 0; pass < phalo; ++pass) {
-                std::vector<long> grown = prot;
-                for (long g : prot) {
-                    const long i = g % NXg, j = (g / NXg) % NYg, k = g / (NXg * NYg);
-                    for (auto [di, dj, dk] : {std::array<long,3>{1,0,0},{-1,0,0},
-                                              {0,1,0},{0,-1,0},{0,0,1},{0,0,-1}}) {
-                        const long ni = i+di, nj = j+dj, nk = k+dk;
-                        if (ni<0||nj<0||nk<0||ni>=NXg||nj>=NYg||nk>=NZg) continue;
-                        grown.push_back((nk*NYg+nj)*NXg+ni);
-                    }
-                }
-                prot.swap(grown);
-            }
-            std::sort(prot.begin(), prot.end());
-            prot.erase(std::unique(prot.begin(), prot.end()), prot.end());
+            const auto protVec = buildProtectedRefinementCells(
+                sim->vanguard().schedule(),
+                {static_cast<int>(NXg), static_cast<int>(NYg), static_cast<int>(NZg)},
+                phalo);   // ascending
             const auto isProt = [&](long i, long j, long k) {
-                return std::binary_search(prot.begin(), prot.end(),
-                                          (k * NYg + j) * NXg + i);
+                return std::binary_search(protVec.begin(), protVec.end(),
+                    static_cast<int>((k * NYg + j) * NXg + i));
             };
 
-            std::vector<std::array<long, 6>> boxes;   // i1 i2 j1 j2 k1 k2 (0-based incl.)
+            // ---- strict tokeniser: every token must be a COMPLETE signed
+            // integer; a partial token ("2x"), a stray separator run at the
+            // end, or a wrong field count all fail explicitly.
+            std::vector<std::array<long, 9>> boxes;   // i1 i2 j1 j2 k1 k2 fi fj fk
             long long refinedLeaf = 0, coarseRefined = 0;
             std::size_t p = 0;
-            auto nextTok = [&](long& out) -> bool {
-                while (p < spec.size() && (spec[p] == ' ' || spec[p] == ';')) ++p;
-                if (p >= spec.size()) return false;
+            const auto skipSep = [&]() { while (p < spec.size()
+                && (spec[p] == ' ' || spec[p] == '\t' || spec[p] == ';')) ++p; };
+            const auto nextTok = [&](long& out) -> int {   // 1 ok, 0 end, -1 bad
+                skipSep();
+                if (p >= spec.size()) return 0;
                 std::size_t q = p;
-                while (q < spec.size() && spec[q] != ' ' && spec[q] != ';') ++q;
-                try { out = std::stol(spec.substr(p, q - p)); }
-                catch (...) { return false; }
+                while (q < spec.size() && spec[q] != ' ' && spec[q] != '\t'
+                       && spec[q] != ';') ++q;
+                const std::string tok = spec.substr(p, q - p);
+                std::size_t used = 0;
+                try {
+                    out = std::stol(tok, &used);
+                } catch (...) { return -1; }
+                if (used != tok.size()) return -1;   // "2x", "3.5", "--"
                 p = q;
-                return true;
+                return 1;
             };
             long v[9];
-            while (nextTok(v[0])) {
-                bool okrow = true;
-                for (int t = 1; t < 9 && okrow; ++t) okrow = nextTok(v[t]);
-                if (!okrow) {
-                    OpmLog::error("preflight: malformed refinement spec (need 9 ints/box).");
+            for (;;) {
+                const int r0 = nextTok(v[0]);
+                if (r0 == 0) break;
+                if (r0 < 0) {
+                    OpmLog::error("preflight: malformed token in refinement spec.");
                     return false;
+                }
+                for (int t = 1; t < 9; ++t) {
+                    if (nextTok(v[t]) != 1) {
+                        OpmLog::error("preflight: refinement box has fewer than 9 "
+                                      "integer fields.");
+                        return false;
+                    }
                 }
                 const long i1 = v[0] - 1, i2 = v[1] - 1, j1 = v[2] - 1, j2 = v[3] - 1;
                 const long k1 = v[4] - 1, k2 = v[5] - 1;
@@ -347,13 +341,15 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
                                   "multiple of the parent cell count (non-conforming).");
                     return false;
                 }
+                // per-parent subdivision factor for this box (uniform)
+                const long fi = nx / ci, fj = ny / cj, fk = nz / ck;
                 for (long k = k1; k <= k2; ++k)
                 for (long j = j1; j <= j2; ++j)
                 for (long i = i1; i <= i2; ++i)
                     if (isProt(i, j, k)) {
-                        OpmLog::error("preflight: refinement box contains a protected "
-                                      "well-completion cell (would split a well "
-                                      "GLOBAL/LGR). Refusing.");
+                        OpmLog::error("preflight: refinement box enters a protected "
+                                      "cell (well completion / trajectory span / "
+                                      "SOURCE / halo). Refusing.");
                         return false;
                     }
                 for (const auto& b : boxes) {
@@ -363,18 +359,36 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
                         OpmLog::error("preflight: refinement boxes overlap.");
                         return false;
                     }
+                    // face-adjacent boxes must share the per-parent subdivision
+                    // factor along every axis, else the touching coarse/fine
+                    // interface is non-conforming.
+                    const bool ti = (i2 + 1 == b[0] || b[1] + 1 == i1)
+                        && !(j2 < b[2] || b[3] < j1) && !(k2 < b[4] || b[5] < k1);
+                    const bool tj = (j2 + 1 == b[2] || b[3] + 1 == j1)
+                        && !(i2 < b[0] || b[1] < i1) && !(k2 < b[4] || b[5] < k1);
+                    const bool tk = (k2 + 1 == b[4] || b[5] + 1 == k1)
+                        && !(i2 < b[0] || b[1] < i1) && !(j2 < b[2] || b[3] < j1);
+                    if ((ti || tj || tk)
+                        && (fi != b[6] || fj != b[7] || fk != b[8])) {
+                        OpmLog::error("preflight: face-adjacent refinement boxes have "
+                                      "different subdivision factors (non-conforming "
+                                      "shared interface).");
+                        return false;
+                    }
                 }
-                boxes.push_back({i1, i2, j1, j2, k1, k2});
+                boxes.push_back({i1, i2, j1, j2, k1, k2, fi, fj, fk});
                 coarseRefined += ci * cj * ck;
                 refinedLeaf += nx * ny * nz;
             }
-            const long long totalLeaf =
-                NXg * NYg * NZg - coarseRefined + refinedLeaf;
-            OpmLog::info("preflight OK: " + std::to_string(boxes.size()) + " box(es), "
-                + std::to_string(coarseRefined) + " coarse cell(s) -> "
-                + std::to_string(refinedLeaf) + " child cell(s); refined leaf grid ~"
-                + std::to_string(totalLeaf) + " cells (coarse " + std::to_string(NXg*NYg*NZg)
-                + "). No box straddles a well; all subdivisions conforming.");
+            const long long base = NXg * NYg * NZg;
+            const long long totalLeaf = base - coarseRefined + refinedLeaf;
+            OpmLog::info("preflight OK  |  boxes " + std::to_string(boxes.size())
+                + "  base active " + std::to_string(base)
+                + "  marked parents " + std::to_string(coarseRefined)
+                + "  child cells " + std::to_string(refinedLeaf)
+                + "  -> final leaf ~" + std::to_string(totalLeaf)
+                + "  (subject to ACTNUM).  No box enters a protected cell; "
+                  "all subdivisions conforming.");
             return true;
         };
 
@@ -409,6 +423,23 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
 
             const auto state = extractAdaptiveState<TypeTag>(*sim);
             const auto invBefore = blackOilComponentInventory<TypeTag>(*sim);
+            const auto invParentBefore = blackOilInventoryByParent<TypeTag>(*sim);
+            const auto wellFpBefore = captureWellFingerprint(
+                sim->vanguard().schedule(), sim->episodeIndex());
+            // schedule-wide protected SOURCE cells, to confirm they stay coarse
+            std::vector<long> srcCells;
+            {
+                const auto& sc = sim->vanguard().cartesianIndexMapper().cartesianDimensions();
+                const long nxs = sc[0], nys = sc[1];
+                const auto& sch = sim->vanguard().schedule();
+                for (std::size_t rs = 0; rs < sch.size(); ++rs)
+                    for (const auto& [ijk, sd] : sch[rs].source()) {
+                        static_cast<void>(sd);
+                        srcCells.push_back((static_cast<long>(ijk[2]) * nys + ijk[1]) * nxs + ijk[0]);
+                    }
+                std::sort(srcCells.begin(), srcCells.end());
+                srcCells.erase(std::unique(srcCells.begin(), srcCells.end()), srcCells.end());
+            }
             const Action::State actionState = sim->vanguard().actionState();
             const UDQState udqState = sim->vanguard().udqState();
             // Carry the adaptive time stepper's rhythm across the rebuild: a
@@ -457,6 +488,39 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
                 const auto invAfter = blackOilComponentInventory<TypeTag>(*sim2);
                 ok = verifyComponentInventory(invBefore, invAfter, invTol,
                                               /*throwOnFail=*/false);
+
+                // per-parent conservation (a global sum hides opposite local errors)
+                const auto invParentAfter = blackOilInventoryByParent<TypeTag>(*sim2);
+                const bool ppOk = verifyPerParentConservation(
+                    invParentBefore, invParentAfter, std::max(invTol, 1e-9));
+
+                // well fingerprint: protected wells must come back identical.
+                // OPM_APOST_VALIDATE=warn downgrades a fingerprint / per-parent
+                // failure to a warning (research runs); default = hard gate.
+                const bool fpOk = verifyWellFingerprint(
+                        wellFpBefore,
+                        captureWellFingerprint(sim2->vanguard().schedule(),
+                                               sim2->episodeIndex()));
+                const char* vmode = std::getenv("OPM_APOST_VALIDATE");
+                const bool warnOnly = vmode && std::string(vmode) == "warn";
+                if (!warnOnly) ok = ok && ppOk && fpOk;
+                else if (!ppOk || !fpOk)
+                    OpmLog::warning("OPM_APOST_VALIDATE=warn: continuing despite a "
+                                    "per-parent / well-fingerprint failure.");
+
+                // Every SOURCE coordinate must still resolve to exactly ONE
+                // interior leaf cell (it is protected from refinement, so it
+                // must stay coarse -- otherwise FlowProblemBlackoil would apply
+                // the deck rate once per child, review 2026-09-10).
+                for (long g : srcCells) {
+                    const int comp = sim2->vanguard().compressedIndexForInterior(
+                        static_cast<int>(g));
+                    if (comp < 0) {
+                        OpmLog::error("SOURCE cell (global " + std::to_string(g)
+                            + ") has no interior leaf cell after rebuild.");
+                        ok = false;
+                    }
+                }
             } catch (const std::exception& e) {
                 OpmLog::error(std::string("flow_blackoil_adaptive_dynamic: state "
                     "remap/inject failed: ") + e.what());

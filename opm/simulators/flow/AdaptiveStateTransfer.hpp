@@ -250,6 +250,99 @@ blackOilComponentInventory(GetPropType<TypeTag, Properties::Simulator>& simulato
     return inv;
 }
 
+//! Per-ORIGINAL-PARENT black-oil inventory: parentCartesian -> {PV, water,
+//! oil, gas} (surface volume). Each leaf cell is bucketed by its stableCellId
+//! -- a coarse cell into its own Cartesian index, a refined child into its
+//! parent's -- so comparing the old coarse map against the new refined map
+//! detects opposite local errors that a single global sum would hide
+//! (review 2026-09-10). Serial only.
+template <class TypeTag>
+std::unordered_map<std::int64_t, std::array<double, 4>>
+blackOilInventoryByParent(GetPropType<TypeTag, Properties::Simulator>& simulator)
+{
+    using FluidSystem   = GetPropType<TypeTag, Properties::FluidSystem>;
+    using ElementContext = GetPropType<TypeTag, Properties::ElementContext>;
+    constexpr int wP = FluidSystem::waterPhaseIdx;
+    constexpr int oP = FluidSystem::oilPhaseIdx;
+    constexpr int gP = FluidSystem::gasPhaseIdx;
+    const bool wA = FluidSystem::phaseIsActive(wP);
+    const bool oA = FluidSystem::phaseIsActive(oP);
+    const bool gA = FluidSystem::phaseIsActive(gP);
+
+    constexpr int childBits = 20;
+    constexpr std::int64_t refinedTag = std::int64_t(1) << 62;
+    const auto& grid = simulator.vanguard().grid();
+    const auto stableIds = grid.currentData().back()->stableCellId();
+
+    std::unordered_map<std::int64_t, std::array<double, 4>> out;
+    ElementContext elemCtx(simulator);
+    for (const auto& elem : elements(simulator.gridView(), Dune::Partitions::interior)) {
+        elemCtx.updatePrimaryStencil(elem);
+        elemCtx.updatePrimaryIntensiveQuantities(0);
+        const auto& iq  = elemCtx.intensiveQuantities(0, 0);
+        const unsigned idx = elemCtx.globalSpaceIndex(0, 0);
+        const auto& fs = iq.fluidState();
+
+        std::int64_t id = (idx < stableIds.size()) ? stableIds[idx] : static_cast<std::int64_t>(idx);
+        const std::int64_t key = (id & refinedTag) ? ((id & ~refinedTag) >> childBits) : id;
+
+        const double pv = simulator.model().dofTotalVolume(idx) * getValue(iq.porosity());
+        double svW = 0, svO = 0, svG = 0;
+        if (wA) svW = getValue(fs.saturation(wP)) * getValue(fs.invB(wP)) * pv;
+        if (oA) svO = getValue(fs.saturation(oP)) * getValue(fs.invB(oP)) * pv;
+        if (gA) svG = getValue(fs.saturation(gP)) * getValue(fs.invB(gP)) * pv;
+        auto& a = out[key];
+        a[0] += pv;
+        a[1] += svW;
+        a[2] += svO + (oA && gA ? getValue(fs.Rv()) * svG : 0.0);
+        a[3] += svG + (oA && gA ? getValue(fs.Rs()) * svO : 0.0);
+    }
+    return out;
+}
+
+//! Compare per-parent inventories. Only parents present in BOTH maps are
+//! checked (a refined parent must conserve PV and every component). Logs the
+//! worst offenders; returns true iff all within \p tol (relative).
+inline bool
+verifyPerParentConservation(
+    const std::unordered_map<std::int64_t, std::array<double, 4>>& before,
+    const std::unordered_map<std::int64_t, std::array<double, 4>>& after,
+    double tol, bool throwOnFail = false)
+{
+    static constexpr const char* nm[4] = {"PV", "water", "oil", "gas"};
+    int nBad = 0, nChecked = 0;
+    std::array<double, 4> worst{0, 0, 0, 0};
+    std::int64_t worstKey = -1;
+    for (const auto& [key, b] : before) {
+        const auto it = after.find(key);
+        if (it == after.end()) continue;
+        ++nChecked;
+        const auto& a = it->second;
+        bool bad = false;
+        for (int c = 0; c < 4; ++c) {
+            const double s = std::max(std::abs(a[c]), std::abs(b[c]));
+            const double rel = s > 0.0 ? std::abs(a[c] - b[c]) / s : 0.0;
+            if (rel > worst[c]) { worst[c] = rel; if (c == 2) worstKey = key; }
+            if (rel > tol) bad = true;
+        }
+        if (bad) ++nBad;
+    }
+    std::string msg = fmt::format(
+        "per-parent conservation: {} parents checked, {} outside tol {:.1e}\n"
+        "  worst rel.err  PV {:.2e}  water {:.2e}  oil {:.2e}  gas {:.2e}"
+        "  (worst-oil parent cart {})",
+        nChecked, nBad, tol, worst[0], worst[1], worst[2], worst[3], worstKey);
+    static_cast<void>(nm);
+    const bool ok = (nBad == 0);
+    if (ok) OpmLog::info(msg);
+    else {
+        OpmLog::error(msg + "\n  -> per-parent conservation FAILED");
+        if (throwOnFail)
+            throw std::runtime_error("dynamic refinement: per-parent conservation failed");
+    }
+    return ok;
+}
+
 //! Compare two component inventories component-wise. Logs the table; on a
 //! mismatch above \p tol logs an error and (default) throws, so a
 //! non-conservative rebuild aborts the run rather than silently continuing.

@@ -39,6 +39,7 @@
 
 #include <opm/models/utils/parametersystem.hpp>
 
+#include <opm/simulators/flow/AdaptiveRefinementProtection.hpp>
 #include <opm/simulators/flow/countGlobalCells.hpp>
 #include <opm/simulators/linalg/FlowLinearSolverParameters.hpp>
 #include <opm/simulators/linalg/WellOperators.hpp>
@@ -489,44 +490,22 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
         aposteriori_estimator_->setWellCells(std::move(wellCells));
     }
 
-    // Schedule-wide protected well-completion mask (built once). Unlike the
-    // per-step near-well set above, this must cover EVERY completion cell any
-    // well uses anywhere in the run -- including future connections -- so a
-    // generated refinement box can never straddle a well trajectory or turn a
-    // completion cell into an LGR cell. Same idiom as WellConnectionAuxiliaryModule.
+    // Schedule-wide protected mask (built once): well completions + future
+    // connections + per-vertical-well k-spans + exact SOURCE cells, optionally
+    // dilated by OPM_APOST_PROTECT_HALO. ONE builder shared with the driver
+    // preflight (AdaptiveRefinementProtection.hpp) so both see the same set.
     if (!aposteriori_protected_built_) {
         aposteriori_protected_built_ = true;
-        std::vector<int> prot;
         const auto& schedule = this->simulator_.vanguard().schedule();
-        for (std::size_t reportStep = 0; reportStep < schedule.size(); ++reportStep) {
-            for (const auto& well : schedule.getWells(reportStep)) {
-                for (const auto& conn : well.getConnections())
-                    prot.push_back(static_cast<int>(conn.global_index()));
-            }
-        }
-        for (const auto& [wname, cells] : schedule.getPossibleFutureConnections()) {
-            static_cast<void>(wname);
-            for (const auto gi : cells)
-                prot.push_back(static_cast<int>(gi));
-        }
-        // SOURCE cells are point flux singularities, just like well cells:
-        // eta_sp,K over-reads there (the mimetic flux reconstruction has its
-        // largest defect at a point source), and refining a source cell
-        // destabilises the nonlinear solve. Exclude every source cell that
-        // appears anywhere in the schedule.
-        {
-            const auto& cim = this->simulator_.vanguard().cartesianIndexMapper();
-            const auto& cd  = cim.cartesianDimensions();
-            const long NXc = cd[0], NYc = cd[1];
-            for (std::size_t reportStep = 0; reportStep < schedule.size(); ++reportStep) {
-                for (const auto& [ijk, cells] : schedule[reportStep].source()) {
-                    static_cast<void>(cells);
-                    prot.push_back(static_cast<int>(
-                        (static_cast<long>(ijk[2]) * NYc + ijk[1]) * NXc + ijk[0]));
-                }
-            }
-        }
-        aposteriori_estimator_->setProtectedRefinementCells(std::move(prot));
+        const auto& cd = this->simulator_.vanguard().cartesianIndexMapper()
+                             .cartesianDimensions();
+        int phalo = 0;
+        if (const char* h = std::getenv("OPM_APOST_PROTECT_HALO"))
+            phalo = std::max(0, std::atoi(h));
+        aposteriori_estimator_->setProtectedRefinementCells(
+            buildProtectedRefinementCells(schedule,
+                {static_cast<int>(cd[0]), static_cast<int>(cd[1]),
+                 static_cast<int>(cd.size() > 2 ? cd[2] : 1)}, phalo));
     }
 
     // Evaluate eta_sp / eta_time for the current Newton iterate.  Do NOT commit

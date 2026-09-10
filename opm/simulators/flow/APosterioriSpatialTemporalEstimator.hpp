@@ -1698,65 +1698,18 @@ private:
         const std::size_t nc = std::min(accumulatedSpatialEnergy_.size(), cellEta_.size());
         if (nc == 0 || !(theta > 0.0 && theta < 1.0)) return;
 
-        // ---- FULL protected mask, built BEFORE Dorfler ranking -------------
-        // Point completions PLUS the whole vertical (i,j) interval a vertical
-        // well spans. Previously the column interval was carved out only AFTER
-        // ranking/denominator, so an intervening high-energy cell could satisfy
-        // the target and then be deleted, silently losing captured energy
-        // (review 2026-09-10). The SAME set is excluded from ranking, from the
-        // denominator, and from the post-halo subtraction.
+        // ---- protected mask, applied BEFORE Dorfler ranking ---------------
+        // protectedCartesian_ is already the FULL set from the shared builder
+        // (AdaptiveRefinementProtection.hpp): well completions + future
+        // connections + per-vertical-well k-spans + exact SOURCE cells +
+        // optional OPM_APOST_PROTECT_HALO dilation. The estimator no longer
+        // does its own column expansion -- one source of truth with the driver
+        // preflight (review 2026-09-10). Excluded from ranking, the energy
+        // denominator, AND the post-halo mask subtraction.
         std::vector<char> fullProt(ncart, 0);
-        {
-            std::vector<std::array<int, 3>> prot;
-            prot.reserve(protectedCartesian_.size());
-            for (int cart : protectedCartesian_) {
-                if (cart < 0 || static_cast<std::size_t>(cart) >= ncart) continue;
+        for (int cart : protectedCartesian_)
+            if (cart >= 0 && static_cast<std::size_t>(cart) < ncart)
                 fullProt[static_cast<std::size_t>(cart)] = 1;
-                prot.push_back({cart % dims[0], (cart / dims[0]) % dims[1],
-                                cart / (dims[0] * dims[1])});
-            }
-            std::sort(prot.begin(), prot.end());
-            for (std::size_t a = 0; a < prot.size();) {
-                std::size_t b = a;
-                int kmin = prot[a][2], kmax = prot[a][2];
-                while (b < prot.size() && prot[b][0] == prot[a][0]
-                       && prot[b][1] == prot[a][1]) {
-                    kmin = std::min(kmin, prot[b][2]);
-                    kmax = std::max(kmax, prot[b][2]);
-                    ++b;
-                }
-                for (int k = kmin; k <= kmax; ++k)
-                    fullProt[cartIndex_(prot[a][0], prot[a][1], k, dims)] = 1;
-                a = b;
-            }
-        }
-        // Optional protective HALO around every protected cell
-        // (OPM_APOST_PROTECT_HALO, default 0). A point source / well is a flux
-        // singularity whose eta_sp,K over-read spills 2-3 cells out; refining
-        // that ring is still next to the singularity and destabilises the
-        // solve. A halo keeps the whole near-singularity ring coarse so the
-        // marks land on the real front instead.
-        if (const char* hs = std::getenv("OPM_APOST_PROTECT_HALO")) {
-            const int ph = std::max(0, std::atoi(hs));
-            for (int pass = 0; pass < ph; ++pass) {
-                std::vector<char> g = fullProt;
-                for (int k = 0; k < dims[2]; ++k)
-                for (int j = 0; j < dims[1]; ++j)
-                for (int i = 0; i < dims[0]; ++i) {
-                    if (!fullProt[cartIndex_(i, j, k, dims)]) continue;
-                    for (int d = 0; d < 3; ++d) {
-                        if (dims[d] <= 1) continue;
-                        for (int s : {-1, 1}) {
-                            std::array<int, 3> a{i, j, k};
-                            a[d] += s;
-                            if (a[d] < 0 || a[d] >= dims[d]) continue;
-                            g[cartIndex_(a[0], a[1], a[2], dims)] = 1;
-                        }
-                    }
-                }
-                fullProt.swap(g);
-            }
-        }
         const auto isProt = [&](int cart) {
             return cart >= 0 && static_cast<std::size_t>(cart) < ncart
                 && fullProt[static_cast<std::size_t>(cart)] != 0;
