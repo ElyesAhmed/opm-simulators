@@ -285,6 +285,25 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
                     static_cast<void>(sc);
                     prot.push_back((static_cast<long>(ijk[2]) * NYg + ijk[1]) * NXg + ijk[0]);
                 }
+            // OPM_APOST_PROTECT_HALO: same near-singularity ring the estimator
+            // keeps coarse -- the preflight must not reject a box that only
+            // touches the halo, and must reject one that enters it.
+            int phalo = 0;
+            if (const char* hs = std::getenv("OPM_APOST_PROTECT_HALO"))
+                phalo = std::max(0, std::atoi(hs));
+            for (int pass = 0; pass < phalo; ++pass) {
+                std::vector<long> grown = prot;
+                for (long g : prot) {
+                    const long i = g % NXg, j = (g / NXg) % NYg, k = g / (NXg * NYg);
+                    for (auto [di, dj, dk] : {std::array<long,3>{1,0,0},{-1,0,0},
+                                              {0,1,0},{0,-1,0},{0,0,1},{0,0,-1}}) {
+                        const long ni = i+di, nj = j+dj, nk = k+dk;
+                        if (ni<0||nj<0||nk<0||ni>=NXg||nj>=NYg||nk>=NZg) continue;
+                        grown.push_back((nk*NYg+nj)*NXg+ni);
+                    }
+                }
+                prot.swap(grown);
+            }
             std::sort(prot.begin(), prot.end());
             prot.erase(std::unique(prot.begin(), prot.end()), prot.end());
             const auto isProt = [&](long i, long j, long k) {
