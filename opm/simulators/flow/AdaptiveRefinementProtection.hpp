@@ -44,6 +44,8 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace Opm {
@@ -64,34 +66,52 @@ buildProtectedRefinementCells(const Schedule& schedule,
         if (c >= 0 && c < ncart) mask[static_cast<std::size_t>(c)] = 1;
     };
 
+    // Per well, collect EVERY completion cell it ever uses (all snapshots) PLUS
+    // its possible future ACTIONX connections, as (i,j,k). Then decide the
+    // vertical k-interval from that merged set -- two future connections of one
+    // vertical well no longer leave the cells between them unprotected
+    // (reviews 2026-09-10).
+    const auto future = schedule.getPossibleFutureConnections();
+    std::unordered_map<std::string, std::vector<std::array<int, 3>>> wellCells;
     for (std::size_t step = 0; step < schedule.size(); ++step) {
         for (const auto& well : schedule.getWells(step)) {
-            const auto& conns = well.getConnections();
-            bool vertical = !conns.empty();
-            int wi = conns.empty() ? -1 : conns[0].getI();
-            int wj = conns.empty() ? -1 : conns[0].getJ();
-            int kmin = 1 << 30, kmax = -(1 << 30);
-            for (const auto& c : conns) {
-                set(static_cast<std::int64_t>(c.global_index()));
-                if (c.getI() != wi || c.getJ() != wj) vertical = false;
-                kmin = std::min(kmin, c.getK());
-                kmax = std::max(kmax, c.getK());
-            }
-            // vertical well: protect the full spanned k-interval for THIS well
-            if (vertical && kmax >= kmin) {
-                for (int k = kmin; k <= kmax; ++k)
-                    set(lin(wi, wj, k));
+            auto& v = wellCells[well.name()];
+            for (const auto& c : well.getConnections()) {
+                set(static_cast<std::int64_t>(c.global_index()));   // exact, always
+                v.push_back({c.getI(), c.getJ(), c.getK()});
             }
         }
         for (const auto& [ijk, cells] : schedule[step].source()) {
             static_cast<void>(cells);
-            set(lin(ijk[0], ijk[1], ijk[2]));   // EXACT source cell only
+            set(lin(ijk[0], ijk[1], ijk[2]));   // EXACT source cell only, never a column
         }
     }
-    for (const auto& [wname, cells] : schedule.getPossibleFutureConnections()) {
+    for (const auto& [wname, cells] : future) {
+        auto& v = wellCells[wname];
+        for (const auto gi : cells) {
+            set(static_cast<std::int64_t>(gi));   // exact
+            const long g = static_cast<long>(gi);
+            v.push_back({static_cast<int>(g % nx),
+                         static_cast<int>((g / nx) % ny),
+                         static_cast<int>(g / (nx * ny))});
+        }
+    }
+    for (const auto& [wname, v] : wellCells) {
         static_cast<void>(wname);
-        for (const auto gi : cells)
-            set(static_cast<std::int64_t>(gi));
+        if (v.empty()) continue;
+        const int wi = v[0][0], wj = v[0][1];
+        bool vertical = true;
+        int kmin = v[0][2], kmax = v[0][2];
+        for (const auto& c : v) {
+            if (c[0] != wi || c[1] != wj) { vertical = false; break; }
+            kmin = std::min(kmin, c[2]);
+            kmax = std::max(kmax, c[2]);
+        }
+        // straight vertical well -> protect its whole spanned k-interval;
+        // deviated / multi-column -> exact cells only (already set above).
+        if (vertical)
+            for (int k = kmin; k <= kmax; ++k)
+                set(lin(wi, wj, k));
     }
 
     // near-singularity halo (boolean-mask dilation, no duplicate growth)

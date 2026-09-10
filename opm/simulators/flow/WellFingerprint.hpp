@@ -89,10 +89,12 @@ captureWellFingerprint(const Schedule& schedule, int episode)
     return out;
 }
 
-//! Compare two fingerprint sets. \p protectedNames (may be empty) are the
-//! wells that MUST be identical; any other well is only checked for gross
-//! structural change (added/removed connection, GLOBAL->LGR). Returns true
-//! iff every required invariant holds; logs every difference.
+//! Compare two fingerprint sets captured at the same schedule time. Every
+//! well must be present in both, with an identical ordered connection set on
+//! the identity fields (name, complnum, cell, ijk, lgr level, state, dir) and
+//! well status; CF / Kh / depth within an absolute+relative tolerance. A
+//! non-finite value fails explicitly (NaN comparisons are all false, so the
+//! old `s>0 ? ... : true` could accept them -- reviews 2026-09-10).
 inline bool
 verifyWellFingerprint(const std::vector<WellFingerprint>& before,
                       const std::vector<WellFingerprint>& after,
@@ -104,10 +106,12 @@ verifyWellFingerprint(const std::vector<WellFingerprint>& before,
         for (const auto& f : v) if (f.name == n) return &f;
         return nullptr;
     };
-    const auto reltol = [&](double a, double b) {
-        const double s = std::max(std::abs(a), std::abs(b));
-        return s > 0.0 ? std::abs(a - b) / s <= relTolCFKh : true;
+    // |a-b| <= eabs + erel*max(|a|,|b|); non-finite -> not close.
+    const auto close = [&](double a, double b, double eabs) {
+        if (!std::isfinite(a) || !std::isfinite(b)) return false;
+        return std::abs(a - b) <= eabs + relTolCFKh * std::max(std::abs(a), std::abs(b));
     };
+    const auto reltol = [&](double a, double b) { return close(a, b, 0.0); };
 
     bool ok = true;
     std::string msg = "well fingerprint (candidate vs pre-rebuild):";
@@ -140,7 +144,7 @@ verifyWellFingerprint(const std::vector<WellFingerprint>& before,
             if (ac.dir        != bc.dir)        d += fmt::format(" dir {}->{}", bc.dir, ac.dir);
             if (!reltol(ac.CF, bc.CF))          d += fmt::format(" CF {:.6e}->{:.6e}", bc.CF, ac.CF);
             if (!reltol(ac.Kh, bc.Kh))          d += fmt::format(" Kh {:.6e}->{:.6e}", bc.Kh, ac.Kh);
-            if (!reltol(ac.depth, bc.depth))    d += fmt::format(" depth {:.4f}->{:.4f}", bc.depth, ac.depth);
+            if (!close(ac.depth, bc.depth, 1e-6)) d += fmt::format(" depth {:.4f}->{:.4f}", bc.depth, ac.depth);
             if (!d.empty()) { msg += fmt::format("\n  {} conn[{}]:{}", b.name, c, d); ok = false; }
         }
     }
@@ -150,7 +154,8 @@ verifyWellFingerprint(const std::vector<WellFingerprint>& before,
             ok = false;
         }
 
-    if (ok) OpmLog::info(msg + "\n  -> all wells preserved");
+    if (ok) OpmLog::info(msg + "\n  -> captured schedule/connection fields preserved "
+                               "(runtime well/group/network state NOT yet checked)");
     else {
         OpmLog::error(msg + "\n  -> well state NOT preserved across the rebuild");
         if (throwOnFail)
