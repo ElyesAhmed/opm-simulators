@@ -50,12 +50,15 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -355,6 +358,20 @@ update(bool global, const TransUpdateQuantities update_quantities,
             FaceInfo outside;
             DimVector faceAreaNormal;
 
+            // A CpGrid LGR coarse<->fine interface on a non-Cartesian (sheared /
+            // corner-point) cell is split by the grid into several intersection
+            // pieces that all connect the SAME cell pair. transMap uses
+            // insert_or_assign, so without this the last piece would overwrite
+            // the others and ~half the interface transmissibility would be lost
+            // -- catastrophic for a well whose block borders such an interface
+            // (review 2026-09-10). Accumulate the pieces per pair, then flush
+            // once after the intersection loop.
+            std::unordered_map<std::uint64_t, Scalar> lgrTransAccum;
+            std::unordered_map<std::uint64_t, Scalar> lgrDiffAccum;
+            std::unordered_map<std::uint64_t, Scalar> lgrDispAccum;
+            std::unordered_map<std::uint64_t, Scalar> lgrHalfAccum;
+            std::unordered_map<std::uint64_t, Scalar> lgrThermAccum;
+
             inside.elemIdx = elemMapper.index(elem);
             // Get the Cartesian index of the origin cells (parent or equivalent cell on level zero),
             // for CpGrid with LGRs. For general grids and no LGRs, get the usual Cartesian Index.
@@ -484,6 +501,38 @@ update(bool global, const TransUpdateQuantities update_quantities,
 
                 Scalar trans = computeHalfMean(computeHalfTrans_, permeability_);
 
+                // A CpGrid LGR coarse<->fine interface on a non-Cartesian cell
+                // is reported as several intersection pieces for the SAME cell
+                // pair; their contributions must be SUMMED, not overwritten.
+                bool splitLgrFace = false;
+                if constexpr (std::is_same_v<Grid, Dune::CpGrid>) {
+                    splitLgrFace = intersection.neighbor()
+                        && (intersection.inside().level() != intersection.outside().level());
+                }
+
+                if (std::getenv("OPM_DUMP_LGR_IFACE_TRANS") != nullptr) {
+                    if constexpr (std::is_same_v<Grid, Dune::CpGrid>) {
+                        const int li = intersection.inside().level();
+                        const int lo = intersection.neighbor() ? intersection.outside().level() : li;
+                        if (li != lo) {
+                            const auto dC = distanceVector_(inside.faceCenter, inside.elemIdx);
+                            const auto dF = distanceVector_(outside.faceCenter, outside.elemIdx);
+                            const auto hC = computeHalfTrans_(faceAreaNormal, inside.faceIdx, dC, permeability_[inside.elemIdx]);
+                            const auto hF = computeHalfTrans_(faceAreaNormal, outside.faceIdx, dF, permeability_[outside.elemIdx]);
+                            std::fprintf(stderr,
+                                "[lgr-iface] in(e%u l%d f%d) out(e%u l%d f%d)  |An|=%.5e  "
+                                "dC=(%.4f,%.4f,%.4f)|%.4f  dF=(%.4f,%.4f,%.4f)|%.4f  "
+                                "hC=%.5e hF=%.5e T=%.5e\n",
+                                inside.elemIdx, li, inside.faceIdx,
+                                outside.elemIdx, lo, outside.faceIdx,
+                                faceAreaNormal.two_norm(),
+                                dC[0],dC[1],dC[2],dC.two_norm(),
+                                dF[0],dF[1],dF[2],dF.two_norm(),
+                                double(hC), double(hF), double(trans));
+                        }
+                    }
+                }
+
                 if (storeHalfTrans_) {
                     // one-sided half transmissibilities (NTG applied),
                     // for the adjoint permeability chain rule
@@ -492,12 +541,18 @@ update(bool global, const TransUpdateQuantities update_quantities,
                                                 permeability_[outside.elemIdx]);
                     applyNtg_(onesided[0], inside, ntg);
                     applyNtg_(onesided[1], outside, ntg);
-                    halfTransMap.insert_or_assign(
-                        details::directionalIsId(inside.elemIdx, outside.elemIdx),
-                        onesided[0]);
-                    halfTransMap.insert_or_assign(
-                        details::directionalIsId(outside.elemIdx, inside.elemIdx),
-                        onesided[1]);
+                    if (splitLgrFace) {
+                        lgrHalfAccum[details::directionalIsId(inside.elemIdx, outside.elemIdx)] += onesided[0];
+                        lgrHalfAccum[details::directionalIsId(outside.elemIdx, inside.elemIdx)] += onesided[1];
+                    }
+                    else {
+                        halfTransMap.insert_or_assign(
+                            details::directionalIsId(inside.elemIdx, outside.elemIdx),
+                            onesided[0]);
+                        halfTransMap.insert_or_assign(
+                            details::directionalIsId(outside.elemIdx, inside.elemIdx),
+                            onesided[1]);
+                    }
                 }
 
                 // apply the full face transmissibility multipliers
@@ -546,30 +601,58 @@ update(bool global, const TransUpdateQuantities update_quantities,
                                                            faceIdToDir(inside.faceIdx));
                 }
 
-                transMap.insert_or_assign(details::isId(inside.elemIdx, outside.elemIdx), trans);
+                if (splitLgrFace)
+                    lgrTransAccum[details::isId(inside.elemIdx, outside.elemIdx)] += trans;
+                else
+                    transMap.insert_or_assign(details::isId(inside.elemIdx, outside.elemIdx), trans);
 
                 // update the "thermal half transmissibility" for the intersection
                 if (enableEnergy_ && !onlyTrans) {
                     const auto half = computeHalf(halfDiff, 1.0, 1.0);
                     // TODO Add support for multipliers
-                    thermalHalfTrans.insert_or_assign(details::directionalIsId(inside.elemIdx, outside.elemIdx),
-                                                      half[0]);
-                    thermalHalfTrans.insert_or_assign(details::directionalIsId(outside.elemIdx, inside.elemIdx),
-                                                      half[1]);
+                    if (splitLgrFace) {
+                        lgrThermAccum[details::directionalIsId(inside.elemIdx, outside.elemIdx)] += half[0];
+                        lgrThermAccum[details::directionalIsId(outside.elemIdx, inside.elemIdx)] += half[1];
+                    }
+                    else {
+                        thermalHalfTrans.insert_or_assign(details::directionalIsId(inside.elemIdx, outside.elemIdx),
+                                                          half[0]);
+                        thermalHalfTrans.insert_or_assign(details::directionalIsId(outside.elemIdx, inside.elemIdx),
+                                                          half[1]);
+                    }
                 }
 
                 // update the "diffusive half transmissibility" for the intersection
                 if (updateDiffusivity && !onlyTrans) {
-                    diffusivity.insert_or_assign(details::isId(inside.elemIdx, outside.elemIdx),
-                                                 computeHalfMean(halfDiff, porosity_));
+                    const auto d = computeHalfMean(halfDiff, porosity_);
+                    if (splitLgrFace)
+                        lgrDiffAccum[details::isId(inside.elemIdx, outside.elemIdx)] += d;
+                    else
+                        diffusivity.insert_or_assign(details::isId(inside.elemIdx, outside.elemIdx), d);
                 }
 
                 // update the "dispersivity half transmissibility" for the intersection
                 if (updateDispersivity && !onlyTrans) {
-                    dispersivity.insert_or_assign(details::isId(inside.elemIdx, outside.elemIdx),
-                                                  computeHalfMean(halfDiff, dispersion_));
+                    const auto d = computeHalfMean(halfDiff, dispersion_);
+                    if (splitLgrFace)
+                        lgrDispAccum[details::isId(inside.elemIdx, outside.elemIdx)] += d;
+                    else
+                        dispersivity.insert_or_assign(details::isId(inside.elemIdx, outside.elemIdx), d);
                 }
             }
+
+            // Flush the summed contributions of every split CpGrid LGR
+            // coarse<->fine interface for this cell.
+            for (const auto& [id, t] : lgrTransAccum)
+                transMap.insert_or_assign(id, t);
+            for (const auto& [id, t] : lgrHalfAccum)
+                halfTransMap.insert_or_assign(id, t);
+            for (const auto& [id, t] : lgrThermAccum)
+                thermalHalfTrans.insert_or_assign(id, t);
+            for (const auto& [id, t] : lgrDiffAccum)
+                diffusivity.insert_or_assign(id, t);
+            for (const auto& [id, t] : lgrDispAccum)
+                dispersivity.insert_or_assign(id, t);
         }
     }
     centroids_cache_.clear();
