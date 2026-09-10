@@ -419,6 +419,19 @@ public:
             if (std::binary_search(wellCells_.begin(), wellCells_.end(),
                                    static_cast<int>(i)))
                 wellCenters.push_back(geom_[i].center);
+
+        // D_K must bound  sup_{x in K} d_Lambda(x)  with d_Lambda(x) = min_z |x - z|.
+        //   default : the triangle-inequality bound  d_Lambda(x_K) + h_K.
+        //   OPM_APOST_WEIGHT_MINMAX=1 : the exact minimax quantity
+        //       D_{K,Z} = min_z  max_{a in corners(K)} |x_a - z|,
+        //   the tightest single scalar with D_{K,Z} >= sup_{x in K} d_Lambda(x)
+        //   (weak duality / minimax inequality). On flat or anisotropic cells
+        //   this sits far below d_Lambda(x_K) + h_K, because h_K is the full cell
+        //   diameter, not the cell extent toward the nearest well.
+        const bool minMaxWeight = [] {
+            const char* s = std::getenv("OPM_APOST_WEIGHT_MINMAX");
+            return s && s[0] != '\0' && s[0] != '0';
+        }();
         for (auto& g : geom_) {
             Scalar dLambda = 0.0;
             if (!wellCenters.empty()) {
@@ -429,8 +442,26 @@ public:
                     dLambda = std::min(dLambda, static_cast<Scalar>(diff.two_norm()));
                 }
             }
-            // max_{x in K} d_Lambda(x) <= d_Lambda(x_K) + h_K  (triangle ineq.)
-            g.DK = dLambda + g.hK;
+            if (minMaxWeight && !wellCenters.empty() && !g.vtxOff.empty()) {
+                Scalar dMinMax = std::numeric_limits<Scalar>::max();
+                for (const auto& w : wellCenters) {
+                    auto c2w = g.center;
+                    c2w -= w;                                   // x_K - z
+                    Scalar farCorner = 0.0;
+                    for (const auto& off : g.vtxOff) {
+                        auto x2w = c2w;
+                        x2w += off;                             // x_a - z
+                        farCorner = std::max(farCorner,
+                                             static_cast<Scalar>(x2w.two_norm()));
+                    }
+                    dMinMax = std::min(dMinMax, farCorner);      // nearest well wins
+                }
+                g.DK = dMinMax;
+            }
+            else {
+                // max_{x in K} d_Lambda(x) <= d_Lambda(x_K) + h_K  (triangle ineq.)
+                g.DK = dLambda + g.hK;
+            }
             g.weightPow = std::pow(std::max(g.DK, Scalar{0}), ell_ / Scalar{2});
         }
     }
@@ -531,12 +562,23 @@ public:
     Scalar etaAlgebraic() const { return etaAlg_; }
 
     //! Write the per-cell estimator distribution to a CSV for 3-D plotting:
-    //! columns cell, x, y, z, eta_sp(mim), eta_time, eta_lin, eta_alg.
+    //! columns cell, x, y, z, eta_sp(mim), eta_time, eta_lin, eta_alg,
+    //! h_K, D_K, weightPow (D_K^{l/2}) -- the last three expose the near-well
+    //! weight field so the default d_Lambda+h_K bound and OPM_APOST_WEIGHT_MINMAX
+    //! can be compared directly.
     void dumpCellEstimators(const std::string& path) const
     {
         std::ofstream os(path);
         if (!os) return;
-        os << "cell,x,y,z,eta_sp,eta_time,eta_lin,eta_alg\n";
+        os << "cell,x,y,z,eta_sp,eta_time,eta_lin,eta_alg,h_K,D_K,weightPow,"
+              "sw,so,sg,p_oil,permx,permz\n";
+        auto& model = simulator_.model();
+        const int watPh = FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)
+            ? FluidSystem::waterPhaseIdx : -1;
+        const int oilPh = FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)
+            ? FluidSystem::oilPhaseIdx : -1;
+        const int gasPh = FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)
+            ? FluidSystem::gasPhaseIdx : -1;
         const std::size_t n = std::min(cellEta_.size(), geom_.size());
         for (std::size_t i = 0; i < n; ++i) {
             const auto& g = geom_[i];
@@ -544,7 +586,20 @@ public:
             for (int d = 0; d < 3; ++d)
                 os << ',' << (d < dim ? g.center[std::min(d, dim - 1)] : Scalar{0});
             os << ',' << cellEta_[i][0] << ',' << cellEta_[i][1] << ','
-               << cellEta_[i][2] << ',' << cellEta_[i][3] << '\n';
+               << cellEta_[i][2] << ',' << cellEta_[i][3]
+               << ',' << g.hK << ',' << g.DK << ',' << g.weightPow;
+            Scalar sw = 0, so = 0, sg = 0, po = 0;
+            if (i < model.numGridDof()) {
+                const auto& fs = model.intensiveQuantities(i, /*timeIdx=*/0).fluidState();
+                if (watPh >= 0) sw = getValue(fs.saturation(watPh));
+                if (oilPh >= 0) so = getValue(fs.saturation(oilPh));
+                if (gasPh >= 0) sg = getValue(fs.saturation(gasPh));
+                if (oilPh >= 0) po = getValue(fs.pressure(oilPh));
+                else if (watPh >= 0) po = getValue(fs.pressure(watPh));
+            }
+            os << ',' << sw << ',' << so << ',' << sg << ',' << po
+               << ',' << g.permDiag[0] << ',' << (dim > 2 ? g.permDiag[2] : g.permDiag[0])
+               << '\n';
         }
     }
 
@@ -624,14 +679,15 @@ public:
         refinementMarks(zetaRef, zetaDeref, &marks);
         std::ofstream os(path);
         if (!os) return;
-        os << "cell,x,y,z,eta_sp_K,mark\n";
+        os << "cell,x,y,z,eta_sp_K,mark,D_K,weightPow\n";
         const std::size_t n = std::min(cellEta_.size(), geom_.size());
         for (std::size_t i = 0; i < n; ++i) {
             const auto& g = geom_[i];
             os << i;
             for (int d = 0; d < 3; ++d)
                 os << ',' << (d < dim ? g.center[std::min(d, dim - 1)] : Scalar{0});
-            os << ',' << cellEta_[i][0] << ',' << marks[i] << '\n';
+            os << ',' << cellEta_[i][0] << ',' << marks[i]
+               << ',' << g.DK << ',' << g.weightPow << '\n';
         }
     }
 
