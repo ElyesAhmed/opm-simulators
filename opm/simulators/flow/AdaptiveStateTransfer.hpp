@@ -309,10 +309,30 @@ verifyPerParentConservation(
     const std::unordered_map<std::int64_t, std::array<double, 4>>& after,
     double tol, bool throwOnFail = false)
 {
+    // Refinement-only path: the parent-key SETS must be identical (every
+    // original coarse cell is a parent; a child's parent must appear).
+    // Non-finite / negative inventory, a non-finite / non-positive tolerance,
+    // a missing OR an extra parent all FAIL -- the earlier version skipped a
+    // missing parent, ignored extras, and let NaN through (reviews 2026-09-10).
     static constexpr const char* nm[4] = {"PV", "water", "oil", "gas"};
-    int nBad = 0, nChecked = 0;
-    std::array<double, 4> worst{0, 0, 0, 0};
-    std::int64_t worstKey = -1;
+    bool ok = std::isfinite(tol) && tol > 0.0;
+    if (!ok)
+        OpmLog::error("per-parent conservation: non-finite / non-positive tolerance");
+
+    int nMissing = 0, nExtra = 0;
+    for (const auto& [key, b] : before)
+        if (!after.count(key)) ++nMissing;
+    for (const auto& [key, a] : after) {
+        static_cast<void>(a);
+        if (!before.count(key)) ++nExtra;
+    }
+    if (nMissing || nExtra) ok = false;
+
+    int nBad = 0, nChecked = 0, nNonFinite = 0;
+    std::array<double, 4> worstRel{0, 0, 0, 0}, worstAbs{0, 0, 0, 0};
+    std::array<double, 4> sumSigned{0, 0, 0, 0}, sumAbs{0, 0, 0, 0};
+    std::array<std::int64_t, 4> worstRelKey{-1, -1, -1, -1};
+    std::array<double, 4> worstRelScale{0, 0, 0, 0};
     for (const auto& [key, b] : before) {
         const auto it = after.find(key);
         if (it == after.end()) continue;
@@ -320,20 +340,32 @@ verifyPerParentConservation(
         const auto& a = it->second;
         bool bad = false;
         for (int c = 0; c < 4; ++c) {
+            if (!std::isfinite(a[c]) || !std::isfinite(b[c])
+                || a[c] < -1e-12 || b[c] < -1e-12) { ++nNonFinite; bad = true; continue; }
+            const double d = a[c] - b[c];
             const double s = std::max(std::abs(a[c]), std::abs(b[c]));
-            const double rel = s > 0.0 ? std::abs(a[c] - b[c]) / s : 0.0;
-            if (rel > worst[c]) { worst[c] = rel; if (c == 2) worstKey = key; }
+            const double rel = s > 0.0 ? std::abs(d) / s : 0.0;
+            sumSigned[c] += d;
+            sumAbs[c]    += std::abs(d);
+            if (std::abs(d) > worstAbs[c]) worstAbs[c] = std::abs(d);
+            if (rel > worstRel[c]) { worstRel[c] = rel; worstRelKey[c] = key; worstRelScale[c] = s; }
             if (rel > tol) bad = true;
         }
         if (bad) ++nBad;
     }
+
     std::string msg = fmt::format(
-        "per-parent conservation: {} parents checked, {} outside tol {:.1e}\n"
-        "  worst rel.err  PV {:.2e}  water {:.2e}  oil {:.2e}  gas {:.2e}"
-        "  (worst-oil parent cart {})",
-        nChecked, nBad, tol, worst[0], worst[1], worst[2], worst[3], worstKey);
-    static_cast<void>(nm);
-    const bool ok = (nBad == 0);
+        "per-parent conservation: {} parents checked (before {}, after {}), "
+        "{} missing, {} extra, {} non-finite, {} outside tol {:.1e}",
+        nChecked, before.size(), after.size(), nMissing, nExtra, nNonFinite, nBad, tol);
+    for (int c = 0; c < 4; ++c)
+        msg += fmt::format(
+            "\n  {:<5} worst-rel {:.2e} @cart {} (scale {:.3e})  worst-abs {:.3e}  "
+            "signed-sum {:+.3e}  abs-sum {:.3e}",
+            nm[c], worstRel[c], worstRelKey[c], worstRelScale[c],
+            worstAbs[c], sumSigned[c], sumAbs[c]);
+
+    ok = ok && (nBad == 0) && (nNonFinite == 0);
     if (ok) OpmLog::info(msg);
     else {
         OpmLog::error(msg + "\n  -> per-parent conservation FAILED");
