@@ -514,15 +514,17 @@ update(bool global, const TransUpdateQuantities update_quantities,
                     if constexpr (std::is_same_v<Grid, Dune::CpGrid>) {
                         const int li = intersection.inside().level();
                         const int lo = intersection.neighbor() ? intersection.outside().level() : li;
-                        if (li != lo) {
+                        const bool dumpAll = std::getenv("OPM_DUMP_LGR_IFACE_ALL") != nullptr;
+                        if (li != lo || dumpAll) {
                             const auto dC = distanceVector_(inside.faceCenter, inside.elemIdx);
                             const auto dF = distanceVector_(outside.faceCenter, outside.elemIdx);
                             const auto hC = computeHalfTrans_(faceAreaNormal, inside.faceIdx, dC, permeability_[inside.elemIdx]);
                             const auto hF = computeHalfTrans_(faceAreaNormal, outside.faceIdx, dF, permeability_[outside.elemIdx]);
                             std::fprintf(stderr,
-                                "[lgr-iface] in(e%u l%d f%d) out(e%u l%d f%d)  |An|=%.5e  "
+                                "[lgr-iface] cart(%u<->%u) in(e%u l%d f%d) out(e%u l%d f%d)  |An|=%.5e  "
                                 "dC=(%.4f,%.4f,%.4f)|%.4f  dF=(%.4f,%.4f,%.4f)|%.4f  "
                                 "hC=%.5e hF=%.5e T=%.5e\n",
+                                inside.cartElemIdx, outside.cartElemIdx,
                                 inside.elemIdx, li, inside.faceIdx,
                                 outside.elemIdx, lo, outside.faceIdx,
                                 faceAreaNormal.two_norm(),
@@ -1152,7 +1154,21 @@ computeFaceProperties(const Intersection& intersection,
         faceAreaNormal = grid_.faceAreaNormalEcl(faceIdx);
     }
     else {
-        if ((intersection.inside().level() != intersection.outside().level())) {
+        // A face needs the coarse<->fine (parent-intersection) treatment only
+        // when the two cells are genuinely different sizes. Two refined boxes
+        // of the SAME subdivision factor that abut are put on different LGR
+        // *levels* by CpGrid (one level per box) even though their cells are
+        // identical in size; their shared face is a plain matching face and
+        // must NOT be split against a level-zero parent (review 2026-09-10:
+        // that mistreatment made a thin refined shell 50% wrong).
+        const auto vIn  = intersection.inside().geometry().volume();
+        const auto vOut = intersection.neighbor()
+            ? intersection.outside().geometry().volume() : vIn;
+        const bool differentCellSize =
+            std::abs(vIn - vOut) > Scalar(1e-6) * std::max(vIn, vOut);
+
+        if ((intersection.inside().level() != intersection.outside().level())
+            && differentCellSize) {
             // For CpGrid with LGRs, intersection laying on the boundary of an LGR, having two neighboring cells:
             // one coarse neighboring cell and one refined neighboring cell, we get the corresponding parent
             // intersection (from level 0), and use the center of the parent intersection for the coarse
@@ -1182,13 +1198,13 @@ computeFaceProperties(const Intersection& intersection,
             faceAreaNormal *= intersection.geometry().volume();
         }
         else {
-            assert(intersection.inside().level() == intersection.outside().level());
-
+            // Matching face: same level, or different LGR levels but identical
+            // cell size (two same-factor boxes meeting).
             inside.faceCenter = grid_.faceCenterEcl(inside.elemIdx, inside.faceIdx, intersection);
             outside.faceCenter = grid_.faceCenterEcl(outside.elemIdx, outside.faceIdx, intersection);
 
             // When the CpGrid has LGRs, we compute the face area normal differently.
-            if (intersection.inside().level() > 0) {  // remove intersection.inside().level() > 0
+            if (intersection.inside().level() > 0 || intersection.outside().level() > 0) {
                 faceAreaNormal = intersection.centerUnitOuterNormal();
                 faceAreaNormal *= intersection.geometry().volume();
             }
