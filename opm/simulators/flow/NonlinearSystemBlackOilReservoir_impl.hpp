@@ -45,6 +45,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -471,12 +472,37 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
         aposteriori_estimator_->setWellCells(std::move(wellCells));
     }
 
+    // Schedule-wide protected well-completion mask (built once). Unlike the
+    // per-step near-well set above, this must cover EVERY completion cell any
+    // well uses anywhere in the run -- including future connections -- so a
+    // generated refinement box can never straddle a well trajectory or turn a
+    // completion cell into an LGR cell. Same idiom as WellConnectionAuxiliaryModule.
+    if (!aposteriori_protected_built_) {
+        aposteriori_protected_built_ = true;
+        std::vector<int> prot;
+        const auto& schedule = this->simulator_.vanguard().schedule();
+        for (std::size_t reportStep = 0; reportStep < schedule.size(); ++reportStep) {
+            for (const auto& well : schedule.getWells(reportStep)) {
+                for (const auto& conn : well.getConnections())
+                    prot.push_back(static_cast<int>(conn.global_index()));
+            }
+        }
+        for (const auto& [wname, cells] : schedule.getPossibleFutureConnections()) {
+            static_cast<void>(wname);
+            for (const auto gi : cells)
+                prot.push_back(static_cast<int>(gi));
+        }
+        aposteriori_estimator_->setProtectedRefinementCells(std::move(prot));
+    }
+
     // Evaluate eta_sp / eta_time for the current Newton iterate.  Do NOT commit
     // the temporal history until the step converges, so eta_time keeps
     // comparing against the last converged step and both estimators can be
     // watched across Newton iterations (they should plateau while eta_lin
     // falls -- the signature of a clean error-component split).
-    aposteriori_estimator_->compute(dt, /*commitHistory=*/converged);
+    // Stage the current iterate only. Temporal history is committed by
+    // acceptAposterioriStep() after the outer timestep acceptance test.
+    aposteriori_estimator_->compute(dt, /*commitHistory=*/false);
 
     // etaSpMim is the MVEM (mimetic virtual element) flux-energy replacement
     // for T1+T3, following Vohralik & Yousef CMAME 331 (2018) Sections 3 and
@@ -540,8 +566,20 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
     // (cell, x, y, z, eta_sp, eta_time, eta_lin, eta_alg) named
     // apost_cells_step<n>_it<k>.csv. eta_lin -> 0 at Newton convergence by
     // construction, so an early iterate (it1/it2) shows its spatial structure.
+    // OPM_APOST_DUMP_STEP=<n> matches timer.currentStepNum(); =-1 (or "last")
+    // overwrites two fixed files on EVERY estimator call, so after the run they
+    // hold the FINAL substep's field -- robust on TSTEP decks where
+    // currentStepNum() is not the report index:
+    //   apost_cells_last.csv        -- latest iterate  (eta_sp/time/alg; eta_lin~0)
+    //   apost_cells_last_early.csv  -- first Newton iterate of the step (eta_lin structure)
     if (const char* s = std::getenv("OPM_APOST_DUMP_STEP")) {
-        if (std::atoi(s) == timer.currentStepNum()) {
+        const bool everyStep = (std::string(s) == "last" || std::atoi(s) < 0);
+        if (everyStep) {
+            aposteriori_estimator_->dumpCellEstimators("apost_cells_last.csv");
+            if (aposteriori_rows_.size() <= 1)
+                aposteriori_estimator_->dumpCellEstimators("apost_cells_last_early.csv");
+        }
+        else if (std::atoi(s) == timer.currentStepNum()) {
             aposteriori_estimator_->dumpCellEstimators(
                 fmt::format("apost_cells_step{}_it{}.csv",
                             timer.currentStepNum(), aposteriori_rows_.size()));
@@ -581,6 +619,7 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
                 fmt::format("apost_refine_step{}.csv", timer.currentStepNum()),
                 zRef, zDrf);
         }
+
     }
 
     // Diagnostic only: does Criteria_newton -- now dimensionally consistent,
@@ -701,6 +740,70 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
                           "Q(chi^k)-Q_lin and NNC linearization terms).",
                           haveT ? ratio : 0.0);
         OpmLog::info(os.str());
+    }
+}
+
+template <class TypeTag>
+void
+NonlinearSystemBlackOilReservoir<TypeTag>::
+acceptAposterioriStep(const SimulatorTimerInterface& timer)
+{
+    if (!aposteriori_estimator_)
+        return;
+
+    // Newton convergence is not sufficient: NonlinearSolver may still reject
+    // the step using its relative-change timestep acceptance test. Commit all
+    // accepted-step-only estimator state only after that test passes.
+    aposteriori_estimator_->commitTemporalHistory();
+    aposteriori_estimator_->accumulateSpatialEnergy();
+
+    const char* rq = std::getenv("OPM_APOST_REFINE_REQUEST");
+    if (!rq || this->grid_.comm().rank())
+        return;
+
+    const Scalar zRef = []() {
+        const char* s = std::getenv("OPM_APOST_ZETA_REF");
+        return s ? static_cast<Scalar>(std::atof(s)) : Scalar{0.5};
+    }();
+    double accumTheta = -1.0;
+    if (const char* s = std::getenv("OPM_APOST_ACCUM_THETA"))
+        accumTheta = std::atof(s);
+
+    std::string spec;
+    if (accumTheta > 0.0 && accumTheta < 1.0) {
+        const auto marks =
+            aposteriori_estimator_->refinementMarksAccumulated(accumTheta);
+        spec = aposteriori_estimator_->refinementBoxSpecAccumulated(accumTheta);
+        if (this->terminalOutputEnabled()) {
+            OpmLog::info(fmt::format(
+                "  [Algorithm 6.1] accumulated Dorfler(theta={:.2f}): {} seed cell(s)"
+                " -> {} coarse cell(s) after halo/protection; "
+                "captured {:.1f}% of total spatial energy",
+                accumTheta, marks.second, marks.first,
+                100.0 * aposteriori_estimator_->lastRetainedEnergyFraction()));
+        }
+    }
+    else {
+        spec = aposteriori_estimator_->refinementBoxSpec(zRef);
+    }
+
+    // Atomic publish (temp file + rename) so the driver never reads a
+    // half-written spec.
+    const std::string path =
+        (std::string(rq) == "1") ? "apost_refine_request.txt" : rq;
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream os(tmp, std::ios::trunc);
+        if (os) os << spec << '\n';
+    }
+    std::rename(tmp.c_str(), path.c_str());
+
+    // History: one entry per REPORT step (not per accepted substep).
+    if (timer.reportStepNum() != aposteriori_refine_hist_step_) {
+        aposteriori_refine_hist_step_ = timer.reportStepNum();
+        std::ofstream hs("apost_refine_history.txt", std::ios::app);
+        if (hs)
+            hs << "report " << timer.reportStepNum() << ": " << spec << '\n';
     }
 }
 

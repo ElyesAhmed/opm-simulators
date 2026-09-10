@@ -39,16 +39,24 @@
 #include <opm/output/data/Cells.hpp>
 #include <opm/input/eclipse/Units/UnitSystem.hpp>
 
+#include <opm/common/OpmLog/OpmLog.hpp>
+
 #include <opm/material/common/MathToolbox.hpp>
 #include <opm/material/fluidstates/BlackOilFluidState.hpp>
 
 #include <opm/models/utils/propertysystem.hh>
 #include <opm/models/utils/basicproperties.hh>
 
+#include <array>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <vector>
+
+#include <fmt/format.h>
 
 namespace Opm {
 
@@ -184,6 +192,100 @@ remapAdaptiveState(const AdaptiveStateMap& state,
     sol.insert("RV",       M::oil_gas_ratio,     std::move(rv),       T::RESTART_SOLUTION);
     sol.insert("TEMP",     M::temperature,       std::move(temp),     T::RESTART_SOLUTION);
     return sol;
+}
+
+//! {water, oil, gas} total component inventory in SURFACE volume over the
+//! interior leaf cells -- the black-oil accumulation term
+//!   sum_K PV_K * [ S_w b_w,  S_o b_o + R_v S_g b_g,  S_g b_g + R_s S_o b_o ]
+//! i.e. exactly the quantity the scheme conserves. Constant intensive
+//! prolongation to child cells preserves this iff the child pore volumes
+//! partition the parent's, so comparing it before/after a rebuild is the
+//! direct conservativeness check (plan step: strict per-component inventory).
+template <class TypeTag>
+std::array<double, 3>
+blackOilComponentInventory(GetPropType<TypeTag, Properties::Simulator>& simulator)
+{
+    using FluidSystem    = GetPropType<TypeTag, Properties::FluidSystem>;
+    using ElementContext  = GetPropType<TypeTag, Properties::ElementContext>;
+
+    constexpr int waterPhaseIdx = FluidSystem::waterPhaseIdx;
+    constexpr int oilPhaseIdx   = FluidSystem::oilPhaseIdx;
+    constexpr int gasPhaseIdx   = FluidSystem::gasPhaseIdx;
+    const bool oilActive = FluidSystem::phaseIsActive(oilPhaseIdx);
+    const bool gasActive = FluidSystem::phaseIsActive(gasPhaseIdx);
+    const bool watActive = FluidSystem::phaseIsActive(waterPhaseIdx);
+
+    std::array<double, 3> inv{0.0, 0.0, 0.0};   // 0 = water, 1 = oil, 2 = gas
+
+    ElementContext elemCtx(simulator);
+    for (const auto& elem : elements(simulator.gridView(), Dune::Partitions::interior)) {
+        elemCtx.updatePrimaryStencil(elem);
+        elemCtx.updatePrimaryIntensiveQuantities(/*timeIdx=*/0);
+        const auto& iq  = elemCtx.intensiveQuantities(0, /*timeIdx=*/0);
+        const unsigned idx = elemCtx.globalSpaceIndex(0, /*timeIdx=*/0);
+        const auto& fs = iq.fluidState();
+
+        const double pv = simulator.model().dofTotalVolume(idx)
+                        * getValue(iq.porosity());
+
+        double svW = 0.0, svO = 0.0, svG = 0.0;
+        if (watActive)
+            svW = getValue(fs.saturation(waterPhaseIdx)) * getValue(fs.invB(waterPhaseIdx)) * pv;
+        if (oilActive)
+            svO = getValue(fs.saturation(oilPhaseIdx))   * getValue(fs.invB(oilPhaseIdx))   * pv;
+        if (gasActive)
+            svG = getValue(fs.saturation(gasPhaseIdx))   * getValue(fs.invB(gasPhaseIdx))   * pv;
+
+        inv[0] += svW;
+        inv[1] += svO;
+        inv[2] += svG;
+        if (oilActive && gasActive) {
+            inv[2] += getValue(fs.Rs()) * svO;   // dissolved gas in oil
+            inv[1] += getValue(fs.Rv()) * svG;   // vaporized oil in gas
+        }
+    }
+
+    const auto& comm = simulator.gridView().comm();
+    for (auto& v : inv) v = comm.sum(v);
+    return inv;
+}
+
+//! Compare two component inventories component-wise. Logs the table; on a
+//! mismatch above \p tol logs an error and (default) throws, so a
+//! non-conservative rebuild aborts the run rather than silently continuing.
+//! A component that appears from nothing (before==0, after>0), a non-finite
+//! entry, or a non-finite \p tol all FAIL -- the earlier `before[i]>0` guard
+//! let those through (review 2026-09-10).
+inline bool
+verifyComponentInventory(const std::array<double, 3>& before,
+                         const std::array<double, 3>& after,
+                         double tol,
+                         bool throwOnFail = true)
+{
+    static constexpr const char* nm[3] = {"water", "oil", "gas"};
+    bool ok = std::isfinite(tol) && tol > 0.0;
+    std::string msg = "adaptive state transfer -- black-oil component inventory "
+                      "(surface volume):";
+    for (int i = 0; i < 3; ++i) {
+        const double diff  = std::abs(after[i] - before[i]);
+        const double scale = std::max(std::abs(before[i]), std::abs(after[i]));
+        // absolute-plus-relative: exact match (scale 0) passes; a component
+        // that appears from zero has scale>0 and diff==scale -> rel 1 -> fails.
+        const double rel = (scale > 0.0) ? diff / scale : 0.0;
+        msg += fmt::format("\n  {:<5} before = {:.12e}  after = {:.12e}  rel.err = {:.3e}",
+                           nm[i], before[i], after[i], rel);
+        if (!std::isfinite(before[i]) || !std::isfinite(after[i]) || rel > tol)
+            ok = false;
+    }
+    if (ok) {
+        OpmLog::info(msg + fmt::format("\n  -> conserved to < {:.1e}", tol));
+    } else {
+        OpmLog::error(msg + fmt::format("\n  -> NOT conserved (tolerance {:.1e})", tol));
+        if (throwOnFail)
+            throw std::runtime_error("adaptive state transfer: black-oil component "
+                                     "inventory not conserved across the grid rebuild");
+    }
+    return ok;
 }
 
 //! Inject a leaf-ordered solution into a freshly initialized simulator at

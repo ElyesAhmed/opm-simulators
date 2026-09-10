@@ -1023,6 +1023,15 @@ doWriteOutput(const int                          reportStepNum,
         // parallel branch below splits on it instead. So accept either.
         && ( (this->grid_.maxLevel() > 0)
              || (this->collectGrid_ != nullptr && this->collectGrid_->maxLevel() > 0) );
+    // A programmatic LGR (--adaptive-lgr / dynamic refinement, Algorithm 6.1) is
+    // not in the deck, so EclipseIO has no LGR grid to receive per-level
+    // sections. Project the leaf solution onto the coarse level-0 grid and write
+    // only that: the solve runs on the refined grid, the ECL files stay at
+    // coarse resolution. Serial only for now.
+    const bool haveProgrammaticLgr = !needsReordering
+        && (this->eclState_.getLgrs().size() == 0)
+        && !isParallel
+        && (this->grid_.maxLevel() > 0);
     // Split the leaf solution onto the per-level grids.  Level cells that appear
     // on the leaf grid view get the data::Solution values from there; other
     // cells (parent cells that vanished due to refinement) get rubbish values
@@ -1038,6 +1047,22 @@ doWriteOutput(const int                          reportStepNum,
         // In parallel the leaf solution has been gathered onto the I/O rank's
         // refined output grid (collectGrid_); split it there.
         Opm::Lgr::extractRestartValueLevelGrids<EquilGrid>(*this->collectGrid_, restartValue, restartValues);
+    }
+    else if ( haveProgrammaticLgr ) {
+        std::vector<Opm::RestartValue> levelValues{};
+        Opm::Lgr::extractRestartValueLevelGrids<Grid>(this->grid_, restartValue, levelValues);
+        restartValues.reserve(1);
+        if (!levelValues.empty()) {
+            // extractRestartValueLevelGrids drops OPMEXTRA (the next-step size);
+            // carry it onto the coarse restart value so restart-continue works.
+            if (restartValue.hasExtra("OPMEXTRA")) {
+                levelValues.front().addExtra("OPMEXTRA", restartValue.getExtra("OPMEXTRA"));
+            }
+            restartValues.push_back(std::move(levelValues.front())); // coarse level 0 only
+        }
+        else {
+            restartValues.push_back(std::move(restartValue));
+        }
     }
     else {
         restartValues.reserve(1); // minimum size
