@@ -977,6 +977,15 @@ macro(opm-simulators_targets_hook)
       LIBRARIES
         opmsimulators
     )
+    opm_add_executable(
+      TARGET
+        flow_blackoil_alugrid_adapt
+      SOURCES
+        flow/flow_blackoil_alugrid_adapt.cpp
+        $<TARGET_OBJECTS:moduleVersion>
+      LIBRARIES
+        opmsimulators
+    )
   endif()
 
   if(BUILD_FLOW_POLY_GRID)
@@ -995,6 +1004,7 @@ macro(opm-simulators_targets_hook)
     foreach(target flowexp_blackoil
                    flowexp_comp
                    flow_blackoil_alugrid
+                   flow_blackoil_alugrid_adapt
                    flow_blackoil_float
                    flow_blackoil_polyhedralgrid
                    ${FLOWMODELS_PREFIXED})
