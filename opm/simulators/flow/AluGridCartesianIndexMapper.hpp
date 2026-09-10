@@ -241,6 +241,13 @@ public:
         return std::make_unique<DataHandle>(gridView, cartesianIndex_);
     }
 
+    /** \brief replace the compressed->Cartesian table in place after an
+     *         in-place grid adaptation. Keeps this object's identity so
+     *         references held elsewhere (e.g. Transmissibility) stay valid;
+     *         local refinement does not change the logical Cartesian size. */
+    void updateCartesianIndex(std::vector<int> cartesianIndex)
+    { cartesianIndex_ = std::move(cartesianIndex); }
+
 protected:
     int computeCartesianSize() const
     {
