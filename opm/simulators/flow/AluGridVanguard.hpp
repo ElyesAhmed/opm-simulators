@@ -334,9 +334,11 @@ public:
         cartesianIndexMapper_->updateCartesianIndex(nc);
         cartesianCellId_ = std::move(nc);
 
-        // refresh the leaf grid view in place (keeps the object identity that
-        // Transmissibility / the discretization hold references to)
-        this->refreshGridViewInPlace_();
+        // The ALU leaf grid view must be RECREATED after adapt() -- an in-place
+        // assignment leaves stale iterator internals (yields garbage element
+        // indices in the output path). Consumers that hold a const-ref to it
+        // (Transmissibility) are reconstructed by the problem's gridChanged().
+        this->updateGridView_();
 
         // The equil-grid <-> simulation-grid reorder is only defined for the
         // initial grid. After an in-place adapt every downstream per-cell array
