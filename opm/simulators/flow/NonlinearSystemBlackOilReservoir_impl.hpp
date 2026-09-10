@@ -469,6 +469,23 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
                 wellCells.push_back(c);
             }
         }
+        // A SOURCE-keyword cell is a flux singularity too -- include it in the
+        // near-singularity distance set so the D_K^{l/2} weight (eq. eps_norm,
+        // --aposteriori-weight-exponent) is measured from sources as well as
+        // wells. With l>0 this moves the marking OFF the source onto the front.
+        {
+            const auto& sched = this->simulator_.vanguard().schedule();
+            const auto& cim = this->simulator_.vanguard().cartesianIndexMapper();
+            const auto& cd  = cim.cartesianDimensions();
+            const long NXc = cd[0], NYc = cd[1];
+            for (const auto& [ijk, sc] :
+                 sched[timer.reportStepNum()].source()) {
+                static_cast<void>(sc);
+                const int comp = this->simulator_.vanguard().compressedIndexForInterior(
+                    static_cast<int>((static_cast<long>(ijk[2]) * NYc + ijk[1]) * NXc + ijk[0]));
+                if (comp >= 0) wellCells.push_back(comp);
+            }
+        }
         aposteriori_estimator_->setWellCells(std::move(wellCells));
     }
 
