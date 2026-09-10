@@ -32,7 +32,14 @@
 
 #include <opm/common/OpmLog/OpmLog.hpp>
 
+#include <opm/input/eclipse/EclipseState/EclipseState.hpp>
+#include <opm/input/eclipse/EclipseState/Phase.hpp>
+#include <opm/input/eclipse/EclipseState/Runspec.hpp>
+#include <opm/input/eclipse/EclipseState/SimulationConfig/RockConfig.hpp>
+#include <opm/input/eclipse/EclipseState/SimulationConfig/SimulationConfig.hpp>
+#include <opm/input/eclipse/EclipseState/TracerConfig.hpp>
 #include <opm/input/eclipse/Schedule/Action/State.hpp>
+#include <opm/input/eclipse/Schedule/OilVaporizationProperties.hpp>
 #include <opm/input/eclipse/Schedule/UDQ/UDQState.hpp>
 #include <opm/input/eclipse/Schedule/Well/WellTestState.hpp>
 
@@ -483,15 +490,44 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
         auto rebuildOn = [&](const std::string& spec, int step) -> bool {
             auto* sim = flowMain->getSimulatorPtr();
 
-            // Path-dependent physics is NOT carried across the rebuild yet.
-            // Guard every unsupported history-dependent feature and refuse
-            // BEFORE the old simulator is touched (Copilot/ChatGPT review
-            // 2026-09-10: an unsupported deck must fail, not silently shorten).
+            // Path-dependent / non-black-oil state is NOT carried across the
+            // rebuild: the transfer only moves {p, Sw, Sg, Rs, Rv, T}. Guard
+            // every deck feature whose per-cell history would be silently lost
+            // and refuse BEFORE the old simulator is touched (Copilot/ChatGPT
+            // review 2026-09-10: an unsupported deck must fail, not shorten).
             const char* unsupported = nullptr;
-            if (sim->problem().materialLawManager()->hysteresisConfig().enableHysteresis())
-                unsupported = "saturation-function hysteresis";
-            else if (sim->vanguard().eclState().aquifer().active())
-                unsupported = "analytic/numeric aquifers";
+            {
+                const auto& es = sim->vanguard().eclState();
+                const auto& rspec = es.runspec();
+                const auto& ph = rspec.phases();
+                const auto& rock = es.getSimulationConfig().rock_config();
+                const auto epi = std::max(0, sim->episodeIndex());
+                const auto& ovp = sim->vanguard().schedule()[epi].oilvap();
+                using P = Phase;
+
+                if (sim->problem().materialLawManager()->hysteresisConfig().enableHysteresis())
+                    unsupported = "saturation-function hysteresis";
+                else if (es.aquifer().active())
+                    unsupported = "analytic/numeric aquifers";
+                else if (ph.active(P::SOLVENT))    unsupported = "the solvent model";
+                else if (ph.active(P::POLYMER))    unsupported = "the polymer model";
+                else if (ph.active(P::POLYMW))     unsupported = "polymer molecular weight";
+                else if (ph.active(P::FOAM))       unsupported = "the foam model";
+                else if (ph.active(P::BRINE))      unsupported = "the brine model";
+                else if (ph.active(P::ZFRACTION))  unsupported = "the z-fraction (GASWAT) model";
+                else if (ph.active(P::ENERGY))     unsupported = "the thermal/energy model";
+                else if (rspec.micp())             unsupported = "the MICP model";
+                else if (rspec.co2Storage())       unsupported = "CO2STORE";
+                else if (rspec.h2Storage())        unsupported = "H2STORE";
+                else if (rspec.co2Sol())           unsupported = "dissolved CO2 (CO2SOL)";
+                else if (rspec.h2Sol())            unsupported = "dissolved H2 (H2SOL)";
+                else if (!es.tracer().empty())     unsupported = "passive tracers";
+                else if (rock.active() &&
+                         (rock.hysteresis_mode() == RockConfig::Hysteresis::IRREVERS ||
+                          rock.water_compaction()))
+                    unsupported = "irreversible / water-induced rock compaction";
+                else if (ovp.drsdtConvective())    unsupported = "convective dissolution (DRSDTCON)";
+            }
             if (unsupported) {
                 OpmLog::error(std::string("flow_blackoil_adaptive_dynamic: the deck uses ")
                     + unsupported + " -- its path-dependent state is not transferred "
