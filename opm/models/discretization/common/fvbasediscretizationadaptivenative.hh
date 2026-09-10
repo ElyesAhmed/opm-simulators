@@ -31,11 +31,15 @@
 
 #include <opm/common/OpmLog/OpmLog.hpp>
 
+#include <dune/grid/common/mcmgmapper.hh>
+#include <dune/grid/common/partitionset.hh>
+
 #include <fmt/format.h>
 
 #include <cstddef>
 #include <memory>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace Opm {
 
@@ -45,17 +49,18 @@ namespace Opm {
  * \brief Finite-volume discretization with NATIVE (no dune-fem) local grid
  *        adaptation.
  *
- * Unlike FvBaseDiscretizationFemAdapt this keeps Flow's own BlockVectorWrapper
- * solution container and does NOT pull in dune-fem / Dune::Fem::AdaptationManager.
- * The whole mark -> adapt -> conservative-transfer -> rebuild sequence is
- * delegated to the problem (Problem::adaptGrid()), so the physical state
- * transfer stays application code with explicit conservation checks rather than
- * a dune-fem RestrictProlong default (which averages primary variables and is
- * not inventory-conservative on coarsening).
- *
- * The base FvBaseDiscretization::advanceTimeLevel() calls asImp_().adaptGrid()
- * once per accepted substep (via NonlinearSystem::prepareStep), which is the
- * Algorithm 6.1 adaptation seam.
+ * Keeps Flow's BlockVectorWrapper solution container and does NOT pull in
+ * dune-fem. adaptGrid() (called once per accepted substep from
+ * FvBaseDiscretization::advanceTimeLevel(), the Algorithm 6.1 seam):
+ *   1. problem().markForGridAdaptation()  -- marks leaf fathers (grid.mark)
+ *   2. problem().prepareForAdapt()        -- inventory + vanguard Cartesian snapshot
+ *   3. snapshot solution(0) keyed by persistent local id
+ *   4. grid.preAdapt() / adapt() / postAdapt()
+ *   5. vanguard().rebuildAfterAdapt()     -- Cartesian ids for new cells, leaf view
+ *   6. resize + prolong-by-injection solution(0); solution(1) := solution(0)
+ *   7. finishInit() / resetLinearizer()   -- volumes, caches, matrix
+ *   8. problem().gridChanged()            -- transmissibility, porosity, ...
+ *   9. problem().verifyAfterAdapt()       -- component-inventory conservation
  */
 template <class TypeTag>
 class FvBaseDiscretizationAdaptiveNative : public FvBaseDiscretization<TypeTag>
@@ -63,6 +68,10 @@ class FvBaseDiscretizationAdaptiveNative : public FvBaseDiscretization<TypeTag>
     using ParentType = FvBaseDiscretization<TypeTag>;
     using Simulator = GetPropType<TypeTag, Properties::Simulator>;
     using DiscreteFunction = GetPropType<TypeTag, Properties::DiscreteFunction>;
+    using PrimaryVariables = GetPropType<TypeTag, Properties::PrimaryVariables>;
+    using GridView = GetPropType<TypeTag, Properties::GridView>;
+    using Grid = GetPropType<TypeTag, Properties::Grid>;
+    using IdType = typename Grid::LocalIdSet::IdType;
 
     static constexpr unsigned historySize =
         getPropValue<TypeTag, Properties::TimeDiscHistorySize>();
@@ -83,9 +92,6 @@ public:
     explicit FvBaseDiscretizationAdaptiveNative(Simulator& simulator)
         : ParentType(simulator)
     {
-        // NOTE: FvBaseDiscretizationNoAdapt throws here when
-        // enableGridAdaptation_ is set; this class exists precisely to allow it
-        // with a native (non-fem) execution path, so no throw.
         const std::size_t numDof = this->asImp_().numGridDof();
         for (unsigned timeIdx = 0; timeIdx < historySize; ++timeIdx) {
             this->solution_[timeIdx] =
@@ -93,29 +99,15 @@ public:
         }
     }
 
-    /*!
-     * \brief Adapt the grid in place, once per accepted substep.
-     *
-     * PHASE 0 (this commit): if the problem marks nothing (the default), this is
-     * a pure no-op, so --enable-grid-adaptation=true runs identically to the
-     * non-adaptive path. If cells ARE marked it throws, because the execution
-     * path (native mesh adapt + conservative state transfer + rebuild) is not
-     * yet implemented.
-     *
-     * PHASE 1+ will replace the throw with:
-     *   grid.mark(); grid.preAdapt(); grid.adapt(); grid.postAdapt();
-     *   conservative prolong/restrict of {p,Sw,Sg,Rs,Rv,T} + histories;
-     *   rebuild mappers / transmissibility / wells / linearizer / buffers.
-     */
     void adaptGrid()
     {
         if (!this->enableGridAdaptation_) {
             return;
         }
 
-        // The problem marks leaf entities (grid.mark(+/-1, e)) and returns the
-        // count. 0 => nothing to do.
-        const unsigned marked = this->simulator_.problem().markForGridAdaptation();
+        auto& problem = this->simulator_.problem();
+
+        const unsigned marked = problem.markForGridAdaptation();
         if (marked == 0) {
             return;
         }
@@ -123,26 +115,87 @@ public:
         auto& grid = this->simulator_.vanguard().grid();
         const std::size_t nBefore = this->gridView_.size(/*codim=*/0);
 
-        // PHASE 1: exercise the ALUGrid in-place adaptation lifecycle and
-        // confirm the leaf view changes. Conservative state transfer is NOT
-        // done yet, so the solution vector would be stale -- stop cleanly with
-        // evidence rather than solve on garbage.
+        // --- (2) pre-adapt: inventory + Cartesian-id snapshot -----------------
+        problem.prepareForAdapt();
+
+        // --- (3) snapshot solution(0) by persistent local id -----------------
+        std::unordered_map<IdType, PrimaryVariables> sol0;
+        sol0.reserve(nBefore);
+        {
+            const auto& idSet = grid.localIdSet();
+            Dune::MultipleCodimMultipleGeomTypeMapper<GridView>
+                em(this->gridView_, Dune::mcmgElementLayout());
+            const auto& bv = this->solution_[0]->blockVector();
+            for (const auto& e : elements(this->gridView_, Dune::Partitions::interior)) {
+                sol0.emplace(idSet.id(e), bv[em.index(e)]);
+            }
+        }
+
+        // --- (4) adapt in place ---------------------------------------------
         const bool preOk = grid.preAdapt();
         const bool changed = grid.adapt();
         grid.postAdapt();
 
-        this->gridView_ = this->simulator_.gridView();
-        const std::size_t nAfter = this->gridView_.size(/*codim=*/0);
+        // --- (5) rebuild the vanguard's Cartesian machinery -----------------
+        // NB: the leaf grid view auto-reflects grid.adapt() -- do NOT recreate
+        // it (Transmissibility etc. hold a reference to it).
+        this->simulator_.vanguard().rebuildAfterAdapt();
+        this->elementMapper_.update(this->gridView_);
+        this->vertexMapper_.update(this->gridView_);
+
+        const std::size_t nAfter = this->asImp_().numGridDof();
+
+        // --- (6) resize + prolong-by-injection solution(0), then (1):=(0) ----
+        {
+            const auto& idSet = grid.localIdSet();
+            Dune::MultipleCodimMultipleGeomTypeMapper<GridView>
+                em(this->gridView_, Dune::mcmgElementLayout());
+            for (unsigned t = 0; t < historySize; ++t) {
+                this->solution_[t]->blockVector().resize(nAfter);
+            }
+            auto& bv0 = this->solution_[0]->blockVector();
+            for (const auto& e : elements(this->gridView_, Dune::Partitions::interior)) {
+                auto a = e;
+                const PrimaryVariables* v = nullptr;
+                while (true) {
+                    auto it = sol0.find(idSet.id(a));
+                    if (it != sol0.end()) { v = &it->second; break; }
+                    if (a.level() == 0 || !a.hasFather()) { break; }
+                    a = a.father();
+                }
+                if (v == nullptr) {
+                    throw std::runtime_error("FvBaseDiscretizationAdaptiveNative::"
+                        "adaptGrid: no pre-adapt ancestor for a leaf cell.");
+                }
+                bv0[em.index(e)] = *v;
+            }
+            // advanceTimeLevel() sets solution(1) = solution(0) right after this,
+            // but keep them consistent here too.
+            for (unsigned t = 1; t < historySize; ++t) {
+                this->solution_[t]->blockVector() = bv0;
+            }
+        }
+
+        // --- (7) rebuild discretization geometry/caches/matrix --------------
+        this->resetLinearizer();
+        this->finishInit();
+
+        // --- (8) rebuild problem-side geometry-dependent data ---------------
+        problem.gridChanged();
+
+        // --- recompute intensive quantities from the transferred state ------
+        this->invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
+
+        for (auto& module : this->outputModules_) {
+            module->allocBuffers();
+        }
+
+        // --- (9) conservation gate ----------------------------------------
+        problem.verifyAfterAdapt();
 
         OpmLog::info(fmt::format(
-            "[alu-hadapt PHASE 1] marked={}  preAdapt={}  adapt-changed={}  "
-            "leaf cells {} -> {}",
-            marked, preOk, changed, nBefore, nAfter));
-
-        throw std::runtime_error(fmt::format(
-            "FvBaseDiscretizationAdaptiveNative::adaptGrid PHASE 1: grid adapted "
-            "in place ({} -> {} leaf cells), conservative state transfer not yet "
-            "implemented -- stopping.", nBefore, nAfter));
+            "[alu-hadapt] in-place adapt: marked={} preAdapt={} changed={}  "
+            "leaf cells {} -> {}", marked, preOk, changed, nBefore, nAfter));
     }
 };
 

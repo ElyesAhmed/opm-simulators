@@ -38,6 +38,7 @@
 
 #include <opm/models/common/multiphasebaseproperties.hh>
 
+#include <opm/simulators/flow/AluAdaptTransfer.hpp>
 #include <opm/simulators/flow/AluGridCartesianIndexMapper.hpp>
 #include <opm/simulators/flow/AluGridLevelCartesianIndexMapper.hpp>
 #include <opm/simulators/flow/FlowBaseVanguard.hpp>
@@ -298,6 +299,46 @@ public:
         return ordering_[elemIndex];
     }
 
+    /*!
+     * \brief Snapshot the per-leaf logical-Cartesian index before an in-place
+     *        grid.adapt(), keyed by persistent local id (serial only).
+     */
+    void snapshotForAdapt()
+    {
+        adaptCartSnap_.capture(this->gridView(),
+            [this](std::size_t leafIdx) {
+                return (leafIdx < cartesianCellId_.size())
+                    ? cartesianCellId_[leafIdx] : -1;
+            });
+    }
+
+    /*!
+     * \brief Rebuild the logical-Cartesian machinery after grid.adapt():
+     *        every refined child inherits its nearest pre-adapt ancestor's
+     *        Cartesian index; then the index mapper, leaf grid view and the
+     *        Cartesian<->compressed map / cell depths / thickness are refreshed.
+     */
+    void rebuildAfterAdapt()
+    {
+        const auto lv = grid_->leafGridView();
+        Dune::MultipleCodimMultipleGeomTypeMapper<GridView>
+            em(lv, Dune::mcmgElementLayout());
+        std::vector<int> nc(em.size(), -1);
+        for (const auto& e : elements(lv)) {
+            nc[em.index(e)] = adaptCartSnap_.lookup(lv, e);
+        }
+
+        // Update IN PLACE -- the leaf grid view auto-reflects grid.adapt(), and
+        // the Cartesian index mapper's identity is preserved, so references held
+        // by Transmissibility / the discretization stay valid.
+        cartesianIndexMapper_->updateCartesianIndex(nc);
+        cartesianCellId_ = std::move(nc);
+
+        this->updateCartesianToCompressedMapping_();
+        this->updateCellDepths_();
+        this->updateCellThickness_();
+    }
+
 protected:
     void createGrids_()
     {
@@ -368,6 +409,8 @@ protected:
     std::unique_ptr<Grid> grid_;
     std::unique_ptr<EquilGrid> equilGrid_;
     std::vector<int> cartesianCellId_;
+    //! per-leaf Cartesian index snapshot for an in-place grid.adapt()
+    AluAdaptSnapshot<GridView, int> adaptCartSnap_;
     std::vector<unsigned int> ordering_;
     std::vector<unsigned int> equilGridToGrid_;
     std::array<int,dimension> cartesianDimension_;

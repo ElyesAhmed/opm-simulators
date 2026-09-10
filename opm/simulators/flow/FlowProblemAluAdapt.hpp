@@ -24,6 +24,7 @@
 #define OPM_FLOW_PROBLEM_ALU_ADAPT_HPP
 
 #include <opm/simulators/flow/FlowProblemBlackoil.hpp>
+#include <opm/simulators/flow/AdaptiveStateTransfer.hpp>
 
 #include <opm/common/OpmLog/OpmLog.hpp>
 
@@ -33,6 +34,7 @@
 #include <fmt/format.h>
 
 #include <array>
+#include <cmath>
 #include <cstdlib>
 #include <sstream>
 #include <string>
@@ -43,41 +45,30 @@ namespace Opm {
  * \brief Black-oil Flow problem for native (non-dune-fem) in-place h-adaptivity
  *        on a locally-adaptive grid (dune-ALUGrid).
  *
- * Adds the adaptation hooks that FvBaseDiscretizationAdaptiveNative calls, on top
- * of FlowProblemBlackoil:
- *   - markForGridAdaptation(): the plug point for the a posteriori
- *     SpatialMarker. Until that lands (Phase 5) it returns 0, so
- *     --enable-grid-adaptation is a no-op plumbing path. It DELIBERATELY shadows
- *     MultiPhaseBaseProblem::markForGridAdaptation() (a saturation-variation
- *     heuristic that calls grid.mark() inside a per-phase loop and miscounts) --
- *     that heuristic returns later behind --adapt-indicator=saturation.
- *   - gridChanged(): rebuild problem-side geometry-dependent data after an
- *     in-place adapt. Phase 0: base behaviour only.
+ * Adds the adaptation hooks FvBaseDiscretizationAdaptiveNative calls:
+ *   markForGridAdaptation()  -- mark leaf fathers (Phase 1: fixed test box;
+ *                               Phase 5: the a posteriori SpatialMarker)
+ *   prepareForAdapt()        -- snapshot component inventory + vanguard Cartesian ids
+ *   gridChanged()            -- rebuild transmissibility / porosity / rock / Pff data
+ *   verifyAfterAdapt()       -- component-inventory conservation gate
+ *
+ * markForGridAdaptation() DELIBERATELY shadows MultiPhaseBaseProblem's
+ * saturation-variation heuristic (it marks inside a per-phase loop and
+ * miscounts); that returns later behind --adapt-indicator=saturation.
  */
 template <class TypeTag>
 class FlowProblemAluAdapt : public FlowProblemBlackoil<TypeTag>
 {
     using Base = FlowProblemBlackoil<TypeTag>;
     using Simulator = GetPropType<TypeTag, Properties::Simulator>;
+    using GridView = GetPropType<TypeTag, Properties::GridView>;
+    using Scalar = GetPropType<TypeTag, Properties::Scalar>;
 
 public:
     explicit FlowProblemAluAdapt(Simulator& simulator)
         : Base(simulator)
     {}
 
-    /*!
-     * \brief Number of leaf cells marked for refinement/coarsening this step.
-     *
-     * PHASE 1: if OPM_ALU_ADAPT_TEST_BOX="i1 i2 j1 j2 k1 k2" (1-based inclusive)
-     * is set, mark the leaf cells of that logical-Cartesian box for refinement,
-     * ONCE, and return the count -- a fixed-box driver to exercise the
-     * mesh-adaptation lifecycle before the estimator SpatialMarker (Phase 5)
-     * and the conservative transfer (Phase 2) exist.
-     *
-     * Deliberately shadows MultiPhaseBaseProblem::markForGridAdaptation() (a
-     * saturation-variation heuristic that marks inside a per-phase loop and
-     * miscounts) -- that returns later behind --adapt-indicator=saturation.
-     */
     unsigned markForGridAdaptation()
     {
         const char* spec = std::getenv("OPM_ALU_ADAPT_TEST_BOX");
@@ -100,7 +91,7 @@ public:
         const auto& mapper = this->simulator().vanguard().cartesianIndexMapper();
         const auto& dims = mapper.cartesianDimensions();
 
-        Dune::MultipleCodimMultipleGeomTypeMapper<std::decay_t<decltype(gridView)>>
+        Dune::MultipleCodimMultipleGeomTypeMapper<GridView>
             elemMapper(gridView, Dune::mcmgElementLayout());
 
         unsigned n = 0;
@@ -118,26 +109,65 @@ public:
         }
         aluAdaptTestBoxDone_ = true;
         OpmLog::info(fmt::format(
-            "[alu-hadapt PHASE 1] OPM_ALU_ADAPT_TEST_BOX i{}-{} j{}-{} k{}-{} "
+            "[alu-hadapt] OPM_ALU_ADAPT_TEST_BOX i{}-{} j{}-{} k{}-{} "
             "-> marked {} leaf cell(s) for refinement",
             b[0], b[1], b[2], b[3], b[4], b[5], n));
         return grid.comm().sum(n);
     }
 
-    /*!
-     * \brief Rebuild problem-side geometry-dependent data after an in-place
-     *        grid adaptation.
-     *
-     * PHASE 1+: transmissibility, well connection->cell map + WI, cell
-     * depths/thickness, threshold pressure, output projection map.
-     */
+    //! Called BEFORE grid.adapt().
+    void prepareForAdapt()
+    {
+        invBefore_ = blackOilComponentInventory<TypeTag>(this->simulator());
+        this->simulator().vanguard().snapshotForAdapt();
+    }
+
+    //! Called AFTER the grid + solution have been remapped: rebuild every
+    //! geometry-dependent problem-side quantity (same recipe as the
+    //! GEO_MODIFIER schedule-event path).
     void gridChanged()
     {
         Base::gridChanged();
+
+        this->transmissibilities_.update(/*global=*/true);
+
+        this->referencePorosity_[1] = this->referencePorosity_[0];
+        this->updateReferencePorosity_();
+        this->rockFraction_[1] = this->rockFraction_[0];
+        this->updateRockFraction_();
+        this->updatePffDofData_();
+        this->model().linearizer().updateDiscretizationParameters();
+    }
+
+    //! Called AFTER gridChanged(): component-inventory conservation gate.
+    void verifyAfterAdapt()
+    {
+        const auto invAfter = blackOilComponentInventory<TypeTag>(this->simulator());
+        double worst = 0.0;
+        const char* names[3] = {"water", "oil", "gas"};
+        for (int c = 0; c < 3; ++c) {
+            const double denom = std::max(std::abs(invBefore_[c]), 1e-300);
+            const double rel = std::abs(invAfter[c] - invBefore_[c]) / denom;
+            worst = std::max(worst, rel);
+            OpmLog::info(fmt::format(
+                "[alu-hadapt] inventory {:>5}: {: .8e} -> {: .8e}  rel {:.2e}",
+                names[c], invBefore_[c], invAfter[c], rel));
+        }
+        double tol = 1e-9;
+        if (const char* s = std::getenv("OPM_ALU_ADAPT_INVENTORY_TOL")) {
+            const double v = std::atof(s);
+            if (std::isfinite(v) && v > 0.0) tol = v;
+        }
+        if (worst > tol) {
+            throw std::runtime_error(fmt::format(
+                "[alu-hadapt] component-inventory conservation FAILED after adapt "
+                "(worst rel {:.3e} > tol {:.1e}).", worst, tol));
+        }
     }
 
 private:
     bool aluAdaptTestBoxDone_ {false};
+    std::array<double, 3> invBefore_ {0.0, 0.0, 0.0};
 };
 
 } // namespace Opm
