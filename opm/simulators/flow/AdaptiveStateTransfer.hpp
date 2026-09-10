@@ -274,6 +274,17 @@ blackOilInventoryByParent(GetPropType<TypeTag, Properties::Simulator>& simulator
     const auto& grid = simulator.vanguard().grid();
     const auto stableIds = grid.currentData().back()->stableCellId();
 
+    // Level-zero Cartesian extent: a coarse cell's stableCellId is its plain
+    // Cartesian index, and a refined child's decoded parent must land in the
+    // same range. Anything outside means the id packing is not what we assume
+    // -- fail rather than bucket into a bogus parent (review 2026-09-10:
+    // the old "idx >= size() -> use compressed index" fallback silently
+    // fabricated parent keys).
+    const auto& cartDims =
+        simulator.vanguard().cartesianIndexMapper().cartesianDimensions();
+    const std::int64_t nCart = static_cast<std::int64_t>(cartDims[0])
+                             * cartDims[1] * cartDims[2];
+
     std::unordered_map<std::int64_t, std::array<double, 4>> out;
     ElementContext elemCtx(simulator);
     for (const auto& elem : elements(simulator.gridView(), Dune::Partitions::interior)) {
@@ -283,8 +294,25 @@ blackOilInventoryByParent(GetPropType<TypeTag, Properties::Simulator>& simulator
         const unsigned idx = elemCtx.globalSpaceIndex(0, 0);
         const auto& fs = iq.fluidState();
 
-        std::int64_t id = (idx < stableIds.size()) ? stableIds[idx] : static_cast<std::int64_t>(idx);
-        const std::int64_t key = (id & refinedTag) ? ((id & ~refinedTag) >> childBits) : id;
+        if (idx >= stableIds.size()) {
+            throw std::runtime_error(fmt::format(
+                "blackOilInventoryByParent: leaf cell {} has no stableCellId "
+                "(id array holds {}). Per-parent conservation cannot be checked.",
+                idx, stableIds.size()));
+        }
+        const std::int64_t id = stableIds[idx];
+        std::int64_t key;
+        if (id & refinedTag) {
+            key = (id & ~refinedTag) >> childBits;   // decoded parent Cartesian
+        } else {
+            key = id;                                // coarse: own Cartesian
+        }
+        if (key < 0 || key >= nCart) {
+            throw std::runtime_error(fmt::format(
+                "blackOilInventoryByParent: leaf cell {} stableCellId {} decodes "
+                "to parent Cartesian {} outside [0,{}). Unexpected id packing.",
+                idx, id, key, nCart));
+        }
 
         const double pv = simulator.model().dofTotalVolume(idx) * getValue(iq.porosity());
         double svW = 0, svO = 0, svG = 0;

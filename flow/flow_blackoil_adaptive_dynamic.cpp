@@ -48,12 +48,16 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -108,6 +112,44 @@ struct AvoidElementContext<TypeTag, TTag::FlowProblemAdaptiveDynamic>
 } // namespace Opm::Properties
 
 namespace Opm {
+
+namespace {
+
+//! Parse an environment variable that must be a plain positive integer.
+//! Returns std::nullopt when the variable is unset. Throws std::invalid_argument
+//! when it is set but malformed (trailing junk, sign, overflow, <= 0) so a
+//! typo silently disabling a safety limit is turned into a hard failure
+//! (review 2026-09-10: std::atoll("12x")==12, std::atoll("bad")==0).
+std::optional<long long> envPositiveInt(const char* name)
+{
+    const char* raw = std::getenv(name);
+    if (raw == nullptr) {
+        return std::nullopt;
+    }
+    std::string_view sv{raw};
+    const auto b = sv.find_first_not_of(" \t");
+    const auto e = sv.find_last_not_of(" \t");
+    if (b == std::string_view::npos) {
+        throw std::invalid_argument(fmt::format("{} is set but empty.", name));
+    }
+    sv = sv.substr(b, e - b + 1);
+
+    long long value = 0;
+    const auto* first = sv.data();
+    const auto* last = sv.data() + sv.size();
+    const auto res = std::from_chars(first, last, value);
+    if (res.ec != std::errc{} || res.ptr != last) {
+        throw std::invalid_argument(
+            fmt::format("{}='{}' is not a plain integer.", name, sv));
+    }
+    if (value <= 0) {
+        throw std::invalid_argument(
+            fmt::format("{}={} must be strictly positive.", name, value));
+    }
+    return value;
+}
+
+} // anonymous namespace
 
 //! \brief The adaptive vanguard plus the dynamic driver's parameters
 //! (registration must happen in the registration phase, so it lives here).
@@ -308,6 +350,22 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
                     static_cast<int>((k * NYg + j) * NXg + i));
             };
 
+            // (4a) safety limits -- parsed once, strictly (a malformed value is
+            // a hard failure, not a silently-disabled guard).
+            std::optional<long long> maxLeaf;
+            long long maxSubdiv = 64;   // per-axis per-parent subdivision ceiling
+            try {
+                maxLeaf = envPositiveInt("OPM_APOST_MAX_LEAF_CELLS");
+                if (const auto s = envPositiveInt("OPM_APOST_MAX_SUBDIV_PER_AXIS")) {
+                    maxSubdiv = *s;
+                }
+            } catch (const std::exception& e) {
+                OpmLog::error(std::string("preflight: ") + e.what());
+                return false;
+            }
+            const long long kOverflowGuard =
+                std::numeric_limits<long long>::max() / 4;
+
             long long coarseRefined = 0, refinedLeaf = 0;
             for (std::size_t bi = 0; bi < boxes.size(); ++bi) {
                 const auto& b = boxes[bi];
@@ -318,6 +376,16 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
                     || i2 < i1 || j2 < j1 || k2 < k1) {
                     OpmLog::error(fmt::format("preflight: box {} outside the coarse grid.", b.name));
                     return false;
+                }
+                for (int c = 0; c < 3; ++c) {
+                    const long long f = b.cellsPerDim[c];
+                    if (f < 1 || f > maxSubdiv) {
+                        OpmLog::error(fmt::format(
+                            "preflight: box {} subdivision factor {} in direction {} "
+                            "outside [1, {}] (OPM_APOST_MAX_SUBDIV_PER_AXIS).",
+                            b.name, f, c, maxSubdiv));
+                        return false;
+                    }
                 }
                 for (long k = k1; k <= k2; ++k)
                 for (long j = j1; j <= j2; ++j)
@@ -365,22 +433,39 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
                                 return false;
                             }
                 }
-                const long ci = i2 - i1 + 1, cj = j2 - j1 + 1, ck = k2 - k1 + 1;
-                coarseRefined += ci * cj * ck;
-                refinedLeaf += static_cast<long long>(ci) * cj * ck
-                    * b.cellsPerDim[0] * b.cellsPerDim[1] * b.cellsPerDim[2];
+                // Checked multiplication: box parents, then box leaves. Each
+                // factor is already bounded (extent <= grid dim, subdivision
+                // <= maxSubdiv), but bound the products explicitly so a
+                // pathological spec cannot wrap a signed 64-bit accumulator.
+                const long long ci = i2 - i1 + 1, cj = j2 - j1 + 1, ck = k2 - k1 + 1;
+                const long long boxParents = ci * cj * ck;                 // <= base, safe
+                const long long fProd = static_cast<long long>(b.cellsPerDim[0])
+                                      * b.cellsPerDim[1] * b.cellsPerDim[2]; // <= maxSubdiv^3
+                if (fProd != 0 && boxParents > kOverflowGuard / fProd) {
+                    OpmLog::error(fmt::format(
+                        "preflight: box {} projected child count overflows "
+                        "({} parents x {} per parent).", b.name, boxParents, fProd));
+                    return false;
+                }
+                const long long boxLeaves = boxParents * fProd;
+                if (coarseRefined > kOverflowGuard - boxParents
+                    || refinedLeaf > kOverflowGuard - boxLeaves) {
+                    OpmLog::error(fmt::format(
+                        "preflight: cumulative refined-cell count overflows at box {}.",
+                        b.name));
+                    return false;
+                }
+                coarseRefined += boxParents;
+                refinedLeaf   += boxLeaves;
             }
 
             // (4) projected-leaf budget -- ENFORCED here, not just logged.
             const long long base = NXg * NYg * NZg;
             const long long totalLeaf = base - coarseRefined + refinedLeaf;
-            if (const char* mx = std::getenv("OPM_APOST_MAX_LEAF_CELLS")) {
-                const long long lim = std::atoll(mx);
-                if (lim > 0 && totalLeaf > lim) {
-                    OpmLog::error(fmt::format("preflight: projected leaf grid {} exceeds "
-                        "OPM_APOST_MAX_LEAF_CELLS={}.", totalLeaf, lim));
-                    return false;
-                }
+            if (maxLeaf && totalLeaf > *maxLeaf) {
+                OpmLog::error(fmt::format("preflight: projected leaf grid {} exceeds "
+                    "OPM_APOST_MAX_LEAF_CELLS={}.", totalLeaf, *maxLeaf));
+                return false;
             }
             OpmLog::info(fmt::format(
                 "preflight OK  |  boxes {}  base active {}  marked parents {}  "
@@ -419,9 +504,19 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
                 return false;
             }
 
-            const auto state = extractAdaptiveState<TypeTag>(*sim);
-            const auto invBefore = blackOilComponentInventory<TypeTag>(*sim);
-            const auto invParentBefore = blackOilInventoryByParent<TypeTag>(*sim);
+            AdaptiveStateMap state;
+            std::array<double, 3> invBefore{};
+            std::unordered_map<std::int64_t, std::array<double, 4>> invParentBefore;
+            try {
+                state = extractAdaptiveState<TypeTag>(*sim);
+                invBefore = blackOilComponentInventory<TypeTag>(*sim);
+                invParentBefore = blackOilInventoryByParent<TypeTag>(*sim);
+            } catch (const std::exception& e) {
+                OpmLog::error(std::string("flow_blackoil_adaptive_dynamic: pre-rebuild "
+                    "state capture failed (coarse world intact, run fails): ") + e.what());
+                status = EXIT_FAILURE;
+                return false;
+            }
             const auto wellFpBefore = captureWellFingerprint(
                 sim->vanguard().schedule(), sim->episodeIndex());
             // schedule-wide protected SOURCE cells, to confirm they stay coarse
