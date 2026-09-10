@@ -495,6 +495,23 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
             for (const auto gi : cells)
                 prot.push_back(static_cast<int>(gi));
         }
+        // SOURCE cells are point flux singularities, just like well cells:
+        // eta_sp,K over-reads there (the mimetic flux reconstruction has its
+        // largest defect at a point source), and refining a source cell
+        // destabilises the nonlinear solve. Exclude every source cell that
+        // appears anywhere in the schedule.
+        {
+            const auto& cim = this->simulator_.vanguard().cartesianIndexMapper();
+            const auto& cd  = cim.cartesianDimensions();
+            const long NXc = cd[0], NYc = cd[1];
+            for (std::size_t reportStep = 0; reportStep < schedule.size(); ++reportStep) {
+                for (const auto& [ijk, cells] : schedule[reportStep].source()) {
+                    static_cast<void>(cells);
+                    prot.push_back(static_cast<int>(
+                        (static_cast<long>(ijk[2]) * NYc + ijk[1]) * NXc + ijk[0]));
+                }
+            }
+        }
         aposteriori_estimator_->setProtectedRefinementCells(std::move(prot));
     }
 
