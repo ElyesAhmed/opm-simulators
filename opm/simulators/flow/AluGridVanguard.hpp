@@ -334,13 +334,10 @@ public:
         cartesianIndexMapper_->updateCartesianIndex(nc);
         cartesianCellId_ = std::move(nc);
 
-        // Do NOT touch the vanguard leaf grid view: the ALU LeafGridView object
-        // tracks grid().leafIndexSet() live, so held const-references
-        // (Transmissibility::gridView_, FlowGenericProblem::gridView_) stay
-        // valid and see the adapted grid. Only freshly *constructed*
-        // Dune mappers must be used downstream -- copy-assigning a GridView
-        // (what MultipleCodim...Mapper::update(gv) does) leaves stale ALU
-        // iterator internals.
+        // Reconstruct the leaf grid view AT THE SAME ADDRESS: fresh ALU iterator
+        // internals, but the object identity (and every const-ref to it --
+        // Transmissibility::gridView_, FlowGenericProblem::gridView_) is kept.
+        this->reconstructGridViewInPlace_();
 
         // The equil-grid <-> simulation-grid reorder is only defined for the
         // initial grid. After an in-place adapt every downstream per-cell array
