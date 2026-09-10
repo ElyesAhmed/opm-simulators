@@ -469,8 +469,11 @@ void injectAdaptiveState(GetPropType<TypeTag, Properties::Simulator>& simulator,
     }
 
     // Arrays -> initialFluidStates_ -> PrimaryVariables (switching logic
-    // included), written into model().solution(0).
-    problem.readSolutionFromOutputModule(step, false);
+    // included), written into model().solution(0). processSaturations=false:
+    // the source is a converged double-precision state, so a phase below 1e-6
+    // is real -- the single-precision-RESTART "drop + renormalise" cleanup
+    // would break the per-parent component balance (review 2026-09-10).
+    problem.readSolutionFromOutputModule(step, false, /*processSaturations=*/false);
 
     // A completed init also has history and caches; refresh them.
     simulator.model().solution(/*timeIdx=*/1) = simulator.model().solution(/*timeIdx=*/0);

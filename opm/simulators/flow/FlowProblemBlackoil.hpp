@@ -1076,7 +1076,14 @@ public:
     //! \param restart_step Step to read at
     //! \param fip_init True to do limited simulator initialization
     //! \details \a fip_init is used when calculating original FIP from restart state
-    void readSolutionFromOutputModule(const int restart_step, bool fip_init)
+    //! \param processSaturations  Apply processRestartSaturations_() -- the
+    //!        "drop any phase below 1e-6 and renormalise" cleanup that recovers
+    //!        a single-precision RESTART file. A mid-run adaptive grid rebuild
+    //!        feeds this from a converged double-precision in-memory state where
+    //!        a trace phase is real, so it passes false to keep the transfer a
+    //!        faithful (component-conservative) prolongation.
+    void readSolutionFromOutputModule(const int restart_step, bool fip_init,
+                                      bool processSaturations = true)
     {
         auto& simulator = this->simulator();
         const auto& eclState = simulator.vanguard().eclState();
@@ -1127,7 +1134,8 @@ public:
                             ? this->eclWriter_->outputModule().getSolventSaturation(elemIdx)
                             : Scalar(0);
 
-                this->processRestartSaturations_(elemFluidState, ssol);
+                if (processSaturations)
+                    this->processRestartSaturations_(elemFluidState, ssol);
 
                 if constexpr (enableSolvent) {
                     this->solventSaturation_[elemIdx] = ssol;
