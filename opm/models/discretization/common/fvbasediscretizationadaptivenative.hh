@@ -38,7 +38,9 @@
 
 #include <cstddef>
 #include <memory>
+#include <new>
 #include <stdexcept>
+#include <type_traits>
 #include <unordered_map>
 
 namespace Opm {
@@ -137,12 +139,19 @@ public:
         grid.postAdapt();
 
         // --- (5) rebuild the vanguard's Cartesian machinery -----------------
-        // rebuildAfterAdapt refreshes the vanguard leaf grid view IN PLACE
-        // (object identity kept for Transmissibility's reference).
+        // The vanguard leaf grid view is NOT recreated (ALU tracks it live).
         this->simulator_.vanguard().rebuildAfterAdapt();
-        this->gridView_ = this->simulator_.gridView();
-        this->elementMapper_.update(this->gridView_);
-        this->vertexMapper_.update(this->gridView_);
+        // Reconstruct the discretization's mappers -- NOT .update(), which
+        // copy-assigns the GridView and leaves stale ALU iterator internals.
+        // (MultipleCodim...Mapper::operator= is deleted -> placement-new.)
+        using ElementMapper = std::decay_t<decltype(this->elementMapper_)>;
+        using VertexMapper = std::decay_t<decltype(this->vertexMapper_)>;
+        this->elementMapper_.~ElementMapper();
+        ::new (static_cast<void*>(&this->elementMapper_))
+            ElementMapper(this->gridView_, Dune::mcmgElementLayout());
+        this->vertexMapper_.~VertexMapper();
+        ::new (static_cast<void*>(&this->vertexMapper_))
+            VertexMapper(this->gridView_, Dune::mcmgVertexLayout());
 
         const std::size_t nAfter = this->asImp_().numGridDof();
 
