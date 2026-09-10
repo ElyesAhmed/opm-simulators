@@ -37,12 +37,15 @@
 #include <opm/models/blackoil/blackoillocalresidualtpfa.hh>
 #include <opm/models/discretization/common/tpfalinearizer.hh>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace Opm::Parameters {
 
@@ -255,6 +258,102 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
         // The spec the current grid was built on (empty = unrefined base run).
         std::string appliedSpec = Parameters::Get<Parameters::AdaptiveLgr>();
 
+        // ---- Preflight: validate a refinement spec against the LIVE coarse
+        // grid + well set BEFORE anything destructive happens. Catches a
+        // malformed / well-straddling / non-conforming spec while the coarse
+        // simulator is still intact, so a bad request fails cleanly instead of
+        // tearing the world down first (review 2026-09-10: not a full
+        // transaction, but "validate the checkable part before destroy").
+        auto preflightSpec = [&](const std::string& spec) -> bool {
+            auto* sim = flowMain->getSimulatorPtr();
+            const auto& mapper = sim->vanguard().cartesianIndexMapper();
+            const auto& gdims = mapper.cartesianDimensions();
+            const long NXg = gdims[0], NYg = gdims[1], NZg = gdims[2];
+
+            // schedule-wide protected completion cells (global Cartesian)
+            std::vector<long> prot;
+            const auto& sched = sim->vanguard().schedule();
+            for (const auto& w : sched.getWellsatEnd())
+                for (const auto& c : w.getConnections())
+                    prot.push_back(static_cast<long>(c.global_index()));
+            for (const auto& [wn, cells] : sched.getPossibleFutureConnections()) {
+                static_cast<void>(wn);
+                for (auto gi : cells) prot.push_back(static_cast<long>(gi));
+            }
+            std::sort(prot.begin(), prot.end());
+            prot.erase(std::unique(prot.begin(), prot.end()), prot.end());
+            const auto isProt = [&](long i, long j, long k) {
+                return std::binary_search(prot.begin(), prot.end(),
+                                          (k * NYg + j) * NXg + i);
+            };
+
+            std::vector<std::array<long, 6>> boxes;   // i1 i2 j1 j2 k1 k2 (0-based incl.)
+            long long refinedLeaf = 0, coarseRefined = 0;
+            std::size_t p = 0;
+            auto nextTok = [&](long& out) -> bool {
+                while (p < spec.size() && (spec[p] == ' ' || spec[p] == ';')) ++p;
+                if (p >= spec.size()) return false;
+                std::size_t q = p;
+                while (q < spec.size() && spec[q] != ' ' && spec[q] != ';') ++q;
+                try { out = std::stol(spec.substr(p, q - p)); }
+                catch (...) { return false; }
+                p = q;
+                return true;
+            };
+            long v[9];
+            while (nextTok(v[0])) {
+                bool okrow = true;
+                for (int t = 1; t < 9 && okrow; ++t) okrow = nextTok(v[t]);
+                if (!okrow) {
+                    OpmLog::error("preflight: malformed refinement spec (need 9 ints/box).");
+                    return false;
+                }
+                const long i1 = v[0] - 1, i2 = v[1] - 1, j1 = v[2] - 1, j2 = v[3] - 1;
+                const long k1 = v[4] - 1, k2 = v[5] - 1;
+                const long nx = v[6], ny = v[7], nz = v[8];
+                if (i1 < 0 || j1 < 0 || k1 < 0 || i2 >= NXg || j2 >= NYg || k2 >= NZg
+                    || i2 < i1 || j2 < j1 || k2 < k1) {
+                    OpmLog::error("preflight: refinement box outside the coarse grid.");
+                    return false;
+                }
+                const long ci = i2 - i1 + 1, cj = j2 - j1 + 1, ck = k2 - k1 + 1;
+                if (nx <= 0 || ny <= 0 || nz <= 0
+                    || nx % ci != 0 || ny % cj != 0 || nz % ck != 0) {
+                    OpmLog::error("preflight: box subdivision is not a positive integer "
+                                  "multiple of the parent cell count (non-conforming).");
+                    return false;
+                }
+                for (long k = k1; k <= k2; ++k)
+                for (long j = j1; j <= j2; ++j)
+                for (long i = i1; i <= i2; ++i)
+                    if (isProt(i, j, k)) {
+                        OpmLog::error("preflight: refinement box contains a protected "
+                                      "well-completion cell (would split a well "
+                                      "GLOBAL/LGR). Refusing.");
+                        return false;
+                    }
+                for (const auto& b : boxes) {
+                    const bool ov = i1 <= b[1] && b[0] <= i2 && j1 <= b[3] && b[2] <= j2
+                                 && k1 <= b[5] && b[4] <= k2;
+                    if (ov) {
+                        OpmLog::error("preflight: refinement boxes overlap.");
+                        return false;
+                    }
+                }
+                boxes.push_back({i1, i2, j1, j2, k1, k2});
+                coarseRefined += ci * cj * ck;
+                refinedLeaf += nx * ny * nz;
+            }
+            const long long totalLeaf =
+                NXg * NYg * NZg - coarseRefined + refinedLeaf;
+            OpmLog::info("preflight OK: " + std::to_string(boxes.size()) + " box(es), "
+                + std::to_string(coarseRefined) + " coarse cell(s) -> "
+                + std::to_string(refinedLeaf) + " child cell(s); refined leaf grid ~"
+                + std::to_string(totalLeaf) + " cells (coarse " + std::to_string(NXg*NYg*NZg)
+                + "). No box straddles a well; all subdivisions conforming.");
+            return true;
+        };
+
         // Tear down world #1, rebuild it refined on `spec`, remap state.
         // Returns false on ANY refusal/failure; every such path sets `status`
         // to a non-zero exit code so the run is not reported as a success.
@@ -274,6 +373,12 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
                 OpmLog::error(std::string("flow_blackoil_adaptive_dynamic: the deck uses ")
                     + unsupported + " -- its path-dependent state is not transferred "
                     "across a grid rebuild. Refusing the rebuild (run fails).");
+                status = EXIT_FAILURE;
+                return false;
+            }
+
+            // Validate the spec against the still-intact coarse world first.
+            if (!spec.empty() && spec != "none" && !preflightSpec(spec)) {
                 status = EXIT_FAILURE;
                 return false;
             }
