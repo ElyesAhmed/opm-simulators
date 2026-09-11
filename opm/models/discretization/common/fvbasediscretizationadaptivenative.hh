@@ -40,6 +40,7 @@
 #include <memory>
 #include <new>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <unordered_map>
 
@@ -133,85 +134,94 @@ public:
             }
         }
 
-        // --- (4) adapt in place ---------------------------------------------
-        const bool preOk = grid.preAdapt();
-        const bool changed = grid.adapt();
-        grid.postAdapt();
+        // A failed in-place mutation cannot be retried as a normal failed
+        // timestep: no old-grid rollback exists yet. logic_error deliberately
+        // bypasses AdaptiveTimeStepping's recoverable runtime_error handler.
+        try {
+            // --- (4) adapt in place ---------------------------------------------
+            const bool preOk = grid.preAdapt();
+            const bool changed = grid.adapt();
+            grid.postAdapt();
 
-        // --- (5) rebuild the vanguard's Cartesian machinery -----------------
-        // The vanguard leaf grid view is NOT recreated (ALU tracks it live).
-        this->simulator_.vanguard().rebuildAfterAdapt();
-        // Reconstruct the discretization's mappers -- NOT .update(), which
-        // copy-assigns the GridView and leaves stale ALU iterator internals.
-        // (MultipleCodim...Mapper::operator= is deleted -> placement-new.)
-        using ElementMapper = std::decay_t<decltype(this->elementMapper_)>;
-        using VertexMapper = std::decay_t<decltype(this->vertexMapper_)>;
-        this->elementMapper_.~ElementMapper();
-        ::new (static_cast<void*>(&this->elementMapper_))
-            ElementMapper(this->gridView_, Dune::mcmgElementLayout());
-        this->vertexMapper_.~VertexMapper();
-        ::new (static_cast<void*>(&this->vertexMapper_))
-            VertexMapper(this->gridView_, Dune::mcmgVertexLayout());
+            // --- (5) rebuild the vanguard's Cartesian machinery -----------------
+            // The vanguard leaf grid view is NOT recreated (ALU tracks it live).
+            this->simulator_.vanguard().rebuildAfterAdapt();
+            // Reconstruct the discretization's mappers -- NOT .update(), which
+            // copy-assigns the GridView and leaves stale ALU iterator internals.
+            // (MultipleCodim...Mapper::operator= is deleted -> placement-new.)
+            using ElementMapper = std::decay_t<decltype(this->elementMapper_)>;
+            using VertexMapper = std::decay_t<decltype(this->vertexMapper_)>;
+            this->elementMapper_.~ElementMapper();
+            ::new (static_cast<void*>(&this->elementMapper_))
+                ElementMapper(this->gridView_, Dune::mcmgElementLayout());
+            this->vertexMapper_.~VertexMapper();
+            ::new (static_cast<void*>(&this->vertexMapper_))
+                VertexMapper(this->gridView_, Dune::mcmgVertexLayout());
 
-        const std::size_t nAfter = this->asImp_().numGridDof();
+            const std::size_t nAfter = this->asImp_().numGridDof();
 
-        // --- (6) resize + prolong-by-injection solution(0), then (1):=(0) ----
-        {
-            const auto& idSet = grid.localIdSet();
-            Dune::MultipleCodimMultipleGeomTypeMapper<GridView>
-                em(this->gridView_, Dune::mcmgElementLayout());
-            for (unsigned t = 0; t < historySize; ++t) {
-                this->solution_[t]->blockVector().resize(nAfter);
-            }
-            auto& bv0 = this->solution_[0]->blockVector();
-            for (const auto& e : elements(this->gridView_, Dune::Partitions::interior)) {
-                auto a = e;
-                const PrimaryVariables* v = nullptr;
-                while (true) {
-                    auto it = sol0.find(idSet.id(a));
-                    if (it != sol0.end()) { v = &it->second; break; }
-                    if (a.level() == 0 || !a.hasFather()) { break; }
-                    a = a.father();
+            // --- (6) resize + prolong-by-injection solution(0), then (1):=(0) ----
+            {
+                const auto& idSet = grid.localIdSet();
+                Dune::MultipleCodimMultipleGeomTypeMapper<GridView>
+                    em(this->gridView_, Dune::mcmgElementLayout());
+                for (unsigned t = 0; t < historySize; ++t) {
+                    this->solution_[t]->blockVector().resize(nAfter);
                 }
-                if (v == nullptr) {
-                    throw std::runtime_error("FvBaseDiscretizationAdaptiveNative::"
-                        "adaptGrid: no pre-adapt ancestor for a leaf cell.");
+                auto& bv0 = this->solution_[0]->blockVector();
+                for (const auto& e : elements(this->gridView_, Dune::Partitions::interior)) {
+                    auto a = e;
+                    const PrimaryVariables* v = nullptr;
+                    while (true) {
+                        auto it = sol0.find(idSet.id(a));
+                        if (it != sol0.end()) { v = &it->second; break; }
+                        if (a.level() == 0 || !a.hasFather()) { break; }
+                        a = a.father();
+                    }
+                    if (v == nullptr) {
+                        throw std::runtime_error("FvBaseDiscretizationAdaptiveNative::"
+                            "adaptGrid: no pre-adapt ancestor for a leaf cell.");
+                    }
+                    bv0[em.index(e)] = *v;
                 }
-                bv0[em.index(e)] = *v;
+                // advanceTimeLevel() sets solution(1) = solution(0) right after this,
+                // but keep them consistent here too.
+                for (unsigned t = 1; t < historySize; ++t) {
+                    this->solution_[t]->blockVector() = bv0;
+                }
             }
-            // advanceTimeLevel() sets solution(1) = solution(0) right after this,
-            // but keep them consistent here too.
-            for (unsigned t = 1; t < historySize; ++t) {
-                this->solution_[t]->blockVector() = bv0;
+
+
+            // --- (7) rebuild discretization geometry/caches/matrix --------------
+            this->resetLinearizer();
+            this->finishInit();
+
+            // --- (8) rebuild problem-side geometry-dependent data ---------------
+            problem.gridChanged();
+
+            // --- recompute intensive quantities from the transferred state ------
+            this->invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
+
+            // explicit per-cell state (max sat, rock-compaction mult) that
+            // beginTimeStep normally maintains -- needs valid intensive quantities.
+            problem.finishAdaptExplicitQuantities();
+            this->invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
+
+            for (auto& module : this->outputModules_) {
+                module->allocBuffers();
             }
+
+            // --- (9) conservation gate ----------------------------------------
+            problem.verifyAfterAdapt();
+
+            OpmLog::info(fmt::format(
+                "[alu-hadapt] in-place adapt: marked={} preAdapt={} changed={}  "
+                "leaf cells {} -> {}", marked, preOk, changed, nBefore, nAfter));
         }
-
-
-        // --- (7) rebuild discretization geometry/caches/matrix --------------
-        this->resetLinearizer();
-        this->finishInit();
-
-        // --- (8) rebuild problem-side geometry-dependent data ---------------
-        problem.gridChanged();
-
-        // --- recompute intensive quantities from the transferred state ------
-        this->invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
-
-        // explicit per-cell state (max sat, rock-compaction mult) that
-        // beginTimeStep normally maintains -- needs valid intensive quantities.
-        problem.finishAdaptExplicitQuantities();
-        this->invalidateAndUpdateIntensiveQuantities(/*timeIdx=*/0);
-
-        for (auto& module : this->outputModules_) {
-            module->allocBuffers();
+        catch (const std::exception& error) {
+            throw std::logic_error(std::string("Unrecoverable in-place grid adaptation: ")
+                                   + error.what());
         }
-
-        // --- (9) conservation gate ----------------------------------------
-        problem.verifyAfterAdapt();
-
-        OpmLog::info(fmt::format(
-            "[alu-hadapt] in-place adapt: marked={} preAdapt={} changed={}  "
-            "leaf cells {} -> {}", marked, preOk, changed, nBefore, nAfter));
     }
 };
 
