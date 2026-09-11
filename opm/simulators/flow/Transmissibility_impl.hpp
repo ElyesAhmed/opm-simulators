@@ -533,6 +533,37 @@ update(bool global, const TransUpdateQuantities update_quantities,
                                 double(hC), double(hF), double(trans));
                         }
                     }
+                    else {
+                        // Genuine nonconforming Dune grid (e.g. ALUGrid): the
+                        // generic computeFaceProperties() path above already
+                        // used the ACTUAL sub-face geometry (its own center,
+                        // area, normal) shared by both sides -- there is no
+                        // CpGrid-style "split face piece" artifact to coalesce,
+                        // because each (coarse,fine_i) neighbor pair already
+                        // arrives as its own distinct intersection object with
+                        // correct geometry. This dump exists to INSPECT that
+                        // claim on a real 2:1 interface, not to fix anything.
+                        const int li = intersection.inside().level();
+                        const int lo = intersection.neighbor() ? intersection.outside().level() : li;
+                        const bool dumpAll = std::getenv("OPM_DUMP_LGR_IFACE_ALL") != nullptr;
+                        if (li != lo || dumpAll) {
+                            const auto dC = distanceVector_(inside.faceCenter, inside.elemIdx);
+                            const auto dF = distanceVector_(outside.faceCenter, outside.elemIdx);
+                            const auto hC = computeHalfTrans_(faceAreaNormal, inside.faceIdx, dC, permeability_[inside.elemIdx]);
+                            const auto hF = computeHalfTrans_(faceAreaNormal, outside.faceIdx, dF, permeability_[outside.elemIdx]);
+                            std::fprintf(stderr,
+                                "[2to1-iface] cart(%u<->%u) in(e%u l%d f%d) out(e%u l%d f%d)  |An|=%.5e  "
+                                "dC=(%.4f,%.4f,%.4f)|%.4f  dF=(%.4f,%.4f,%.4f)|%.4f  "
+                                "hC=%.5e hF=%.5e T=%.5e\n",
+                                inside.cartElemIdx, outside.cartElemIdx,
+                                inside.elemIdx, li, inside.faceIdx,
+                                outside.elemIdx, lo, outside.faceIdx,
+                                faceAreaNormal.two_norm(),
+                                dC[0],dC[1],dC[2],dC.two_norm(),
+                                dF[0],dF[1],dF[2],dF.two_norm(),
+                                double(hC), double(hF), double(trans));
+                        }
+                    }
                 }
 
                 if (storeHalfTrans_) {
