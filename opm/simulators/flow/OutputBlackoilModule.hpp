@@ -304,6 +304,26 @@ public:
         this->lgrBlockExtractors_.clear();
     }
 
+    //! \brief Recompute the per-cell region arrays after an in-place grid
+    //! adaptation. mapRegionsOntoLeaf_() (constructor-only by design)
+    //! overwrites regions_ in place, so it cannot be re-run against its own
+    //! prior (already leaf-mapped, pre-adapt-sized) output -- re-derive from
+    //! the original field-props source instead, exactly as the constructor
+    //! does, then re-map that fresh copy onto the (now larger) leaf grid.
+    void refreshRegionsAfterAdapt()
+    {
+        const auto& fp = this->eclState_.fieldProps();
+        this->regions_.insert_or_assign("FIPNUM", fp.get_int("FIPNUM"));
+        for (const auto& region : fp.fip_regions()) {
+            this->regions_.insert_or_assign(region, fp.get_int(region));
+        }
+
+        this->mapRegionsOntoLeaf_();
+        for (auto& region_pair : this->regions_) {
+            this->createLocalRegion_(region_pair.second);
+        }
+    }
+
     /*!
      * \brief Move all buffers to data::Solution.
      */
@@ -923,18 +943,37 @@ private:
 
     /// \brief Put every region array on the leaf grid.
     ///
-    /// Called once, before the arrays are used.  A refined cell inherits its
-    /// parent's region; without LGRs this is the identity.
+    /// Called once at construction time, and again (via
+    /// refreshRegionsAfterAdapt()) after an in-place grid adaptation.  A
+    /// refined cell inherits its parent's region; without LGRs/refinement
+    /// this is the identity.
+    ///
+    /// LookUpData::operator() only handles level-0 entities (it asserts
+    /// otherwise); on a locally h-adapted non-CpGrid grid a leaf cell can sit
+    /// at level > 0, so walk to its level-0 ancestor ourselves here, exactly
+    /// as LookUpData::adaptedLevelZeroFieldPropIdx_ does for satnum/pvtnum.
     void mapRegionsOntoLeaf_()
     {
         const LookUpData<Grid, GridView> lookUpData(simulator_.gridView());
+        const auto& grid = simulator_.gridView().grid();
         const auto numLeaf = simulator_.gridView().size(0);
+        constexpr bool generalGrid = !std::is_same_v<Grid, Dune::CpGrid>;
+        const bool adaptedGeneral = generalGrid && (grid.maxLevel() > 0);
 
         std::vector<int> onLeaf(numLeaf, 0);
         for (auto& [name, region] : this->regions_) {
             std::size_t elemIdx = 0;
             for (const auto& elem : elements(simulator_.gridView())) {
-                onLeaf[elemIdx++] = lookUpData(elem, region);
+                if (adaptedGeneral) {
+                    auto ancestor = elem;
+                    while (ancestor.level() > 0) {
+                        ancestor = ancestor.father();
+                    }
+                    onLeaf[elemIdx++] = region[grid.levelIndexSet(0).index(ancestor)];
+                }
+                else {
+                    onLeaf[elemIdx++] = lookUpData(elem, region);
+                }
             }
 
             region = onLeaf;
