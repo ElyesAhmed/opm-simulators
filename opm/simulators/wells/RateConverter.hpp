@@ -81,6 +81,15 @@ namespace Opm {
                 , attr_      (rmap_, Attributes())
             {}
 
+            // Preserve this object's address: live wells hold references to it.
+            // Recompute averaged state with defineState() after replacing regions.
+            void resetRegions(const Region& region)
+            {
+                auto replacement = SurfaceToReservoirVoidage(region);
+                rmap_ = std::move(replacement.rmap_);
+                attr_ = std::move(replacement.attr_);
+            }
+
             /**
              * Compute pore volume averaged hydrocarbon state pressure, rs and rv.
              *
@@ -369,7 +378,7 @@ namespace Opm {
             /**
              * "Fluid-in-place" region mapping (forward and reverse).
              */
-            const RegionMapping<Region> rmap_;
+            RegionMapping<Region> rmap_;
 
             /**
              * Derived property attributes for each active region.

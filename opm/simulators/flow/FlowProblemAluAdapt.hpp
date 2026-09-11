@@ -24,9 +24,13 @@
 #define OPM_FLOW_PROBLEM_ALU_ADAPT_HPP
 
 #include <opm/simulators/flow/FlowProblemBlackoil.hpp>
+#include <opm/simulators/flow/AdaptiveRefinementProtection.hpp>
 #include <opm/simulators/flow/AdaptiveStateTransfer.hpp>
+#include <opm/simulators/flow/AluAdaptTransfer.hpp>
 
 #include <opm/common/OpmLog/OpmLog.hpp>
+#include <opm/input/eclipse/EclipseState/Phase.hpp>
+#include <opm/input/eclipse/EclipseState/SimulationConfig/RockConfig.hpp>
 
 #include <dune/grid/common/mcmgmapper.hh>
 #include <dune/grid/common/partitionset.hh>
@@ -38,6 +42,7 @@
 #include <cstdlib>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace Opm {
@@ -81,6 +86,8 @@ class FlowProblemAluAdapt : public FlowProblemBlackoil<TypeTag>
     using Simulator = GetPropType<TypeTag, Properties::Simulator>;
     using GridView = GetPropType<TypeTag, Properties::GridView>;
     using Scalar = GetPropType<TypeTag, Properties::Scalar>;
+    using InitialFluidState = typename std::decay_t<
+        decltype(std::declval<Base&>().initialFluidStates())>::value_type;
 
 public:
     explicit FlowProblemAluAdapt(Simulator& simulator)
@@ -95,6 +102,13 @@ public:
         // a uniform deck but ~18% off on a heterogeneous one (found via SPE9).
         this->setLookUpCartesianIndexMapper(
             &this->simulator().vanguard().cartesianIndexMapper());
+
+        const auto& dims = this->simulator().vanguard()
+            .cartesianIndexMapper().cartesianDimensions();
+        const auto protectedCells = buildProtectedRefinementCells(
+            this->simulator().vanguard().schedule(),
+            {dims[0], dims[1], dims[2]});
+        protectedCartesianCells_.insert(protectedCells.begin(), protectedCells.end());
     }
 
     unsigned markForGridAdaptation()
@@ -103,6 +117,8 @@ public:
         if (spec == nullptr || aluAdaptTestBoxDone_) {
             return 0;
         }
+        rejectUnsupportedAdaptation_();
+
         std::array<int, 6> b{};
         {
             std::istringstream is(spec);
@@ -122,7 +138,6 @@ public:
         Dune::MultipleCodimMultipleGeomTypeMapper<GridView>
             elemMapper(gridView, Dune::mcmgElementLayout());
 
-        const auto wellProtected = wellProtectedCells_();
         unsigned n = 0;
         unsigned vetoed = 0;
         for (const auto& e : elements(gridView, Dune::Partitions::interior)) {
@@ -134,7 +149,7 @@ public:
             if (i + 1 >= b[0] && i + 1 <= b[1] &&
                 j + 1 >= b[2] && j + 1 <= b[3] &&
                 k + 1 >= b[4] && k + 1 <= b[5]) {
-                if (wellProtected.count(elemIdx) != 0) {
+                if (protectedCartesianCells_.count(cart) != 0) {
                     ++vetoed;
                     continue; // never refine a well cell -- see class doc.
                 }
@@ -154,6 +169,12 @@ public:
     void prepareForAdapt()
     {
         invBefore_ = blackOilComponentInventory<TypeTag>(this->simulator());
+        initialFluidStatesBefore_.capture(this->simulator().gridView(),
+            [this](std::size_t idx) { return this->initialFluidStates().at(idx); });
+        if (!this->rockTableIdx_.empty()) {
+            rockTableBefore_.capture(this->simulator().gridView(),
+                [this](std::size_t idx) { return this->rockTableIdx_.at(idx); });
+        }
         this->simulator().vanguard().snapshotForAdapt();
     }
 
@@ -162,6 +183,28 @@ public:
     //! GEO_MODIFIER schedule-event path).
     void gridChanged()
     {
+        // Nonthermal intensive quantities still obtain temperature from the
+        // initial fluid state. Remap it before any new-grid PVT evaluation;
+        // resizing alone would also lose the identity of surviving cells.
+        const auto& gv = this->simulator().gridView();
+        auto& initial = this->initialFluidStates();
+        initial.resize(this->model().numGridDof());
+        Dune::MultipleCodimMultipleGeomTypeMapper<GridView>
+            mapper(gv, Dune::mcmgElementLayout());
+        verifyProtectedCellsAfterAdapt_(gv, mapper);
+        for (const auto& elem : elements(gv, Dune::Partitions::interior)) {
+            initial.at(mapper.index(elem)) = initialFluidStatesBefore_.lookup(gv, elem);
+        }
+        // ROCK region lookup is also leaf-indexed and is used by the first
+        // post-adapt porosity evaluation. readMaterialParameters_ does not
+        // rebuild this array. Inherit the parent's region, preserving empty
+        // storage as the existing single-default-region representation.
+        if (!this->rockTableIdx_.empty()) {
+            this->rockTableIdx_.resize(this->model().numGridDof());
+            for (const auto& elem : elements(gv, Dune::Partitions::interior)) {
+                this->rockTableIdx_.at(mapper.index(elem)) = rockTableBefore_.lookup(gv, elem);
+            }
+        }
         Base::gridChanged();
 
         // LookUpData's OWN element mapper is built once and never follows a
@@ -237,6 +280,12 @@ public:
         for (int c = 0; c < 3; ++c) {
             const double denom = std::max(std::abs(invBefore_[c]), 1e-300);
             const double rel = std::abs(invAfter[c] - invBefore_[c]) / denom;
+            if (!std::isfinite(invBefore_[c]) || !std::isfinite(invAfter[c]) ||
+                !std::isfinite(rel)) {
+                throw std::runtime_error(fmt::format(
+                    "[alu-hadapt] non-finite {} inventory across adapt: {} -> {}",
+                    names[c], invBefore_[c], invAfter[c]));
+            }
             worst = std::max(worst, rel);
             OpmLog::info(fmt::format(
                 "[alu-hadapt] inventory {:>5}: {: .8e} -> {: .8e}  rel {:.2e}",
@@ -255,22 +304,102 @@ public:
     }
 
 private:
-    //! Compressed leaf-cell indices that currently host at least one well
-    //! connection (any status: shut wells keep their connection list). Used
-    //! by EVERY marking driver (fixed test box now, the estimator from
-    //! Phase 5 on) to veto refinement of well cells -- see class doc.
-    std::unordered_set<int> wellProtectedCells_() const
+    void rejectUnsupportedAdaptation_() const
     {
-        std::unordered_set<int> cells;
-        const auto& wells = this->wellModel();
-        for (int w = 0; w < wells.numLocalWells(); ++w) {
-            for (const auto& perf : wells.perfData(w)) {
-                cells.insert(perf.cell_index);
-            }
+        const auto& eclState = this->simulator().vanguard().eclState();
+        const auto& runspec = eclState.runspec();
+        const auto& phases = runspec.phases();
+        const auto& rock = eclState.getSimulationConfig().rock_config();
+        const int episode = std::max(0, this->simulator().episodeIndex());
+        const auto& oilvap = this->simulator().vanguard().schedule()[episode].oilvap();
+        using P = Phase;
+
+        const char* unsupported = nullptr;
+        if (this->materialLawManager()->hysteresisConfig().enableHysteresis()) {
+            unsupported = "saturation-function hysteresis";
         }
-        return cells;
+        else if (eclState.aquifer().active()) {
+            unsupported = "analytic or numerical aquifers";
+        }
+        else if (phases.active(P::SOLVENT)) {
+            unsupported = "the solvent model";
+        }
+        else if (phases.active(P::POLYMER)) {
+            unsupported = "the polymer model";
+        }
+        else if (phases.active(P::POLYMW)) {
+            unsupported = "polymer molecular weight";
+        }
+        else if (phases.active(P::FOAM)) {
+            unsupported = "the foam model";
+        }
+        else if (phases.active(P::BRINE)) {
+            unsupported = "the brine model";
+        }
+        else if (phases.active(P::ZFRACTION)) {
+            unsupported = "the z-fraction model";
+        }
+        else if (phases.active(P::ENERGY)) {
+            unsupported = "the thermal or energy model";
+        }
+        else if (runspec.micp()) {
+            unsupported = "the MICP model";
+        }
+        else if (runspec.co2Storage()) {
+            unsupported = "CO2STORE";
+        }
+        else if (runspec.h2Storage()) {
+            unsupported = "H2STORE";
+        }
+        else if (runspec.co2Sol()) {
+            unsupported = "dissolved CO2";
+        }
+        else if (runspec.h2Sol()) {
+            unsupported = "dissolved H2";
+        }
+        else if (!eclState.tracer().empty()) {
+            unsupported = "passive tracers";
+        }
+        else if (rock.active() &&
+                 (rock.hysteresis_mode() != RockConfig::Hysteresis::REVERS ||
+                  rock.water_compaction())) {
+            unsupported = "path-dependent rock compaction";
+        }
+        else if (oilvap.defined()) {
+            unsupported = "VAPPARS, DRSDT, or DRVDT history controls";
+        }
+
+        if (unsupported != nullptr) {
+            throw std::invalid_argument(fmt::format(
+                "Native ALUGrid adaptation does not yet transfer {}; "
+                "refusing to mutate the grid.", unsupported));
+        }
     }
 
+    void verifyProtectedCellsAfterAdapt_(
+        const GridView& gridView,
+        const Dune::MultipleCodimMultipleGeomTypeMapper<GridView>& mapper) const
+    {
+        std::unordered_map<int, unsigned> leafCount;
+        const auto& cartMapper = this->simulator().vanguard().cartesianIndexMapper();
+        for (const auto& elem : elements(gridView, Dune::Partitions::interior)) {
+            const int cart = cartMapper.cartesianIndex(mapper.index(elem));
+            if (protectedCartesianCells_.count(cart) != 0) {
+                ++leafCount[cart];
+            }
+        }
+        for (const auto& [cart, count] : leafCount) {
+            if (count != 1) {
+                throw std::runtime_error(fmt::format(
+                    "Protected Cartesian cell {} produced {} leaf cells after adaptation",
+                    cart, count));
+            }
+        }
+    }
+
+    AluAdaptSnapshot<GridView, InitialFluidState> initialFluidStatesBefore_;
+    AluAdaptSnapshot<GridView, unsigned short> rockTableBefore_;
+    std::unordered_set<int> protectedCartesianCells_;
     bool aluAdaptTestBoxDone_ {false};
     std::array<double, 3> invBefore_ {0.0, 0.0, 0.0};
 };
