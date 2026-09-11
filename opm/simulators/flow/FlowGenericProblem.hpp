@@ -31,6 +31,8 @@
 #include <opm/material/common/UniformXTabulated2DFunction.hpp>
 #include <opm/material/common/Tabulated1DFunction.hpp>
 
+#include <opm/grid/common/CartesianIndexMapper.hpp>
+
 #include <opm/simulators/flow/SolutionContainers.hpp>
 
 #include <array>
@@ -387,6 +389,23 @@ protected:
     using LookUpData = Opm::LookUpData<Grid,GridView>;
     const LookUpData lookUpData_;
 
+public:
+    //! Give the field-property lookup a CartesianIndexMapper that is
+    //! correctly (re)built across grid.adapt() -- needed for a refined leaf
+    //! on a GENERAL (non-CpGrid) locally adapted grid; see
+    //! LookUpData::setCartesianIndexMapper()'s doc for why the level-0
+    //! index-set fallback is wrong there. No-op / unused for CpGrid.
+    void setLookUpCartesianIndexMapper(const Dune::CartesianIndexMapper<Grid>* cartMapper)
+    { lookUpData_.setCartesianIndexMapper(cartMapper); }
+
+    //! Rebuild the field-property lookup's own element mapper after a
+    //! grid.adapt() -- see LookUpData::refreshElementMapper()'s doc. Must be
+    //! called before any other post-adapt LookUpData-backed query (i.e.
+    //! before readMaterialParameters_()).
+    void refreshLookUpElementMapper()
+    { lookUpData_.refreshElementMapper(); }
+
+protected:
     // \brief Function to assign the origin cell index on level zero, for a cell on the leaf grid view.
     //
     // For CpGrid with local grid refinement, the field property of a cell on the leaf
