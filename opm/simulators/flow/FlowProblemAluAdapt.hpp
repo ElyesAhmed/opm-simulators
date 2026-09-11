@@ -85,7 +85,17 @@ class FlowProblemAluAdapt : public FlowProblemBlackoil<TypeTag>
 public:
     explicit FlowProblemAluAdapt(Simulator& simulator)
         : Base(simulator)
-    {}
+    {
+        // Field-property lookup for a refined leaf must go through the
+        // vanguard's CartesianIndexMapper (correctly rebuilt across every
+        // adapt()), not LookUpData's own level-0-index-set fallback -- see
+        // LookUpData::setCartesianIndexMapper()'s doc. Without this, PORV/
+        // PVTNUM/SATNUM/PERM*/... are silently wrong for EVERY level-0 cell
+        // (refined or not) as soon as maxLevel() > 0 anywhere, invisible on
+        // a uniform deck but ~18% off on a heterogeneous one (found via SPE9).
+        this->setLookUpCartesianIndexMapper(
+            &this->simulator().vanguard().cartesianIndexMapper());
+    }
 
     unsigned markForGridAdaptation()
     {
@@ -154,6 +164,13 @@ public:
     {
         Base::gridChanged();
 
+        // LookUpData's OWN element mapper is built once and never follows a
+        // later adapt() on its own (same reason the discretization's mappers
+        // need placement-new, not just being left alone) -- refresh it
+        // FIRST, or every field-property lookup below reads through a stale
+        // mapper (silently out-of-range, not just wrong-cell).
+        this->refreshLookUpElementMapper();
+
         // Rebuild every per-cell quantity against the adapted leaf grid. The
         // leaf assigners (LookUpData) map a refined child to its level-0
         // ancestor, so region numbers / porosity / rock / relperm params are
@@ -192,6 +209,15 @@ public:
         // region). That mapping is now stale -- there are more leaf cells
         // than region-array slots -- so rebuild it from source.
         this->eclWriter().mutableOutputModule().refreshRegionsAfterAdapt();
+
+        // The well model's local_num_cells_ / legacy PVT-region & depth
+        // caches / perforated-cell flags are likewise sized ONCE (its
+        // constructor + init()). Refresh before the next beginReportStep()
+        // -> initializeWellState() indexes them by the new leaf count --
+        // see refreshAfterGridAdapt()'s own comment for the exact overrun.
+        // Well cells are never refined (wellProtectedCells_()), so no
+        // connection's parent-cell mapping needs updating -- only sizes.
+        this->wellModel().refreshAfterGridAdapt();
     }
 
     //! Called AFTER intensive quantities have been recomputed on the adapted
