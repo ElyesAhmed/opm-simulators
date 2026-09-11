@@ -38,6 +38,7 @@
 #include <cstdlib>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 
 namespace Opm {
 
@@ -55,6 +56,23 @@ namespace Opm {
  * markForGridAdaptation() DELIBERATELY shadows MultiPhaseBaseProblem's
  * saturation-variation heuristic (it marks inside a per-phase loop and
  * miscounts); that returns later behind --adapt-indicator=saturation.
+ *
+ * Well cells are ALWAYS vetoed from refinement (never remeshed), regardless
+ * of what drives the marking (fixed test box now, the a posteriori estimator
+ * from Phase 5 on). Two reasons:
+ *   - engineering: OPM's well connections resolve their compressed cell
+ *     index live (WellConnectionAuxiliaryModule -> vanguard().
+ *     compressedIndexForInterior(cartesian_idx)), not cached once. A well
+ *     cell that is never split needs no further bookkeeping across an
+ *     adapt -- the existing Cartesian-to-compressed rebuild (Phase 2) remaps
+ *     it for free. Splitting it into children instead would need a Peaceman
+ *     WI redesign and a one-to-many PerforationData schema OPM doesn't have
+ *     (even CpGrid's well-in-LGR path, compressedIndexForInteriorLGR, routes
+ *     to a single child cell -- it does not split flow across children).
+ *   - theoretical: the paper's weighted norm already discounts the near-well
+ *     singularity analytically via the D_K/weight term; refining the well's
+ *     own cell doesn't reduce that term, so there is no estimator upside to
+ *     match the engineering cost.
  */
 template <class TypeTag>
 class FlowProblemAluAdapt : public FlowProblemBlackoil<TypeTag>
@@ -94,15 +112,22 @@ public:
         Dune::MultipleCodimMultipleGeomTypeMapper<GridView>
             elemMapper(gridView, Dune::mcmgElementLayout());
 
+        const auto wellProtected = wellProtectedCells_();
         unsigned n = 0;
+        unsigned vetoed = 0;
         for (const auto& e : elements(gridView, Dune::Partitions::interior)) {
-            const int cart = mapper.cartesianIndex(elemMapper.index(e));
+            const int elemIdx = elemMapper.index(e);
+            const int cart = mapper.cartesianIndex(elemIdx);
             const int i = cart % dims[0];
             const int j = (cart / dims[0]) % dims[1];
             const int k = cart / (dims[0] * dims[1]);
             if (i + 1 >= b[0] && i + 1 <= b[1] &&
                 j + 1 >= b[2] && j + 1 <= b[3] &&
                 k + 1 >= b[4] && k + 1 <= b[5]) {
+                if (wellProtected.count(elemIdx) != 0) {
+                    ++vetoed;
+                    continue; // never refine a well cell -- see class doc.
+                }
                 grid.mark(1, e);
                 ++n;
             }
@@ -110,8 +135,8 @@ public:
         aluAdaptTestBoxDone_ = true;
         OpmLog::info(fmt::format(
             "[alu-hadapt] OPM_ALU_ADAPT_TEST_BOX i{}-{} j{}-{} k{}-{} "
-            "-> marked {} leaf cell(s) for refinement",
-            b[0], b[1], b[2], b[3], b[4], b[5], n));
+            "-> marked {} leaf cell(s) for refinement ({} vetoed: well cell)",
+            b[0], b[1], b[2], b[3], b[4], b[5], n, vetoed));
         return grid.comm().sum(n);
     }
 
@@ -143,6 +168,30 @@ public:
 
         this->updatePffDofData_();
         this->model().linearizer().updateDiscretizationParameters();
+
+        // The ECL output module's per-cell field buffers (pressure,
+        // saturations, ...) are sized once and, as an optimization, left
+        // untouched on ordinary sub-steps -- see the alloc_fields gate in
+        // GenericOutputModule::doAllocBuffers, which assumes the cell count
+        // never changes mid-simulation. That assumption just broke: the
+        // grid was adapted on this very sub-step, so those buffers are
+        // still sized for the pre-adapt cell count. A subsequent
+        // EclWriter::prepareLocalCellData() call would then write element
+        // data past the end of an undersized buffer (silent heap
+        // corruption, surfacing later as a garbage globalSpaceIndex()).
+        // Force one full reallocation now by passing substep=false.
+        this->eclWriter().mutableOutputModule().allocBuffers(
+            static_cast<unsigned>(this->model().numGridDof()),
+            static_cast<unsigned>(this->simulator().episodeIndex()),
+            /*substep=*/false,
+            /*log=*/false,
+            /*isRestart=*/false);
+
+        // FIPNUM and friends are mapped onto the leaf grid once, at output
+        // module construction time (a refined child inherits its parent's
+        // region). That mapping is now stale -- there are more leaf cells
+        // than region-array slots -- so rebuild it from source.
+        this->eclWriter().mutableOutputModule().refreshRegionsAfterAdapt();
     }
 
     //! Called AFTER intensive quantities have been recomputed on the adapted
@@ -180,6 +229,22 @@ public:
     }
 
 private:
+    //! Compressed leaf-cell indices that currently host at least one well
+    //! connection (any status: shut wells keep their connection list). Used
+    //! by EVERY marking driver (fixed test box now, the estimator from
+    //! Phase 5 on) to veto refinement of well cells -- see class doc.
+    std::unordered_set<int> wellProtectedCells_() const
+    {
+        std::unordered_set<int> cells;
+        const auto& wells = this->wellModel();
+        for (int w = 0; w < wells.numLocalWells(); ++w) {
+            for (const auto& perf : wells.perfData(w)) {
+                cells.insert(perf.cell_index);
+            }
+        }
+        return cells;
+    }
+
     bool aluAdaptTestBoxDone_ {false};
     std::array<double, 3> invBefore_ {0.0, 0.0, 0.0};
 };
