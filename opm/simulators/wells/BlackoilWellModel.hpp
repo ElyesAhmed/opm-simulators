@@ -150,6 +150,15 @@ template<class Scalar> class WellContributions;
             void init();
             void initWellContainer(const int reportStepIdx) override;
 
+            //! Re-derive every per-cell array that init() sized ONCE against
+            //! the initial grid (local_num_cells_, the legacy PVT-region and
+            //! depth caches, the perforated-cell flags) after an in-place
+            //! h-adaptivity grid.adapt(). Call from Problem::gridChanged(),
+            //! before the next beginReportStep()/initializeWellState() --
+            //! those index cell arrays by the CURRENT leaf count and silently
+            //! overrun a stale-sized one (heap corruption, not an assert).
+            void refreshAfterGridAdapt();
+
             void beginEpisode()
             {
                 OPM_TIMEBLOCK(beginEpsiode);

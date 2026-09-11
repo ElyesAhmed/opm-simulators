@@ -177,6 +177,40 @@ namespace Opm {
         is_cell_perforated_.resize(local_num_cells_, false);
     }
 
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
+    refreshAfterGridAdapt()
+    {
+        // local_num_cells_/global_num_cells_ and the two legacy per-cell
+        // caches below were all sized ONCE, in the constructor / init(),
+        // against the grid as it existed at simulation start. An in-place
+        // h-adaptivity grid.adapt() changes the leaf cell count without
+        // reconstructing the well model, so every one of them is now the
+        // wrong size. initializeWellState() (called from the very next
+        // beginReportStep()) indexes cellPressures/cellTemperatures --
+        // sized from local_num_cells_ -- by the CURRENT leaf element index,
+        // which silently overruns a stale-sized std::vector: heap
+        // corruption, surfacing later as an unrelated "free(): invalid next
+        // size" abort, not a bounds assert at the actual overrun site.
+        local_num_cells_ = simulator_.gridView().size(0);
+        global_num_cells_ = simulator_.vanguard().globalNumCells();
+
+        // Both re-derive their own vector from live per-cell problem
+        // accessors (pvtRegionIndex/dofCenterDepth), already refreshed for
+        // the new grid by Problem::gridChanged()'s readMaterialParameters_()
+        // and the vanguard's updateCellDepths_() -- safe to just re-run.
+        extractLegacyCellPvtRegionIndex_();
+        extractLegacyDepth_();
+
+        // Real content is re-populated per well by initWellContainer() (via
+        // well->updatePerforatedCell()) at the next beginReportStep(); this
+        // only needs to be the right SIZE in the meantime so that any read
+        // before then (e.g. wellPI / rate-converter setup) does not read
+        // stale flags for cells that did not exist before the adapt.
+        is_cell_perforated_.assign(local_num_cells_, false);
+    }
+
 
     template<typename TypeTag>
     void
