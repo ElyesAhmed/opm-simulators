@@ -203,12 +203,37 @@ namespace Opm {
         extractLegacyCellPvtRegionIndex_();
         extractLegacyDepth_();
 
-        // Real content is re-populated per well by initWellContainer() (via
-        // well->updatePerforatedCell()) at the next beginReportStep(); this
-        // only needs to be the right SIZE in the meantime so that any read
-        // before then (e.g. wellPI / rate-converter setup) does not read
-        // stale flags for cells that did not exist before the adapt.
+        // Existing wells retain references to well_perf_data_. Refining an
+        // unrelated cell can still renumber every compressed leaf index, so
+        // remap each GLOBAL perforation immediately from its stable Cartesian
+        // identity. Waiting for the next beginReportStep() would let wells use
+        // stale cell indices during the remainder of the current report step.
         is_cell_perforated_.assign(local_num_cells_, false);
+        for (auto& wellPerf : this->well_perf_data_) {
+            for (auto& perf : wellPerf) {
+                if (perf.grid_id != 0) {
+                    throw std::logic_error(
+                        "Native ALUGrid adaptation does not support LGR-tagged well perforations");
+                }
+                const int cell = this->compressedIndexForInterior(
+                    static_cast<int>(perf.global_index));
+                if (cell < 0 || static_cast<std::size_t>(cell) >= local_num_cells_) {
+                    throw std::logic_error(fmt::format(
+                        "Could not remap well perforation in Cartesian cell {} after adaptation",
+                        perf.global_index));
+                }
+                perf.cell_index = cell;
+                is_cell_perforated_[cell] = true;
+            }
+        }
+
+        // beginReportStep constructs a single-region rate converter, but an
+        // adapt can occur inside that report step. Keep its address stable for
+        // existing wells while replacing the stale cell-to-region mapping.
+        if (this->rateConverter_) {
+            this->rateConverter_->resetRegions(std::vector<int>(local_num_cells_, 0));
+            this->rateConverter_->template defineState<ElementContext>(simulator_);
+        }
     }
 
 
