@@ -45,6 +45,7 @@
 #include <opm/simulators/flow/Transmissibility.hpp>
 #include <opm/simulators/utils/ParallelEclipseState.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <memory>
@@ -271,7 +272,18 @@ public:
     std::function<std::array<double,dimensionworld>(int)>
     cellCentroids() const
     {
-        return this->cellCentroids_(this->cartesianIndexMapper(), false);
+        const auto& gridView = this->gridView();
+        Dune::MultipleCodimMultipleGeomTypeMapper<GridView>
+            elemMapper(gridView, Dune::mcmgElementLayout());
+        std::vector<std::array<double, dimensionworld>> centroids(gridView.size(0));
+        for (const auto& elem : elements(gridView)) {
+            const auto center = elem.geometry().center();
+            auto& centroid = centroids.at(elemMapper.index(elem));
+            std::copy(center.begin(), center.end(), centroid.begin());
+        }
+        return [centroids = std::move(centroids)](const int elemIdx) {
+            return centroids.at(elemIdx);
+        };
     }
 
     const TransmissibilityType& globalTransmissibility() const

@@ -142,7 +142,9 @@ NonlinearSystemBlackOilReservoir(Simulator& simulator,
         aposteriori_estimator_->setPressureReconstruction(
             this->param_.aposteriori_use_connection_ls_gradient_
                 ? APosterioriSpatialTemporalEstimator<TypeTag>::PressureRecon::ConnectionLS
-                : APosterioriSpatialTemporalEstimator<TypeTag>::PressureRecon::PatchAverageLift);
+                : (this->param_.aposteriori_use_flux_taylor_pressure_
+                    ? APosterioriSpatialTemporalEstimator<TypeTag>::PressureRecon::FluxTaylorLift
+                    : APosterioriSpatialTemporalEstimator<TypeTag>::PressureRecon::PatchAverageLift));
 
         // The vertex-patch reconstruction and the linearization-defect mirror
         // lookup are not communicated across MPI partition boundaries, so
@@ -251,6 +253,7 @@ initialLinearization(SimulatorReportSingle& report,
                      const int maxIter,
                      const SimulatorTimerInterface& timer)
 {
+    aposteriori_well_linearized_early_ = false;
     ParentType::initialLinearization(report,
                                      minIter,
                                      maxIter,
@@ -267,6 +270,57 @@ initialLinearization(SimulatorReportSingle& report,
         report.converged = convrep.converged() &&
                            this->simulator_.problem().iterationContext().iteration() >= minIter;
         const auto severity = convrep.severityOfWorstFailure();
+
+        // Complete eta_sp with the local componentwise FV balance defect at
+        // the assembled current state. Do this before well elimination: the
+        // reservoir residual then contains the physical accumulation, flux,
+        // NNC, and well-source balance in each cell. The global signed OPM MB
+        // check remains a separate conservation safeguard.
+        if (aposteriori_estimator_
+            && aposteriori_estimator_->hasPendingEquilibrationDefect()) {
+            aposteriori_estimator_->completeEquilibrationDefect(
+                this->simulator().model().linearizer().residual(),
+                timer.currentStepLength());
+            if (!aposteriori_rows_.empty()) {
+                aposteriori_rows_.back()[0] =
+                    aposteriori_estimator_->etaSpatialMimetic();
+                aposteriori_rows_.back()[7] =
+                    aposteriori_estimator_->etaEquilibration();
+            }
+        }
+
+        // Complete the previous update's eta_lin with the nonlinear
+        // well/NNC-source Taylor remainder. The current reservoir and well
+        // equations have now been assembled at chi^k. Applying the well Schur
+        // complement puts this residual on the same reduced-system footing as
+        // the stored linear prediction R^{k-1}-J_eff dx.
+        if (this->param_.enable_aposteriori_newton_stopping_
+            && aposteriori_estimator_
+            && aposteriori_estimator_->hasPendingSourceLinearizationDefect()) {
+            this->wellModel().linearize(
+                this->simulator().model().linearizer().jacobian(),
+                this->simulator().model().linearizer().residual());
+            aposteriori_well_linearized_early_ = true;
+            aposteriori_estimator_->completeSourceLinearizationDefect(
+                this->simulator().model().linearizer().residual(),
+                timer.currentStepLength());
+            if (!aposteriori_rows_.empty()) {
+                aposteriori_rows_.back()[5] =
+                    aposteriori_estimator_->etaLinearization();
+            }
+            if (aposteriori_estimator_->linearizationAvailable()) {
+                this->aposteriori_eta_lin_prev_ =
+                    aposteriori_estimator_->etaLinearization();
+                const Scalar etaSpDarcy =
+                    aposteriori_estimator_->etaSpatialDarcyMimetic();
+                const Scalar etaTime =
+                    aposteriori_estimator_->temporalAvailable()
+                        ? aposteriori_estimator_->etaTemporal()
+                        : etaSpDarcy;
+                this->aposteriori_max_sptime_prev_ =
+                    std::max(etaSpDarcy, etaTime);
+            }
+        }
 
         // The estimator values were evaluated immediately after the preceding
         // Newton update, so they describe the state whose residual and MB were
@@ -337,7 +391,8 @@ initialLinearization(SimulatorReportSingle& report,
                 estimatorsPlateaued = true;
             }
 
-            const Scalar etaSpMim = aposteriori_estimator_->etaSpatialMimetic();
+            const Scalar etaSpMim =
+                aposteriori_estimator_->etaSpatialDarcyMimetic();
             const Scalar etaTime = aposteriori_estimator_->temporalAvailable()
                 ? aposteriori_estimator_->etaTemporal() : etaSpMim;
             const bool estimatorPassed =
@@ -353,9 +408,12 @@ initialLinearization(SimulatorReportSingle& report,
                 if (!this->grid_.comm().rank()) {
                     OpmLog::info(fmt::format(
                         "  [a posteriori] Criteria_newton accepted iteration {} "
-                        "(eta_lin={:.3e}, max(eta_sp,eta_time)={:.3e}, MB={:.3e})",
+                        "(eta_lin={:.3e}, eta_lin_source={:.3e}, "
+                        "eta_eq={:.3e}, max(eta_sp,D,eta_time)={:.3e}, MB={:.3e})",
                         this->simulator_.problem().iterationContext().iteration(),
                         aposteriori_estimator_->etaLinearization(),
+                        aposteriori_estimator_->etaLinearizationSource(),
+                        aposteriori_estimator_->etaEquilibration(),
                         std::max(etaSpMim, etaTime),
                         this->last_mass_balance_residual_));
                 }
@@ -386,6 +444,7 @@ initialLinearization(SimulatorReportSingle& report,
     }
     report.update_time += perfTimer.stop();
     this->residual_norms_history_.push_back(residual_norms);
+
 }
 
 template <class TypeTag>
@@ -427,13 +486,11 @@ nonlinearIteration(const SimulatorTimerInterface& timer,
 
     this->simulator_.problem().advanceIteration();
 
-    // Per-iteration (non-converged) estimator evaluation is only needed when a
-    // mechanism consumes the estimators *during* the Newton loop -- i.e. Newton
-    // stopping. Time-step control and the linear-tolerance forcing term use only
-    // the converged-step value (the latter also has its own pre-solve
-    // eta_alg^(0) evaluation), and pure diagnostics likewise only need the
-    // converged iterate. This roughly halves estimator calls for time-only runs.
-    const bool perIterEval = this->param_.enable_aposteriori_newton_stopping_;
+    // OPM_APOST_ITERATION_DIAGNOSTICS records the counterfactual estimator
+    // stopping points while leaving OPM's standard Newton criterion in charge.
+    const bool perIterEval =
+        this->param_.enable_aposteriori_newton_stopping_
+        || std::getenv("OPM_APOST_ITERATION_DIAGNOSTICS") != nullptr;
     if (aposteriori_estimator_ &&
         (result.converged ||
          (perIterEval &&
@@ -452,13 +509,14 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
     const Scalar dt = timer.currentStepLength();
 
     // Runaway-guard substep counter resets per REPORT period (needsTimestepInit
-    // fires per substep, so it cannot be reset there). The suspension itself is
-    // a one-way latch: if the estimator over-refined one period its eta_sp is
-    // systematically under-counted for this deck, so time-step control stays
-    // off for the rest of the run (the estimators are still reported).
+    // fires per substep, so it cannot be reset there). Suspension is local to
+    // one report period: a large total number of accepted steps is not evidence
+    // that eta_sp is defective, and must not silently disable estimator control
+    // later in an otherwise well-behaved run.
     if (timer.reportStepNum() != aposteriori_last_report_step_) {
         aposteriori_last_report_step_ = timer.reportStepNum();
         aposteriori_period_steps_ = 0;
+        aposteriori_ctrl_suspended_ = false;
     }
 
     // Refresh the near-well cell list from the *current* well model every
@@ -511,14 +569,23 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
                  static_cast<int>(cd.size() > 2 ? cd[2] : 1)}, phalo));
     }
 
-    // Evaluate eta_sp / eta_time for the current Newton iterate.  Do NOT commit
-    // the temporal history until the step converges, so eta_time keeps
-    // comparing against the last converged step and both estimators can be
-    // watched across Newton iterations (they should plateau while eta_lin
-    // falls -- the signature of a clean error-component split).
-    // Stage the current iterate only. Temporal history is committed by
-    // acceptAposterioriStep() after the outer timestep acceptance test.
-    aposteriori_estimator_->compute(dt, /*commitHistory=*/false);
+    // Evaluate eta_sp / eta_time for the current Newton iterate. The final
+    // convergence check has already completed eta_eq for the row produced
+    // after the preceding update, which represents this same state; do not
+    // replace it with a newly pending row whose balance residual would never
+    // be assembled. When estimators were not evaluated per iteration, build
+    // the sole converged row here and complete it immediately from the current
+    // (uneliminated) nonlinear reservoir residual.
+    const bool reuseCompletedConvergedRow =
+        converged && !aposteriori_rows_.empty()
+        && !aposteriori_estimator_->hasPendingEquilibrationDefect();
+    if (!reuseCompletedConvergedRow) {
+        aposteriori_estimator_->compute(dt, /*commitHistory=*/false);
+        if (converged) {
+            aposteriori_estimator_->completeEquilibrationDefect(
+                this->simulator().model().linearizer().residual(), dt);
+        }
+    }
 
     // etaSpMim is the MVEM (mimetic virtual element) flux-energy replacement
     // for T1+T3, following Vohralik & Yousef CMAME 331 (2018) Sections 3 and
@@ -573,9 +640,13 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
         }
     }
 
-    aposteriori_rows_.push_back({etaSpMim, etaSpT1, etaSp, haveT ? etaTime : Scalar{0}, etaLinCnv,
-                                 haveLinW ? etaLinW : Scalar{0},
-                                 aposteriori_estimator_->etaAlgebraic()});
+    if (!reuseCompletedConvergedRow) {
+        aposteriori_rows_.push_back(
+            {etaSpMim, etaSpT1, etaSp, haveT ? etaTime : Scalar{0}, etaLinCnv,
+             haveLinW ? etaLinW : Scalar{0},
+             aposteriori_estimator_->etaAlgebraic(),
+             aposteriori_estimator_->etaEquilibration()});
+    }
 
     // Spatial map dump: set OPM_APOST_DUMP_STEP=<substep number> to write, for
     // every Newton iteration of that substep, a per-cell CSV
@@ -697,21 +768,20 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
         // the step genuinely being that small. Suspend the override for the
         // rest of the period and let OPM's native controller finish it.
         constexpr int kMaxPeriodSteps = 40;
-        constexpr int kMaxTotalSteps  = 250;   // whole-run estimator-substep budget
         ++aposteriori_period_steps_;
         ++aposteriori_total_ctrl_steps_;
         if (!aposteriori_ctrl_suspended_
-            && (aposteriori_period_steps_ > kMaxPeriodSteps
-                || aposteriori_total_ctrl_steps_ > kMaxTotalSteps)) {
+            && aposteriori_period_steps_ > kMaxPeriodSteps) {
             aposteriori_ctrl_suspended_ = true;
             if (!this->grid_.comm().rank())
                 OpmLog::warning(fmt::format(
                     "  [a posteriori] estimator-driven time-step control DISABLED "
-                    "for the rest of the run at substep {} (this-period {}, "
+                    "for the rest of report period {} at substep {} (this-period {}, "
                     "eta_time/eta_sp = {:.2f}) -- eta_sp is under-counted for this "
                     "grid (incomplete face geometry / NNC / non-Cartesian cells). "
-                    "The estimators are still reported.",
-                    aposteriori_total_ctrl_steps_, aposteriori_period_steps_,
+                    "Control will resume at the next report boundary.",
+                    timer.reportStepNum(), aposteriori_total_ctrl_steps_,
+                    aposteriori_period_steps_,
                     etaSpMim > 0 ? static_cast<double>(etaTime / etaSpMim) : 0.0));
         }
         if (aposteriori_ctrl_suspended_)
@@ -728,8 +798,8 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
             timer.currentStepNum(), dt / (24.0 * 3600.0), dtNew / (24.0 * 3600.0),
             band ? "in band" : "OUT of band",
             this->param_.enable_aposteriori_timestep_control_ ? ", DRIVING next dt" : "");
-        os << "    k |eta_sp(mim) | eta_sp(T1) |eta_sp(T1+T3)|  eta_time  | eta_lin(CNV)| eta_lin(wtd)| eta_alg    | d(mim) d(tm)\n";
-        os << "  ------------------------------------------------------------------------------------------------------------\n";
+        os << "    k |eta_sp(total)| eta_eq     | eta_sp(T1) |eta_sp(T1+T3)|  eta_time  | eta_lin(CNV)| eta_lin(wtd)| eta_alg    | d(sp) d(tm)\n";
+        os << "  --------------------------------------------------------------------------------------------------------------------------\n";
         for (std::size_t k = 0; k < aposteriori_rows_.size(); ++k) {
             const auto& r = aposteriori_rows_[k];
             Scalar dSp = 0.0, dTm = 0.0;
@@ -738,22 +808,25 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
                 if (p[0] > 0.0) dSp = std::abs(r[0] - p[0]) / p[0];
                 if (p[3] > 0.0) dTm = std::abs(r[3] - p[3]) / p[3];
             }
-            os << fmt::format("  {:3d} | {:10.3e} | {:10.3e} | {:11.3e} | {:10.3e} | {:11.3e} | {:11.3e} | {:10.3e} | {:5.1f}% {:5.1f}%\n",
-                              k + 1, r[0], r[1], r[2], r[3], r[4], r[5], r[6], 100.0 * dSp, 100.0 * dTm);
+            os << fmt::format("  {:3d} | {:11.3e} | {:10.3e} | {:10.3e} | {:11.3e} | {:10.3e} | {:11.3e} | {:11.3e} | {:10.3e} | {:5.1f}% {:5.1f}%\n",
+                              k + 1, r[0], r[7], r[1], r[2], r[3], r[4], r[5], r[6],
+                              100.0 * dSp, 100.0 * dTm);
         }
         os << fmt::format("  ----------------------------------------------------------------------------------------------\n"
-                          "  eta_sp(mim) / eta_time should plateau while eta_lin(wtd) falls "
+                          "  eta_sp(total) / eta_time should plateau while eta_lin(wtd) falls "
                           "=> spatial/temporal error is split out.  (ratio eta_time/eta_sp(mim) = {:.3f})\n"
-                          "  eta_sp(mim) drives Criteria_space_time_balance/timestep control -- the mimetic\n"
-                          "  flux-energy replacement for T1+T3 (eq. 3.13, Vohralik & Yousef CMAME 2018),\n"
+                          "  eta_sp(total) is the local sum of the mimetic Darcy defect and eta_eq;\n"
+                          "  eta_eq is the unsigned componentwise FV balance residual in the weighted\n"
+                          "  Neumann dual norm (OPM's global signed MB remains a separate safeguard).\n"
+                          "  The Darcy part is the flux-energy replacement for T1+T3 (eq. 3.13,\n"
+                          "  Vohralik & Yousef CMAME 2018),\n"
                           "  using the lowest-order mimetic/VEM flux mass matrix M_K = M^c + M^s\n"
                           "  (full permeability tensor). eta_sp(T1) and\n"
                           "  eta_sp(T1+T3) are reported for comparison only (T3 alone is an uncertified\n"
                           "  surrogate -- see APosterioriSpatialTemporalEstimator::compute()).\n"
                           "  eta_lin(CNV) is a familiar but dimensionally-inconsistent reference only; "
-                          "eta_lin(wtd) is a PARTIAL linearization indicator (geometric-face flux + storage\n"
-                          "  Taylor defects only -- it omits the nonlinear well/source Taylor defect "
-                          "Q(chi^k)-Q_lin and NNC linearization terms).",
+                          "eta_lin(wtd) combines geometric-face flux, storage, and reduced-balance\n"
+                          "  well/NNC source Taylor defects.",
                           haveT ? ratio : 0.0);
         OpmLog::info(os.str());
     }
@@ -772,6 +845,84 @@ acceptAposterioriStep(const SimulatorTimerInterface& timer)
     // accepted-step-only estimator state only after that test passes.
     aposteriori_estimator_->commitTemporalHistory();
     aposteriori_estimator_->accumulateSpatialEnergy();
+
+    if (!this->grid_.comm().rank()) {
+        if (const char* path = std::getenv("OPM_APOST_HISTORY_CSV");
+            path != nullptr && *path != '\0' && !aposteriori_rows_.empty()) {
+            std::ofstream output(
+                path, aposteriori_history_header_written_ ? std::ios::app : std::ios::trunc);
+            if (!output) {
+                throw std::runtime_error(
+                    "Unable to open a posteriori history file '" + std::string(path) + "'");
+            }
+            if (!aposteriori_history_header_written_) {
+                output << "accepted_step,time_days,report_step,substep,dt_days,"
+                          "newton_iterations,eta_sp,eta_eq,eta_time,eta_lin_first,eta_lin_last,"
+                          "eta_lin_source_last,eta_alg_first,eta_alg_last,"
+                          "eta_time_over_eta_sp,material_balance\n";
+                aposteriori_history_header_written_ = true;
+            }
+            const auto& first = aposteriori_rows_.front();
+            const auto& last = aposteriori_rows_.back();
+            const Scalar ratio = last[0] > Scalar{0} ? last[3] / last[0] : Scalar{0};
+            const Scalar day = unit::convert::to(
+                this->simulator_.time() + timer.currentStepLength(), unit::day);
+            output << std::setprecision(17)
+                   << ++aposteriori_accepted_step_ << ',' << day << ','
+                   << timer.reportStepNum() << ',' << timer.currentStepNum() << ','
+                   << unit::convert::to(timer.currentStepLength(), unit::day) << ','
+                   << aposteriori_rows_.size() << ','
+                   << last[0] << ',' << last[7] << ',' << last[3] << ','
+                   << first[5] << ',' << last[5] << ','
+                   << aposteriori_estimator_->etaLinearizationSource() << ','
+                   << first[6] << ',' << last[6] << ',' << ratio << ','
+                   << this->last_mass_balance_residual_ << '\n';
+        }
+    }
+    if constexpr (requires {
+        this->simulator_.problem().setAposterioriSpatialEnergy(
+            aposteriori_estimator_->accumulatedSpatialEnergy(),
+            aposteriori_estimator_->accumulatedPhaseComponentSpatialEnergy(
+                FluidSystem::waterPhaseIdx),
+            aposteriori_estimator_->accumulatedPhaseComponentSpatialEnergy(
+                FluidSystem::oilPhaseIdx),
+            aposteriori_estimator_->accumulatedPhaseComponentSpatialEnergy(
+                FluidSystem::gasPhaseIdx),
+            aposteriori_estimator_->latestSpatialEnergy(),
+            aposteriori_estimator_->latestPhaseComponentSpatialEnergy(
+                FluidSystem::waterPhaseIdx),
+            aposteriori_estimator_->latestPhaseComponentSpatialEnergy(
+                FluidSystem::oilPhaseIdx),
+            aposteriori_estimator_->latestPhaseComponentSpatialEnergy(
+                FluidSystem::gasPhaseIdx));
+    }) {
+        if (this->simulator_.problem().setAposterioriSpatialEnergy(
+                aposteriori_estimator_->accumulatedSpatialEnergy(),
+                aposteriori_estimator_->accumulatedPhaseComponentSpatialEnergy(
+                    FluidSystem::waterPhaseIdx),
+                aposteriori_estimator_->accumulatedPhaseComponentSpatialEnergy(
+                    FluidSystem::oilPhaseIdx),
+                aposteriori_estimator_->accumulatedPhaseComponentSpatialEnergy(
+                    FluidSystem::gasPhaseIdx),
+                aposteriori_estimator_->latestSpatialEnergy(),
+                aposteriori_estimator_->latestPhaseComponentSpatialEnergy(
+                    FluidSystem::waterPhaseIdx),
+                aposteriori_estimator_->latestPhaseComponentSpatialEnergy(
+                    FluidSystem::oilPhaseIdx),
+                aposteriori_estimator_->latestPhaseComponentSpatialEnergy(
+                    FluidSystem::gasPhaseIdx))) {
+            aposteriori_estimator_->resetAccumulatedSpatialEnergy();
+        }
+    }
+    else if constexpr (requires {
+        this->simulator_.problem().setAposterioriSpatialEnergy(
+            aposteriori_estimator_->accumulatedSpatialEnergy());
+    }) {
+        if (this->simulator_.problem().setAposterioriSpatialEnergy(
+                aposteriori_estimator_->accumulatedSpatialEnergy())) {
+            aposteriori_estimator_->resetAccumulatedSpatialEnergy();
+        }
+    }
 
     // OPM_APOST_DUMP_EVERY_REPORT=1: one per-cell estimator CSV per REPORT step
     // (apost_cells_report<N>.csv), for time-sequence plots of where eta_sp sits
@@ -874,8 +1025,12 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
         }
 
         try {
-            this->wellModel().linearize(this->simulator().model().linearizer().jacobian(),
-                                        this->simulator().model().linearizer().residual());
+            if (!aposteriori_well_linearized_early_) {
+                this->wellModel().linearize(
+                    this->simulator().model().linearizer().jacobian(),
+                    this->simulator().model().linearizer().residual());
+            }
+            aposteriori_well_linearized_early_ = false;
 
             // Paper's Criteria_alg: stop the linear solve once
             //   eta_alg <= Gamma_alg * max(eta_sp, eta_time).
@@ -917,11 +1072,16 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
             // Nothing in OPM's solver is touched, so the Newton trajectory of
             // the run is unchanged; only a CSV is written.
             if (const char* ld = std::getenv("OPM_APOST_LINDUMP")) {
-                int wantStep = -1, wantK = -1;
-                std::sscanf(ld, "%d,%d", &wantStep, &wantK);
+                int wantReport = -1, wantStep = -1, wantK = -1;
+                const int fields = std::sscanf(
+                    ld, "%d,%d,%d", &wantReport, &wantStep, &wantK);
                 const int curStep = timer.currentStepNum();
+                const int curReport = timer.reportStepNum();
                 const int curK = this->simulator_.problem().iterationContext().iteration();
-                if (curStep == wantStep && curK == wantK && aposteriori_estimator_
+                const bool selected = fields == 3
+                    ? curReport == wantReport && curStep == wantStep && curK == wantK
+                    : fields == 2 && curStep == wantReport && curK == wantStep;
+                if (selected && aposteriori_estimator_
                     && this->grid_.comm().size() == 1) {
                     const Mat A0 = this->simulator_.model().linearizer().jacobian().istlMatrix();
                     const BVector b0 = this->simulator_.model().linearizer().residual();
@@ -973,15 +1133,23 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
                         r -= Ax;
                         return r;
                     };
-                    std::ofstream os(fmt::format("apost_lindump_step{}_k{}.csv", curStep, curK));
-                    os << "iter,rel_resid,eta_alg,eta_sp,eta_time,eta_lin,gamma_alg_abs_target\n";
+                    const std::string dumpPath = fields == 3
+                        ? fmt::format("apost_lindump_report{}_step{}_k{}.csv",
+                                      curReport, curStep, curK)
+                        : fmt::format("apost_lindump_step{}_k{}.csv", curStep, curK);
+                    std::ofstream os(dumpPath);
+                    const int opmIterations = linearIterationsLastSolve();
+                    os << "iter,rel_resid,eta_alg,eta_sp,eta_time,eta_lin,"
+                          "gamma_alg_abs_target,opm_iterations\n";
                     const auto row = [&](int m, const BVector& r) {
                         const Scalar ea = aposteriori_estimator_->computeAlgebraicEstimator(r, dtd);
-                        os << fmt::format("{},{:.6e},{:.6e},{:.6e},{:.6e},{:.6e},{:.6e}\n",
+                        os << fmt::format("{},{:.6e},{:.6e},{:.6e},{:.6e},{:.6e},"
+                                          "{:.6e},{}\n",
                                           m, r.two_norm() / b2, static_cast<double>(ea),
                                           static_cast<double>(eSp), static_cast<double>(eTm),
                                           static_cast<double>(eLin),
-                                          static_cast<double>(gAlg * std::max(eSp, eTm)));
+                                          static_cast<double>(gAlg * std::max(eSp, eTm)),
+                                          opmIterations);
                     };
                     row(0, b0);   // x = 0
                     int lastIt = 0;
@@ -1004,7 +1172,7 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
                         }
                     }
                     OpmLog::info(fmt::format(
-                        "  [a posteriori] wrote apost_lindump_step{}_k{}.csv", curStep, curK));
+                        "  [a posteriori] wrote {}", dumpPath));
                 }
             }
 
@@ -1013,7 +1181,7 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
             // With --matrix-add-well-contributions=false (the default) ISTL
             // solves with a WellModelMatrixAdapter that applies the well
             // operator matrix-free, so the sparse matrix alone is not A_eff.
-            const auto evalEtaAlg = [&]() {
+            const auto linearResidual = [&]() {
                 const auto& A = this->simulator_.model().linearizer().jacobian().istlMatrix();
                 const auto& b = this->simulator_.model().linearizer().residual();
                 BVector Ax(x.size());
@@ -1027,6 +1195,10 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
                 }
                 BVector rAlg(b);
                 rAlg -= Ax;
+                return rAlg;
+            };
+            const auto evalEtaAlg = [&]() {
+                const BVector rAlg = linearResidual();
                 return this->aposteriori_estimator_->computeAlgebraicEstimator(
                     rAlg, timer.currentStepLength());
             };
@@ -1035,33 +1207,36 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
             if (this->aposteriori_estimator_ && this->param_.enable_aposteriori_estimators_) {
                 const Scalar etaAlg = evalEtaAlg();
 
-                // Diagnostic only: the ell2/preconditioned reduction the solver
-                // was given does not bound the cell/component-weighted eta_alg.
-                // At the current eta_sp magnitude (dominated by the c_KK^{-1/2}
-                // near-well weight), Gamma_alg*max(eta_sp,eta_time) is well
-                // below eta_alg of even a machine-tight solve, so the weighted
-                // Criteria_alg is not reachable by tightening the linear
-                // tolerance and is NOT enforced -- forcing extra re-solves only
-                // wastes work and can starve Newton. --aposteriori-alg-max-
-                // resolves>0 opts into an experimental one-check re-solve.
+                // The predicted forcing term normally avoids an extra solve.
+                // A positive max-resolves opts into one guarded tighter solve.
                 if (this->param_.enable_aposteriori_linear_tolerance_
                     && this->param_.aposteriori_alg_max_resolves_ > 0) {
                     const Scalar target = this->aposteriori_targets_.GammaAlg
                                         * this->aposteriori_max_sptime_prev_;
                     if (std::isfinite(target) && target > Scalar{0}
                         && etaAlg > Scalar{1.2} * target) {
-                        double red = std::clamp(
+                        const double red = std::clamp(
                             this->adaptive_linear_reduction_.lastTarget()
                                 * static_cast<double>(target / etaAlg) * 0.5,
                             Parameters::Get<Parameters::LinearSolverReduction>(), 0.5);
                         linSolver.setLinearSolveReduction(std::optional<double>(red));
                         solveJacobianSystem(x);
                         report.total_linear_iterations += linearIterationsLastSolve();
-                        if (evalEtaAlg() > Scalar{1.2} * target && !this->grid_.comm().rank())
-                            OpmLog::info("  [a posteriori] Criteria_alg still not met "
-                                         "after one tighter solve (kept increment).");
+                        this->aposteriori_alg_unmet_ =
+                            evalEtaAlg() > Scalar{1.2} * target;
+                        if (this->aposteriori_alg_unmet_ && !this->grid_.comm().rank()) {
+                            OpmLog::info(
+                                "  [a posteriori] Criteria_alg still not met "
+                                "after one tighter solve (kept increment; "
+                                "estimator-based Newton acceptance disabled).");
+                        }
                     }
                 }
+            }
+            if (this->aposteriori_estimator_
+                && this->param_.enable_aposteriori_newton_stopping_) {
+                this->aposteriori_estimator_->recordPredictedLinearResidual(
+                    linearResidual());
             }
         }
         catch (...) {
@@ -1123,13 +1298,11 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
         // FINAL (stabilized) increment x -- this MUST happen before
         // updateSolution(x) below, while intensiveQuantities() still reflect
         // chi^{k-1,n}, the state the linear system was actually built at.
-        // The two-pass Jacobian capture is only consumed by the rigorous eta_lin
-        // used in the Newton-stopping test. When Newton stopping is off it is
-        // pure per-iteration overhead (AD flux/accumulation derivatives + a
-        // prev-iterate copy) that nothing reads, so skip it -- time-step control
-        // and linear-tolerance runs do not need it.
+        // In diagnostic mode the same rigorous eta_lin is recorded without
+        // changing OPM's standard Newton stopping decision.
         if (this->aposteriori_estimator_ && this->param_.aposteriori_rigorous_lin_ &&
-            this->param_.enable_aposteriori_newton_stopping_ &&
+            (this->param_.enable_aposteriori_newton_stopping_
+             || std::getenv("OPM_APOST_ITERATION_DIAGNOSTICS") != nullptr) &&
             this->simulator_.problem().iterationContext().iteration() + 1
                 >= this->param_.aposteriori_first_eval_iter_) {
             this->aposteriori_estimator_->recordLinearizationDefect(timer.currentStepLength(), x);

@@ -1744,6 +1744,12 @@ protected:
         pffDofData_.update(distFn);
     }
 
+    void refreshPffDofDataAfterGridAdapt_()
+    {
+        pffDofData_.resetGridView(this->simulator().vanguard().gridView());
+        updatePffDofData_();
+    }
+
     virtual void updateExplicitQuantities_(int episodeIdx, int timeStepSize, bool first_step_after_restart) = 0;
 
     void readBoundaryConditions_()

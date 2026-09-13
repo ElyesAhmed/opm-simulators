@@ -92,6 +92,7 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     aposteriori_use_lifted_relperm_ = Parameters::Get<Parameters::AposterioriUseLiftedRelperm>();
     aposteriori_use_bubble_correction_ = Parameters::Get<Parameters::AposterioriUseBubbleCorrection>();
     aposteriori_use_connection_ls_gradient_ = Parameters::Get<Parameters::AposterioriUseConnectionLSGradient>();
+    aposteriori_use_flux_taylor_pressure_ = Parameters::Get<Parameters::AposterioriUseFluxTaylorPressure>();
     aposteriori_gamma_lin_ = Parameters::Get<Parameters::AposterioriGammaLin<Scalar>>();
     aposteriori_gamma_alg_ = Parameters::Get<Parameters::AposterioriGammaAlg<Scalar>>();
     aposteriori_alg_max_resolves_ = Parameters::Get<Parameters::AposterioriAlgMaxResolves>();
@@ -292,8 +293,7 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::EnableAposterioriLinearTolerance>
         ("Drive the inexact-Newton linear-solve tolerance from the a posteriori "
          "algebraic criterion Criteria_alg: relative-reduction target = "
-         "Gamma_alg * max(eta_sp, eta_time) / eta_lin (solve only until the "
-         "algebraic error is small vs. the discretization error), instead of "
+         "Gamma_alg * max(eta_sp, eta_time) / eta_alg^(0), instead of "
          "the CNV-ratio Eisenstat-Walker term of "
          "--adaptive-linear-solver-reduction. Requires "
          "--enable-aposteriori-estimators=true; shares the "
@@ -350,6 +350,11 @@ void BlackoilModelParameters<Scalar>::registerParameters()
         ("Use a transmissibility-weighted least-squares fit of the raw "
          "connection pressure drops for grad p_hat instead of the default "
          "H1 vertex-patch lift (eq. eq:averaging) -- for comparison.");
+    Parameters::Register<Parameters::AposterioriUseFluxTaylorPressure>
+        ("Build the H1 pressure lift from flux-derived cell gradients: "
+         "Taylor-extrapolate each cell pressure to its vertices and average "
+         "the extrapolated values over the vertex patch. Ignored when "
+         "--aposteriori-use-connection-ls-gradient=true.");
     Parameters::Register<Parameters::AposterioriGammaLin<Scalar>>
         ("Admissible relative linearization error Gamma_lin in (0,1] (eq. "
          "Criteria_newton): the a posteriori Newton stop needs "
@@ -363,7 +368,7 @@ void BlackoilModelParameters<Scalar>::registerParameters()
          "perform when the measured weighted eta_alg exceeds 1.2 * "
          "Gamma_alg*max(eta_sp,eta_time). If it still fails, the increment is "
          "kept but estimator-based Newton acceptance is disabled that iteration. "
-         "1 (default) = one guarded re-solve; 0 = gate Newton acceptance only.");
+         "1 = one guarded re-solve; 0 (default) = gate Newton acceptance only.");
     Parameters::Register<Parameters::AposterioriTolMb<Scalar>>
         ("Material-balance tolerance for the a posteriori Criteria_newton "
          "gate. <=0 (default) means use the simulator's own --tolerance-mb, "

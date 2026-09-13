@@ -39,6 +39,21 @@ namespace {
 constexpr double tol = 1e-10;
 }
 
+BOOST_AUTO_TEST_CASE(EquilibrationIndicatorHasExpectedScaling)
+{
+    const double eta = equilibrationIndicator(
+        /*integratedResidual=*/12.0,
+        /*dt=*/4.0,
+        /*epsilon=*/0.25,
+        /*cKK=*/9.0,
+        /*hK=*/3.0,
+        /*dLambdaPow=*/5.0,
+        /*volume=*/16.0);
+    BOOST_CHECK_CLOSE(eta, 60.0, 1e-12);
+    BOOST_CHECK_SMALL(equilibrationIndicator(
+        0.0, 4.0, 0.25, 9.0, 3.0, 5.0, 16.0), tol);
+}
+
 // ---------------------------------------------------------------------------
 //  Least-squares gradient
 // ---------------------------------------------------------------------------
@@ -98,6 +113,26 @@ BOOST_AUTO_TEST_CASE(LSGradientWeightedStillExactForAffine)
     auto g = leastSquaresGradient<double, 3>(p0, uNb, d, w);
     for (int i = 0; i < 3; ++i)
         BOOST_CHECK_CLOSE(g[i], a[i], 1e-7);
+}
+
+BOOST_AUTO_TEST_CASE(TaylorVertexAverageReproducesAffineField)
+{
+    const V3 gradient{1.5, -2.0, 0.25};
+    const V3 vertex{3.0, 4.0, -1.0};
+    const std::vector<V3> centres = {
+        {0.0, 0.0, 0.0}, {2.0, 1.0, -2.0}, {4.0, 5.0, 1.0},
+    };
+    const double intercept = 7.0;
+    double vertexAverage = 0.0;
+    for (const auto& centre : centres) {
+        const double cellValue = intercept + gradient * centre;
+        V3 offset = vertex;
+        offset -= centre;
+        vertexAverage += taylorExtrapolate<double, 3>(
+            cellValue, gradient, offset);
+    }
+    vertexAverage /= static_cast<double>(centres.size());
+    BOOST_CHECK_CLOSE(vertexAverage, intercept + gradient * vertex, 1e-10);
 }
 
 // ---------------------------------------------------------------------------

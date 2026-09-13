@@ -352,8 +352,10 @@ private:
     //!        --enable-aposteriori-estimators).
     std::unique_ptr<APosterioriSpatialTemporalEstimator<TypeTag>> aposteriori_estimator_;
     APosteriori::BalancingTargets<Scalar> aposteriori_targets_;
-    //! per-Newton-iteration (eta_sp_mimetic, eta_sp_T1, eta_sp_T1+T3, eta_time, eta_lin_CNVproxy, eta_lin_weighted)
-    std::vector<std::array<Scalar, 7>> aposteriori_rows_;
+    //! per-Newton-iteration (eta_sp_mimetic_total, eta_sp_T1,
+    //! eta_sp_T1+T3, eta_time, eta_lin_CNVproxy, eta_lin_weighted,
+    //! eta_alg, eta_eq)
+    std::vector<std::array<Scalar, 8>> aposteriori_rows_;
     //! max-over-components mass-balance residual from the last convergence
     //! check (getReservoirConvergence), fed into the Criteria_newton diagnostic
     //! -- previously hardcoded to 0.0, which made the "non-negotiable" MB
@@ -370,9 +372,12 @@ private:
     Scalar aposteriori_max_sptime_prev_  {0};
 
     //! Set when the last linear solve failed the weighted Criteria_alg check
-    //! (q > 1.2) after the allowed re-solves: the increment is kept but the
-    //! a posteriori Newton acceptance is forbidden for that iteration.
+    //! after the allowed re-solves: the increment is kept but a posteriori
+    //! Newton acceptance is forbidden for that iteration.
     bool aposteriori_alg_unmet_ {false};
+    //! True when initialLinearization() has already applied the well Schur
+    //! complement so the Newton solve must not apply it a second time.
+    bool aposteriori_well_linearized_early_ {false};
 
     //! Cumulative estimator rescale over the current report period (product of
     //! dtNew/dt). If it drops below a floor the override is suspended for the
@@ -393,6 +398,9 @@ private:
     //! Last report step for which OPM_APOST_DUMP_EVERY_REPORT wrote a per-cell
     //! estimator CSV (apost_cells_report<N>.csv).
     int    aposteriori_dump_report_step_ {-1};
+
+    bool aposteriori_history_header_written_ {false};
+    std::size_t aposteriori_accepted_step_ {0};
 };
 
 } // namespace Opm

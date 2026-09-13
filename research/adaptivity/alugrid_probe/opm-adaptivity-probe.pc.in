@@ -1,0 +1,4 @@
+Name: opm-adaptivity-probe
+Description: Isolated ALUGrid adaptation capability check
+Version: @PROJECT_VERSION@
+Requires: dune-alugrid
