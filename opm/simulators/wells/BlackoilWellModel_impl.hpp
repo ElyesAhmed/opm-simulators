@@ -61,6 +61,7 @@
 #include <cassert>
 #include <cstddef>
 #include <iomanip>
+#include <numeric>
 #include <optional>
 #include <utility>
 
@@ -180,6 +181,19 @@ namespace Opm {
     template<typename TypeTag>
     void
     BlackoilWellModel<TypeTag>::
+    prepareForGridAdapt()
+    {
+        wellPerfDataBeforeAdapt_ = this->well_perf_data_;
+        wellNamesBeforeAdapt_.clear();
+        wellNamesBeforeAdapt_.reserve(this->wells_ecl_.size());
+        for (const auto& well : this->wells_ecl_) {
+            wellNamesBeforeAdapt_.push_back(well.name());
+        }
+    }
+
+    template<typename TypeTag>
+    void
+    BlackoilWellModel<TypeTag>::
     refreshAfterGridAdapt()
     {
         // local_num_cells_/global_num_cells_ and the two legacy per-cell
@@ -226,6 +240,99 @@ namespace Opm {
                 is_cell_perforated_[cell] = true;
             }
         }
+        for (auto& well : this->well_container_) {
+            well->refreshPerforationCells();
+        }
+
+        auto refreshWellStateCells = [this](auto& state) {
+            for (std::size_t w = 0; w < this->well_perf_data_.size(); ++w) {
+                const std::string& name = this->wells_ecl_[w].name();
+                if (!state.has(name)) {
+                    continue;
+                }
+                auto& cells = state.well(name).perf_data.cell_index;
+                const auto& perforations = this->well_perf_data_[w];
+                if (cells.size() != perforations.size()) {
+                    throw std::logic_error(fmt::format(
+                        "Cannot refresh well-state cells for {} after grid adaptation: "
+                        "perforation count changed", name));
+                }
+                for (std::size_t p = 0; p < cells.size(); ++p) {
+                    cells[p] = perforations[p].cell_index;
+                }
+            }
+        };
+        refreshWellStateCells(this->active_wgstate_.well_state);
+        refreshWellStateCells(this->last_valid_wgstate_.well_state);
+        refreshWellStateCells(this->nupcol_wgstate_.well_state);
+
+        if (wellPerfDataBeforeAdapt_.size() != this->well_perf_data_.size()
+            || wellNamesBeforeAdapt_.size() != this->wells_ecl_.size()) {
+            throw std::logic_error(
+                "Live well set changed during native ALUGrid adaptation");
+        }
+        for (std::size_t w = 0; w < this->well_perf_data_.size(); ++w) {
+            const auto& before = wellPerfDataBeforeAdapt_[w];
+            const auto& after = this->well_perf_data_[w];
+            const std::string& name = wellNamesBeforeAdapt_[w];
+            if (name != this->wells_ecl_[w].name() || before.size() != after.size()) {
+                throw std::logic_error(fmt::format(
+                    "Live perforation set changed during native ALUGrid adaptation for well {}",
+                    name));
+            }
+            for (std::size_t p = 0; p < after.size(); ++p) {
+                const auto& lhs = before[p];
+                const auto& rhs = after[p];
+                const int expectedCell = this->compressedIndexForInterior(
+                    static_cast<int>(lhs.global_index));
+                if (lhs.ecl_index != rhs.ecl_index
+                    || lhs.grid_id != rhs.grid_id
+                    || lhs.global_index != rhs.global_index
+                    || lhs.connection_transmissibility_factor
+                        != rhs.connection_transmissibility_factor
+                    || lhs.connection_d_factor != rhs.connection_d_factor
+                    || lhs.satnum_id != rhs.satnum_id
+                    || rhs.cell_index != expectedCell) {
+                    throw std::logic_error(fmt::format(
+                        "Live perforation fingerprint changed during native ALUGrid "
+                        "adaptation for well {} perforation {}", name, p));
+                }
+            }
+        }
+        for (const auto& well : this->well_container_) {
+            const auto iter = std::ranges::find_if(
+                this->wells_ecl_,
+                [&well](const Well& candidate) {
+                    return candidate.name() == well->name();
+                });
+            if (iter == this->wells_ecl_.end()) {
+                throw std::logic_error(fmt::format(
+                    "Live well {} disappeared during native ALUGrid adaptation",
+                    well->name()));
+            }
+            const auto wellIndex = std::distance(this->wells_ecl_.begin(), iter);
+            const auto& perforations = this->well_perf_data_[wellIndex];
+            if (well->cells().size() != perforations.size()) {
+                throw std::logic_error(fmt::format(
+                    "Live well {} retained a stale perforation count after grid adaptation",
+                    well->name()));
+            }
+            for (std::size_t p = 0; p < perforations.size(); ++p) {
+                if (well->cells()[p] != perforations[p].cell_index) {
+                    throw std::logic_error(fmt::format(
+                        "Live well {} retained stale cell index for perforation {}",
+                        well->name(), p));
+                }
+            }
+        }
+        OpmLog::info(fmt::format(
+            "[alu-hadapt] live well fingerprint: {} well(s), {} perforation(s) verified",
+            this->well_perf_data_.size(),
+            std::accumulate(this->well_perf_data_.begin(), this->well_perf_data_.end(),
+                            std::size_t{0},
+                            [](const std::size_t count, const auto& perf) {
+                                return count + perf.size();
+                            })));
 
         // beginReportStep constructs a single-region rate converter, but an
         // adapt can occur inside that report step. Keep its address stable for

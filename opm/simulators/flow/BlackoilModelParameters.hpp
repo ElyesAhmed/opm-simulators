@@ -128,10 +128,9 @@ struct EnableAposterioriNewtonStopping { static constexpr bool value = false; };
 // Gamma_alg * max(eta_sp,eta_time) / eta_alg^(0), with eta_alg^(0) the weighted
 // algebraic estimator of the well-eliminated residual (evaluated after
 // wellModel().linearize()). The weighted eta_alg after the solve is measured
-// and logged but NOT enforced by default -- at the current eta_sp magnitude
-// (c_KK^{-1/2} near-well weight) the target sits far below eta_alg of even a
-// machine-tight solve. --aposteriori-alg-max-resolves>0 opts into an
-// experimental one tighter re-solve. Requires --enable-aposteriori-estimators.
+// and logged but NOT enforced by default. --aposteriori-alg-max-resolves>0
+// opts into an experimental one tighter re-solve. Requires
+// --enable-aposteriori-estimators.
 struct EnableAposterioriLinearTolerance { static constexpr bool value = false; };
 
 // Build eta_lin from the rigorous Newton-linearized flux defect (Theta_lin
@@ -200,6 +199,13 @@ struct AposterioriUseBubbleCorrection { static constexpr bool value = true; };
 // (H1) lift -- for comparing the two reconstructions.
 struct AposterioriUseConnectionLSGradient { static constexpr bool value = false; };
 
+// Build the H1 pressure lift by first reconstructing a Darcy-flux-consistent
+// pressure gradient in every cell, Taylor-extrapolating the cell pressure to
+// its vertices, and averaging the extrapolated values over each vertex patch.
+// When false, the default H1 lift averages the raw cell pressures at vertices.
+// Ignored when AposterioriUseConnectionLSGradient is true.
+struct AposterioriUseFluxTaylorPressure { static constexpr bool value = false; };
+
 // The admissible relative linearization error Gamma_lin in (0,1] (eq.
 // Criteria_newton): eta_lin <= Gamma_lin * max(eta_sp, eta_time).
 template<class Scalar>
@@ -214,10 +220,8 @@ struct AposterioriGammaAlg { static constexpr Scalar value = 0.1; };
 // How many tighter linear re-solves --enable-aposteriori-linear-tolerance may
 // do when the weighted eta_alg exceeds 1.2 * Gamma_alg*max(eta_sp,eta_time)
 // after the first solve. If it still fails, the increment is kept but
-// estimator-based Newton acceptance is disabled for that iteration. 1 (default)
-// = at most one guarded re-solve; 0 = never re-solve (just gate Newton
-// acceptance). Each re-solve re-runs the Krylov solve and the weighted eta_alg
-// eval, so keep this small.
+// estimator-based Newton acceptance is disabled for that iteration. 1 =
+// at most one guarded re-solve; 0 (default) = never re-solve.
 struct AposterioriAlgMaxResolves { static constexpr int value = 0; };
 
 // Material-balance tolerance for the a posteriori Criteria_newton gate. The
@@ -511,6 +515,9 @@ public:
 
     /// Use the connection-drop LS gradient instead of the H1 vertex-patch lift
     bool aposteriori_use_connection_ls_gradient_;
+
+    /// Use flux-derived cell gradients for Taylor extrapolation to H1 vertices
+    bool aposteriori_use_flux_taylor_pressure_;
 
     /// Admissible relative linearization error Gamma_lin
     Scalar aposteriori_gamma_lin_;

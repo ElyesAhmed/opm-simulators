@@ -157,6 +157,7 @@ template<class Scalar> class WellContributions;
             //! before the next beginReportStep()/initializeWellState() --
             //! those index cell arrays by the CURRENT leaf count and silently
             //! overrun a stale-sized one (heap corruption, not an assert).
+            void prepareForGridAdapt();
             void refreshAfterGridAdapt();
 
             void beginEpisode()
@@ -703,6 +704,9 @@ template<class Scalar> class WellContributions;
             void computeWellTemperature();
 
         private:
+            std::vector<std::vector<PerforationData<Scalar>>> wellPerfDataBeforeAdapt_;
+            std::vector<std::string> wellNamesBeforeAdapt_;
+
             // Private helper methods (alphabetical order)
             // --------------------------------------------
 

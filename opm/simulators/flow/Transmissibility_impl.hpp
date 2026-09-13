@@ -124,7 +124,25 @@ template<class Grid, class GridView, class ElementMapper, class CartesianIndexMa
 Scalar Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
 transmissibility(unsigned elemIdx1, unsigned elemIdx2) const
 {
-    return trans_.at(details::isId(elemIdx1, elemIdx2));
+    const auto id = details::isId(elemIdx1, elemIdx2);
+    const auto it = trans_.find(id);
+    if (it == trans_.end()) {
+        throw std::out_of_range(fmt::format(
+            "No transmissibility stored for element pair ({}, {}) with Cartesian indices ({}, {})",
+            elemIdx1,
+            elemIdx2,
+            cartMapper_.cartesianIndex(elemIdx1),
+            cartMapper_.cartesianIndex(elemIdx2)));
+    }
+    return it->second;
+}
+
+template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>
+Scalar Transmissibility<Grid,GridView,ElementMapper,CartesianIndexMapper,Scalar>::
+transmissibilityOrZero(unsigned elemIdx1, unsigned elemIdx2) const
+{
+    const auto it = trans_.find(details::isId(elemIdx1, elemIdx2));
+    return it == trans_.end() ? Scalar{0} : it->second;
 }
 
 template<class Grid, class GridView, class ElementMapper, class CartesianIndexMapper, class Scalar>

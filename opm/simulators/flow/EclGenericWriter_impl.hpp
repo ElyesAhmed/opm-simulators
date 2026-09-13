@@ -606,12 +606,16 @@ computeTrans_(const std::vector<std::unordered_map<int,int>>&  levelCartToLevelC
             }
 
             if (maxLevelCartIdx - minLevelCartIdx == 1 && levelCartDims[0] > 1 ) {
-                outputTrans_->at(level).at("TRANX").template data<double>()[minLevelCartIdx] = globalTrans().transmissibility(c1, c2);
+                outputTrans_->at(level).at("TRANX").template data<double>()[minLevelCartIdx] =
+                    map ? globalTrans().transmissibilityOrZero(c1, c2)
+                        : globalTrans().transmissibility(c1, c2);
                 continue; // skip other if clauses as they are false, last one needs some computation
             }
 
             if (maxLevelCartIdx - minLevelCartIdx == levelCartDims[0] && levelCartDims[1] > 1) {
-                outputTrans_->at(level).at("TRANY").template data<double>()[minLevelCartIdx] = globalTrans().transmissibility(c1, c2);
+                outputTrans_->at(level).at("TRANY").template data<double>()[minLevelCartIdx] =
+                    map ? globalTrans().transmissibilityOrZero(c1, c2)
+                        : globalTrans().transmissibility(c1, c2);
                 continue; // skipt next if clause as it needs some computation
             }
 
@@ -620,7 +624,9 @@ computeTrans_(const std::vector<std::unordered_map<int,int>>&  levelCartToLevelC
                                          levelCartToLevelCompressed[level],
                                          minLevelCartIdx,
                                          maxLevelCartIdx)) {
-                outputTrans_->at(level).at("TRANZ").template data<double>()[minLevelCartIdx] = globalTrans().transmissibility(c1, c2);
+                outputTrans_->at(level).at("TRANZ").template data<double>()[minLevelCartIdx] =
+                    map ? globalTrans().transmissibilityOrZero(c1, c2)
+                        : globalTrans().transmissibility(c1, c2);
             }
         }
     }
@@ -752,7 +758,13 @@ exportNncStructure_(const std::vector<std::unordered_map<int,int>>& levelCartToL
                 const auto& [smallerLevel, smallerLevelCartIdx] = smallerPair;
                 const auto& [largerLevel, largerLevelCartIdx] = largerPair;
 
-                auto t = this->globalTrans().transmissibility(c1, c2);
+                if (map) {
+                    c1 = map(c1);
+                    c2 = map(c2);
+                }
+                auto t = map
+                    ? this->globalTrans().transmissibilityOrZero(c1, c2)
+                    : this->globalTrans().transmissibility(c1, c2);
 
                 // ECLIPSE ignores NNCs with zero transmissibility
                 // (different threshold than for NNC with corresponding
@@ -813,7 +825,9 @@ exportNncStructure_(const std::vector<std::unordered_map<int,int>>& levelCartToL
                                           levelCartIdxIn, levelCartIdxOut)) {
                     // We need to check whether an NNC for this face was also
                     // specified via the NNC keyword in the deck.
-                    auto t = this->globalTrans().transmissibility(c1, c2);
+                    auto t = map
+                        ? this->globalTrans().transmissibilityOrZero(c1, c2)
+                        : this->globalTrans().transmissibility(c1, c2);
 
                     if (level == 0) {
                         auto candidate = std::lower_bound(nncData.begin(), nncData.end(),
@@ -902,8 +916,8 @@ exportNncStructure_(const std::vector<std::unordered_map<int,int>>& levelCartToL
                 // Pick up transmissibility value from 'globalTrans()' since
                 // multiplier keywords like MULTREGT might have impacted the
                 // values entered in primary sources like NNC/EDITNNC/EDITNNCR.
-                const auto c1 = activeCell_(levelCartToLevelCompressed[/* level */0], entry.cell1);
-                const auto c2 = activeCell_(levelCartToLevelCompressed[/* level */0], entry.cell2);
+                auto c1 = activeCell_(levelCartToLevelCompressed[/* level */0], entry.cell1);
+                auto c2 = activeCell_(levelCartToLevelCompressed[/* level */0], entry.cell2);
 
                 if ((c1 < 0) || (c2 < 0)) {
                     // Connection between inactive cells?  Unexpected at this
@@ -911,6 +925,10 @@ exportNncStructure_(const std::vector<std::unordered_map<int,int>>& levelCartToL
                     continue;
                 }
 
+                if (map) {
+                    c1 = map(c1);
+                    c2 = map(c2);
+                }
                 trans = this->globalTrans().transmissibility(c1, c2);
 
                 if (! generatedNnc.empty()) {

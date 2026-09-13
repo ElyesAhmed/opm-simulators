@@ -68,7 +68,11 @@
  *     ||W_a - u_a||_{*,K}  <=  ||Pi0_K(W_a - u_a)||_{*,K}          (T1)
  *                            + ||(I - Pi0_K) u_a||_{*,K}          (T2 = 0, u_a in P0(K)^d)
  *                            + (1/pi) h_K c_KK^{-1/2} D_K^{l/2} ||div W_a||_K   (T3)
- * and eta_sp := eta_D.  As the paper's Section "Evaluation of the estimators on
+ * and eta_sp := eta_D + eta_eq, where eta_eq is the local componentwise
+ * nonlinear FV balance residual in the same weighted Neumann-dual scaling.
+ * Unlike OPM's global signed material-balance diagnostic, eta_eq is aggregated
+ * locally by root-sum-square and cannot hide cancellation. As the paper's
+ * Section "Evaluation of the estimators on
  * corner-point grids" (iii) makes explicit: T1 is a genuine computable quantity
  * (exact moments of a specified constant-per-face RTN/VEM field), but T3 is a
  * *practical indicator*, not a certified bound -- "divergence alone cannot
@@ -183,6 +187,7 @@
 
 #include <opm/grid/utility/ElementChunks.hpp>
 
+#include <opm/simulators/flow/AluAdaptTransfer.hpp>
 #include <opm/simulators/flow/APosterioriReconstruction.hpp>
 
 #include <algorithm>
@@ -195,6 +200,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -257,6 +263,7 @@ public:
     enum class PressureRecon
     {
         PatchAverageLift,  //!< paper: grad of the vertex patch-average lift (eq. eq:averaging)
+        FluxTaylorLift,    //!< flux-derived cell gradient, Taylor extrapolation, then vertex averaging
         ConnectionLS       //!< transmissibility-weighted LS of the raw connection pressure drops
     };
 
@@ -374,20 +381,37 @@ public:
 
         updateWellWeights_();
 
-        // History (havePrev_/prevU_, havePrevIter_/prevIterU_) must survive a
-        // geometry rebuild: updateGeometry() now runs only on a genuine first
-        // build or an actual cell-count change (setWellCells() refreshes just
-        // the D_K^{l/2} weights in place -- see updateWellWeights_()). Still,
-        // wiping the cross-timestep/iterate history whenever it does run would
-        // make eta_time unavailable, so only reset the history buffers when the
-        // cell count itself changes.
+        // Preserve accepted-step temporal history across pure refinement.
+        // commitTemporalHistory() captured prevU_ by persistent ALUGrid id
+        // before adapt(); a new child inherits its nearest old ancestor's P0
+        // constitutive flux. Newton-iterate history, by contrast, belongs to
+        // the old nonlinear system and must be reset after a topology change.
         if (prevU_.size() != nc) {
-            prevU_.assign(nc, CompFlux{});
-            havePrev_ = false;
+            if (havePrev_ && prevUSnapshot_.size() > 0) {
+                std::vector<CompFlux> transferred(nc, CompFlux{});
+                for (const auto& elem :
+                     elements(gridView, Dune::Partitions::interior)) {
+                    transferred[mapper.index(elem)] =
+                        prevUSnapshot_.lookup(gridView, elem);
+                }
+                prevU_ = std::move(transferred);
+            }
+            else {
+                prevU_.assign(nc, CompFlux{});
+                havePrev_ = false;
+            }
         }
         if (prevIterU_.size() != nc) {
             prevIterU_.assign(nc, CompFlux{});
             havePrevIter_ = false;
+        }
+        if (ownFlux_.size() != nc) {
+            ownFlux_.clear();
+            ownAccumVal_.clear();
+            ownAccumDeriv_.clear();
+            Flin_.clear();
+            Lval_.clear();
+            haveLin_ = false;
         }
         // The MVEM matrix M_K depends only on cell geometry, permeability and
         // epsilon -- NOT on the near-well weight (applied outside M_K) or the
@@ -516,7 +540,7 @@ public:
     //! before a solve to get the initial algebraic-error scale eta_alg^{(0)}.
     Scalar computeAlgebraicEstimator(const BVector& rAlg, Scalar dt)
     {
-        if (!geomValid_)
+        if (!geomValid_ || geom_.size() != simulator_.model().numGridDof())
             updateGeometry();
         const auto& gridView = simulator_.gridView();
         auto& model          = simulator_.model();
@@ -560,6 +584,183 @@ public:
     }
 
     Scalar etaAlgebraic() const { return etaAlg_; }
+
+    //! Add the local componentwise nonlinear FV balance residual to eta_sp.
+    //!
+    //! The residual entries are integrated cell balances. Their weighted
+    //! Neumann-dual indicators are combined componentwise and cellwise as
+    //!
+    //!   eta_eq,K,c = sqrt(tau) epsilon^{-1/2} c_K^{-1/2}
+    //!                h_K D_K^{ell/2} |R_K,c| / sqrt(|K|).
+    //!
+    //! This is deliberately local and unsigned before root-sum-square
+    //! aggregation; unlike OPM's global signed MB diagnostic it cannot hide
+    //! cancellation between cells or components.
+    void completeEquilibrationDefect(const BVector& nonlinearResidual,
+                                     Scalar dt)
+    {
+        if (!equilibrationPending_
+            || nonlinearResidual.size() != geom_.size()
+            || cellEta_.size() != geom_.size()
+            || cellSpatialEtaByComponent_.size() != geom_.size()) {
+            return;
+        }
+
+        const auto& gridView = simulator_.gridView();
+        auto& model = simulator_.model();
+        ElementMapper mapper(gridView, Dune::mcmgElementLayout());
+        const int watPh = FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)
+            ? FluidSystem::waterPhaseIdx : -1;
+        const int oilPh = FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)
+            ? FluidSystem::oilPhaseIdx : -1;
+        const int gasPh = FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)
+            ? FluidSystem::gasPhaseIdx : -1;
+        Scalar sumEq2 = 0;
+        Scalar sumCombined2 = 0;
+
+#ifdef _OPENMP
+#pragma omp parallel for reduction(+:sumEq2,sumCombined2)
+#endif
+        for (const auto& chunk : ElementChunks(gridView, Dune::Partitions::interior,
+                                               ThreadManager::maxThreads())) {
+          for (const auto& elem : chunk) {
+            const unsigned i = mapper.index(elem);
+            const auto& g = geom_[i];
+            const auto& iq = model.intensiveQuantities(i, /*timeIdx=*/0);
+            const auto rhoRef =
+                componentRefDensities_(watPh, oilPh, gasPh, iq.pvtRegionIndex());
+            Scalar cellEq2 = 0;
+            for (unsigned c = 0; c < numComponents; ++c) {
+                const Scalar residual =
+                    rhoRef[c] * getValue(nonlinearResidual[i][conti0EqIdx + c]);
+                const Scalar etaEq = APosteriori::equilibrationIndicator(
+                    residual, dt, epsilon_, g.cKK, g.hK, g.weightPow, g.volume);
+                cellEq2 += etaEq * etaEq;
+                cellSpatialEtaByComponent_[i][c] += etaEq;
+            }
+            const Scalar cellEq = std::sqrt(std::max(cellEq2, Scalar{0}));
+            const Scalar cellCombined =
+                static_cast<Scalar>(cellEta_[i][0]) + cellEq;
+            cellEta_[i][0] = cellCombined;
+            sumEq2 += cellEq2;
+            sumCombined2 += cellCombined * cellCombined;
+          }
+        }
+
+        sumEq2 = gridView.comm().sum(sumEq2);
+        sumCombined2 = gridView.comm().sum(sumCombined2);
+        etaEq_ = std::sqrt(std::max(sumEq2, Scalar{0}));
+        etaSpMim_ = std::sqrt(std::max(sumCombined2, Scalar{0}));
+        equilibrationPending_ = false;
+    }
+
+    bool hasPendingEquilibrationDefect() const
+    {
+        return equilibrationPending_;
+    }
+
+    //! Store the residual left by the complete well-eliminated Newton
+    //! linearization at the applied increment:
+    //!
+    //!     R_lin(chi^{k-1}) - J_eff(chi^{k-1}) dx .
+    //!
+    //! At the next assembly this is compared with the nonlinear residual at
+    //! chi^k. The balance identity then isolates the well/NNC source Taylor
+    //! remainder after removing the accumulation and geometric-flux
+    //! remainders already represented in eta_lin.
+    void recordPredictedLinearResidual(const BVector& residual)
+    {
+        predictedLinearResidual_ = residual;
+        havePredictedLinearResidual_ = true;
+        sourceLinearizationComplete_ = false;
+    }
+
+    bool hasPendingSourceLinearizationDefect() const
+    {
+        return havePredictedLinearResidual_;
+    }
+
+    //! Complete eta_lin with the localized source Taylor remainder
+    //!
+    //!   Delta Q_K = Delta A_K/tau - sum_geom(F_lin-F_new)
+    //!               - (R_new,K-R_lin,K),
+    //!
+    //! in reference-mass units. R_new and R_lin are the well-eliminated
+    //! reservoir residuals, so Delta Q includes the response of the eliminated
+    //! well unknowns. NNC nonlinearities are deliberately left in this
+    //! source-like term because they have no geometric H(div) face.
+    void completeSourceLinearizationDefect(const BVector& nonlinearResidual,
+                                           Scalar dt)
+    {
+        if (!havePredictedLinearResidual_
+            || nonlinearResidual.size() != predictedLinearResidual_.size()
+            || linAccumRateDef_.size() != geom_.size()
+            || linGeomThetaSum_.size() != geom_.size()
+            || cellEta_.size() != geom_.size()) {
+            etaLin_ = std::numeric_limits<Scalar>::quiet_NaN();
+            sourceLinearizationComplete_ = false;
+            havePredictedLinearResidual_ = false;
+            return;
+        }
+
+        const auto& gridView = simulator_.gridView();
+        auto& model = simulator_.model();
+        ElementMapper mapper(gridView, Dune::mcmgElementLayout());
+        const int watPh = FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)
+            ? FluidSystem::waterPhaseIdx : -1;
+        const int oilPh = FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)
+            ? FluidSystem::oilPhaseIdx : -1;
+        const int gasPh = FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)
+            ? FluidSystem::gasPhaseIdx : -1;
+        const Scalar tau = std::max(dt, Scalar{0});
+        const Scalar epsInv = (epsilon_ > Scalar{0})
+            ? Scalar{1} / std::sqrt(epsilon_) : Scalar{0};
+        Scalar sumCombined2 = 0;
+        Scalar sumSource2 = 0;
+
+#ifdef _OPENMP
+#pragma omp parallel for reduction(+:sumCombined2,sumSource2)
+#endif
+        for (const auto& chunk : ElementChunks(gridView, Dune::Partitions::interior,
+                                               ThreadManager::maxThreads())) {
+          for (const auto& elem : chunk) {
+            const unsigned i = mapper.index(elem);
+            const auto& g = geom_[i];
+            if (!(g.volume > Scalar{0}) || !(g.cKK > Scalar{0}))
+                continue;
+
+            const auto& iq = model.intensiveQuantities(i, /*timeIdx=*/0);
+            const auto rhoRef =
+                componentRefDensities_(watPh, oilPh, gasPh, iq.pvtRegionIndex());
+            const Scalar pref = std::sqrt(tau) * epsInv / std::sqrt(g.cKK)
+                * g.hK * g.weightPow / std::sqrt(g.volume);
+            Scalar cellSource2 = 0;
+            for (unsigned c = 0; c < numComponents; ++c) {
+                const Scalar deltaResidual = rhoRef[c] * (
+                    getValue(nonlinearResidual[i][conti0EqIdx + c])
+                    - getValue(predictedLinearResidual_[i][conti0EqIdx + c]));
+                const Scalar sourceDefect =
+                    linAccumRateDef_[i][c] - linGeomThetaSum_[i][c]
+                    - deltaResidual;
+                const Scalar etaSource = pref * std::abs(sourceDefect);
+                cellSource2 += etaSource * etaSource;
+            }
+            const Scalar cellSource = std::sqrt(std::max(cellSource2, Scalar{0}));
+            const Scalar cellCombined =
+                static_cast<Scalar>(cellEta_[i][2]) + cellSource;
+            cellEta_[i][2] = cellCombined;
+            sumSource2 += cellSource2;
+            sumCombined2 += cellCombined * cellCombined;
+          }
+        }
+
+        sumSource2 = gridView.comm().sum(sumSource2);
+        sumCombined2 = gridView.comm().sum(sumCombined2);
+        etaLinSource_ = std::sqrt(std::max(sumSource2, Scalar{0}));
+        etaLin_ = std::sqrt(std::max(sumCombined2, Scalar{0}));
+        sourceLinearizationComplete_ = std::isfinite(etaLin_);
+        havePredictedLinearResidual_ = false;
+    }
 
     //! Write the per-cell estimator distribution to a CSV for 3-D plotting:
     //! columns cell, x, y, z, eta_sp(mim), eta_time, eta_lin, eta_alg,
@@ -854,12 +1055,32 @@ public:
         const std::size_t nc = cellEta_.size();
         if (accumulatedSpatialEnergy_.size() != nc)
             accumulatedSpatialEnergy_.assign(nc, 0.0);
-        for (std::size_t i = 0; i < nc; ++i)
+        latestSpatialEnergy_.resize(nc);
+        for (auto& energy : accumulatedComponentSpatialEnergy_) {
+            if (energy.size() != nc)
+                energy.assign(nc, 0.0);
+        }
+        for (auto& energy : latestComponentSpatialEnergy_)
+            energy.resize(nc);
+        for (std::size_t i = 0; i < nc; ++i) {
+            latestSpatialEnergy_[i] = cellEta_[i][0] * cellEta_[i][0];
             accumulatedSpatialEnergy_[i] += cellEta_[i][0] * cellEta_[i][0];
+        }
+        for (unsigned c = 0; c < numComponents; ++c) {
+            for (std::size_t i = 0; i < nc; ++i) {
+                const double eta = cellSpatialEtaByComponent_[i][c];
+                latestComponentSpatialEnergy_[c][i] = eta * eta;
+                accumulatedComponentSpatialEnergy_[c][i] += eta * eta;
+            }
+        }
     }
 
     void resetAccumulatedSpatialEnergy()
-    { std::fill(accumulatedSpatialEnergy_.begin(), accumulatedSpatialEnergy_.end(), 0.0); }
+    {
+        std::fill(accumulatedSpatialEnergy_.begin(), accumulatedSpatialEnergy_.end(), 0.0);
+        for (auto& energy : accumulatedComponentSpatialEnergy_)
+            std::fill(energy.begin(), energy.end(), 0.0);
+    }
 
     //! Commit the latest converged iterate as temporal history. This is kept
     //! separate from compute() because Newton convergence may still be rejected
@@ -870,6 +1091,7 @@ public:
             return;
         prevU_.swap(prevIterU_);
         havePrev_ = true;
+        snapshotTemporalHistory_();
     }
 
     bool accumulatedSpatialEnergyAvailable() const
@@ -878,6 +1100,36 @@ public:
             && std::any_of(accumulatedSpatialEnergy_.begin(),
                            accumulatedSpatialEnergy_.end(),
                            [](double v) { return v > 0.0; });
+    }
+
+    const std::vector<double>& accumulatedSpatialEnergy() const
+    { return accumulatedSpatialEnergy_; }
+
+    const std::vector<double>& accumulatedPhaseComponentSpatialEnergy(
+        unsigned phaseIdx) const
+    {
+        static const std::vector<double> empty;
+        if (!FluidSystem::phaseIsActive(phaseIdx)) {
+            return empty;
+        }
+        const unsigned component = FluidSystem::canonicalToActiveCompIdx(
+            FluidSystem::solventComponentIndex(phaseIdx));
+        return accumulatedComponentSpatialEnergy_[component];
+    }
+
+    const std::vector<double>& latestSpatialEnergy() const
+    { return latestSpatialEnergy_; }
+
+    const std::vector<double>& latestPhaseComponentSpatialEnergy(
+        unsigned phaseIdx) const
+    {
+        static const std::vector<double> empty;
+        if (!FluidSystem::phaseIsActive(phaseIdx)) {
+            return empty;
+        }
+        const unsigned component = FluidSystem::canonicalToActiveCompIdx(
+            FluidSystem::solventComponentIndex(phaseIdx));
+        return latestComponentSpatialEnergy_[component];
     }
 
     //! {nCoarseCellsInFinalMask, nSeedCellsAfterProtectionBeforeHalo}. Purely for
@@ -954,7 +1206,7 @@ public:
 
     void recordLinearizationDefect(Scalar dt, const BVector& dx)
     {
-        if (!geomValid_)
+        if (!geomValid_ || geom_.size() != simulator_.model().numGridDof())
             updateGeometry();
 
         const auto& gridView = simulator_.gridView();
@@ -1118,7 +1370,7 @@ public:
      */
     void compute(Scalar dt, bool commitHistory = true)
     {
-        if (!geomValid_)
+        if (!geomValid_ || geom_.size() != simulator_.model().numGridDof())
             updateGeometry();
 
         const auto& gridView = simulator_.gridView();
@@ -1139,6 +1391,14 @@ public:
         std::vector<CompFlux> curU(nc, CompFlux{});
         if (cellEta_.size() != nc)
             cellEta_.assign(nc, std::array<double, 4>{0, 0, 0, 0});
+        cellSpatialEtaByComponent_.assign(
+            nc, std::array<double, numComponents>{});
+        linAccumRateDef_.assign(nc, CompFlux0{});
+        linGeomThetaSum_.assign(nc, CompFlux0{});
+        sourceLinearizationComplete_ = false;
+        etaLinSource_ = 0;
+        etaEq_ = 0;
+        equilibrationPending_ = true;
 
         const int watPh = FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)
             ? FluidSystem::waterPhaseIdx : -1;
@@ -1263,7 +1523,7 @@ public:
                 for (Scalar x : v) s += x;
                 return v.empty() ? Scalar{0} : s / static_cast<Scalar>(v.size());
             };
-            if (pressureRecon_ == PressureRecon::PatchAverageLift) {
+            if (pressureRecon_ != PressureRecon::ConnectionLS) {
                 // eq. eq:averaging : gradient of the mean-value-coordinate
                 // interpolant of the vertex patch averages (bubble has zero
                 // cell-mean gradient).  Capillary gradients retained per phase.
@@ -1491,6 +1751,7 @@ public:
                         * std::sqrt(std::max(mimEnergy2, Scalar{0}));
                 }
                 sumSpMim2 += etaSpMim * etaSpMim; cSpMim2 += etaSpMim * etaSpMim;
+                cellSpatialEtaByComponent_[i][c] = etaSpMim;
 
                 if (etaSp > Scalar{1e8} && std::getenv("OPM_APOST_TRACE")) {
                     std::cerr << "[apost-trace] i=" << i << " c=" << c
@@ -1566,6 +1827,8 @@ public:
                         const std::size_t f = geomIdx[k];
                         thetaLinGeom[k] = Flin_[i][f][c] - Fc[c][f];
                     }
+                    linGeomThetaSum_[i][c] = std::accumulate(
+                        thetaLinGeom.begin(), thetaLinGeom.end(), Scalar{0});
                     // linEnergy2 is the UNWEIGHTED energy squared in both
                     // branches; g.weightPow (= D_K^{l/2}) is applied once
                     // outside. Rigorous: z^T M_K z. Cheap: |Pi0 Theta_lin|^2
@@ -1595,7 +1858,10 @@ public:
                     //     from that same computeStorage() call. Multiplying
                     //     by g.phiRef again here would double-count porosity.
                     const Scalar Aold = ownAccumVal_[i][c];
-                    const Scalar naDefect = std::abs(Anew[c] - Aold - Lval_[i][c]);
+                    const Scalar signedNaDefect = Anew[c] - Aold - Lval_[i][c];
+                    linAccumRateDef_[i][c] =
+                        (dt > Scalar{0}) ? g.volume * signedNaDefect / dt : Scalar{0};
+                    const Scalar naDefect = std::abs(signedNaDefect);
                     const Scalar tauInv = (dt > Scalar{0}) ? Scalar{1} / std::sqrt(dt) : Scalar{0};
                     const Scalar epsInv = (epsilon_ > Scalar{0}) ? Scalar{1} / std::sqrt(epsilon_) : Scalar{0};
                     const Scalar etaNA = tauInv * epsInv * cinv * g.hK * g.weightPow
@@ -1648,6 +1914,7 @@ public:
         etaSp_    = std::sqrt(std::max(sumSp2, Scalar{0}));
         etaSpT1_  = std::sqrt(std::max(sumSpT1_2, Scalar{0}));
         etaSpMim_ = std::sqrt(std::max(sumSpMim2, Scalar{0}));
+        etaSpMimDarcy_ = etaSpMim_;
         etaTime_ = (havePrev_ && std::isfinite(sumTime2))
                        ? std::sqrt(std::max(sumTime2, Scalar{0}))
                        : std::numeric_limits<Scalar>::quiet_NaN();
@@ -1662,6 +1929,7 @@ public:
         if (commitHistory) {
             prevU_.swap(curU);
             havePrev_ = true;
+            snapshotTemporalHistory_();
         }
         else {
             prevIterU_ = curU;
@@ -1697,11 +1965,18 @@ public:
     //! RT Schur complement, which needs the sub-tessellation and a local
     //! mixed-FE solve -- not done.
     Scalar etaSpatialMimetic() const { return etaSpMim_; }
+    //! Darcy/MVEM part alone. Newton error balancing uses this value rather
+    //! than the total eta_sp so an unconverged balance residual cannot enlarge
+    //! its own stopping tolerance.
+    Scalar etaSpatialDarcyMimetic() const { return etaSpMimDarcy_; }
+    Scalar etaEquilibration() const { return etaEq_; }
     Scalar etaTemporal()     const { return etaTime_; }
     Scalar etaLinearization() const { return etaLin_; }
+    Scalar etaLinearizationSource() const { return etaLinSource_; }
     bool   temporalAvailable()     const { return havePrev_ && std::isfinite(etaTime_); }
     bool   linearizationAvailable() const {
-        return (havePrevIter_ || etaLinRigorousLastCall_) && std::isfinite(etaLin_);
+        return (havePrevIter_ || etaLinRigorousLastCall_)
+            && sourceLinearizationComplete_ && std::isfinite(etaLin_);
     }
     //! True if the most recent etaLinearization() came from the rigorous
     //! Theta_lin/L construction (recordLinearizationDefect() was called this
@@ -1716,9 +1991,25 @@ public:
     //! Start a new Newton loop: the next compute() call has no previous
     //! iterate to diff against for eta_lin.  Call once per timestep, before
     //! the first Newton iteration.
-    void resetNewtonIterateHistory() { havePrevIter_ = false; }
+    void resetNewtonIterateHistory()
+    {
+        havePrevIter_ = false;
+        havePredictedLinearResidual_ = false;
+        sourceLinearizationComplete_ = false;
+        etaLinSource_ = 0;
+        equilibrationPending_ = false;
+        etaEq_ = 0;
+    }
 
 private:
+    void snapshotTemporalHistory_()
+    {
+        const auto& gridView = simulator_.gridView();
+        prevUSnapshot_.capture(gridView, [this](std::size_t idx) {
+            return prevU_.at(idx);
+        });
+    }
+
     // ---- one-rebuild h-adaptivity: mask + box helpers --------------------
     struct MaskBox { std::array<int, 3> lo; std::array<int, 3> hi; };
 
@@ -1966,14 +2257,19 @@ private:
         return u;
     }
 
-    //! Vertex patch averages of the phase pressures and (s_w, s_g)
-    //! (eq. eq:averaging).  Serial-exact; on a parallel partition boundary a
-    //! vertex sees only its local cells (documented limitation, like the
-    //! well-centre gather).
+    //! Vertex patch averages of the phase pressures and (s_w, s_g).
+    //! PatchAverageLift averages raw cell pressures. FluxTaylorLift first
+    //! reconstructs a constant phase velocity from OPM's Darcy face fluxes,
+    //! inverts Darcy's law for a cell pressure gradient, extrapolates the cell
+    //! pressure to each vertex, and averages those extrapolated values. Both
+    //! produce one shared nodal value and hence the same H1-conforming lift.
+    //! Serial-exact; on a parallel partition boundary a vertex sees only its
+    //! local cells (documented limitation, like the well-centre gather).
     void computeVertexAverages_()
     {
         const auto& gridView = simulator_.gridView();
         auto& model          = simulator_.model();
+        const auto& nbInfo   = model.linearizer().getNeighborInfo();
         const auto& vertexMapper = model.vertexMapper();
         ElementMapper mapper(gridView, Dune::mcmgElementLayout());
 
@@ -1991,6 +2287,107 @@ private:
             v.assign(nv, Scalar{0});
         std::vector<int> cnt(nv, 0);
 
+        std::array<std::vector<DimVector>, 3> fluxGrad;
+        if (pressureRecon_ == PressureRecon::FluxTaylorLift) {
+            for (auto& values : fluxGrad)
+                values.assign(geom_.size(), DimVector(0.0));
+
+            for (const auto& elem : elements(gridView, Dune::Partitions::interior)) {
+                const unsigned i = mapper.index(elem);
+                const auto& g = geom_[i];
+                const auto& iqIn = model.intensiveQuantities(i, /*timeIdx=*/0);
+                const auto& fsIn = iqIn.fluidState();
+                const auto row = nbInfo[static_cast<int>(i)];
+
+                std::array<std::vector<Scalar>, 3> phaseFlux;
+                std::vector<DimVector> faceOffsets;
+                std::array<std::vector<Scalar>, 3> neighbourPressure;
+                std::vector<DimVector> neighbourOffsets;
+                std::vector<Scalar> lsWeights;
+
+                for (const auto& nb : row) {
+                    const unsigned j = nb.neighbor;
+                    const auto& iqEx = model.intensiveQuantities(j, /*timeIdx=*/0);
+                    const auto& fsEx = iqEx.fluidState();
+
+                    DimVector offset = geom_[j].center;
+                    offset -= g.center;
+                    neighbourOffsets.push_back(offset);
+                    lsWeights.push_back(std::max(nb.res_nbinfo.trans, Scalar{0}));
+                    neighbourPressure[0].push_back(
+                        watPh >= 0 ? getValue(fsEx.pressure(watPh)) : Scalar{0});
+                    neighbourPressure[1].push_back(
+                        oilPh >= 0 ? getValue(fsEx.pressure(oilPh)) : Scalar{0});
+                    neighbourPressure[2].push_back(
+                        gasPh >= 0 ? getValue(fsEx.pressure(gasPh)) : Scalar{0});
+
+                    if (nb.res_nbinfo.faceDir == FaceDir::DirEnum::Unknown)
+                        continue;
+
+                    RateVector componentFlux(0.0), darcyFlux(0.0);
+                    LocalResidual::computeFlux(
+                        componentFlux, darcyFlux, i, j, iqIn, iqEx,
+                        nb.res_nbinfo, simulator_.problem().moduleParams());
+                    DimVector faceOffset = offset;
+                    faceOffset *= Scalar{0.5};
+                    faceOffsets.push_back(faceOffset);
+                    if (watPh >= 0)
+                        phaseFlux[0].push_back(getValue(
+                            darcyFlux[conti0EqIdx
+                                      + FluidSystem::canonicalToActiveCompIdx(
+                                          FluidSystem::solventComponentIndex(watPh))]));
+                    if (oilPh >= 0)
+                        phaseFlux[1].push_back(getValue(
+                            darcyFlux[conti0EqIdx
+                                      + FluidSystem::canonicalToActiveCompIdx(
+                                          FluidSystem::solventComponentIndex(oilPh))]));
+                    if (gasPh >= 0)
+                        phaseFlux[2].push_back(getValue(
+                            darcyFlux[conti0EqIdx
+                                      + FluidSystem::canonicalToActiveCompIdx(
+                                          FluidSystem::solventComponentIndex(gasPh))]));
+                }
+
+                const DimVector& gravity = simulator_.problem().gravity();
+                const std::array<int, 3> phases{watPh, oilPh, gasPh};
+                for (int p = 0; p < 3; ++p) {
+                    const int phase = phases[p];
+                    if (phase < 0)
+                        continue;
+
+                    const Scalar pressure = getValue(fsIn.pressure(phase));
+                    const Scalar mobility = getValue(iqIn.mobility(phase));
+                    bool reconstructed = mobility > Scalar{1e-30}
+                        && phaseFlux[p].size() == faceOffsets.size()
+                        && !faceOffsets.empty();
+                    if (reconstructed) {
+                        const DimVector velocity =
+                            APosteriori::piZeroFromFaceFluxes<Scalar, dim>(
+                                phaseFlux[p], faceOffsets, g.volume);
+                        try {
+                            auto permeability = g.permTensor;
+                            DimVector kinvVelocity(0.0);
+                            permeability.solve(kinvVelocity, velocity);
+                            const Scalar density = getValue(fsIn.density(phase));
+                            for (int d = 0; d < dim; ++d)
+                                fluxGrad[p][i][d] =
+                                    density * gravity[d] - kinvVelocity[d] / mobility;
+                        }
+                        catch (...) {
+                            reconstructed = false;
+                        }
+                    }
+
+                    if (!reconstructed) {
+                        fluxGrad[p][i] =
+                            APosteriori::leastSquaresGradient<Scalar, dim>(
+                                pressure, neighbourPressure[p],
+                                neighbourOffsets, lsWeights);
+                    }
+                }
+            }
+        }
+
         for (const auto& elem : elements(gridView, Dune::Partitions::interior)) {
             const unsigned i = mapper.index(elem);
             const auto& fs = model.intensiveQuantities(i, /*timeIdx=*/0).fluidState();
@@ -2002,9 +2399,20 @@ private:
             const int ncrn = elem.geometry().corners();
             for (int k = 0; k < ncrn; ++k) {
                 const auto a = vertexMapper.subIndex(elem, k, dim);
-                vtxP_[0][a] += pw;
-                vtxP_[1][a] += po;
-                vtxP_[2][a] += pg;
+                if (pressureRecon_ == PressureRecon::FluxTaylorLift) {
+                    const auto& offset = geom_[i].vtxOff[k];
+                    vtxP_[0][a] += APosteriori::taylorExtrapolate<Scalar, dim>(
+                        pw, fluxGrad[0][i], offset);
+                    vtxP_[1][a] += APosteriori::taylorExtrapolate<Scalar, dim>(
+                        po, fluxGrad[1][i], offset);
+                    vtxP_[2][a] += APosteriori::taylorExtrapolate<Scalar, dim>(
+                        pg, fluxGrad[2][i], offset);
+                }
+                else {
+                    vtxP_[0][a] += pw;
+                    vtxP_[1][a] += po;
+                    vtxP_[2][a] += pg;
+                }
                 vtxS_[0][a] += sw;
                 vtxS_[1][a] += sg;
                 ++cnt[a];
@@ -2103,6 +2511,9 @@ private:
     //! implemented eta_sp,K already carries sqrt(tau_n), so its square already
     //! contributes the time-step weight -- do NOT multiply by tau_n again.
     std::vector<double> accumulatedSpatialEnergy_;
+    std::array<std::vector<double>, numComponents> accumulatedComponentSpatialEnergy_;
+    std::vector<double> latestSpatialEnergy_;
+    std::array<std::vector<double>, numComponents> latestComponentSpatialEnergy_;
 
     //! Sorted GLOBAL Cartesian indices of every well-completion cell that
     //! appears anywhere in the remaining schedule (schedule-wide protected
@@ -2128,21 +2539,24 @@ private:
 
     std::vector<CompFlux> prevU_;
     bool havePrev_ {false};
+    AluAdaptSnapshot<GridView, CompFlux> prevUSnapshot_;
 
     std::vector<CompFlux> prevIterU_;   //!< previous Newton *iterate*'s u_a (cheap eta_lin fallback proxy)
     bool havePrevIter_ {false};
 
     // --- eta_lin (recordLinearizationDefect / eq. Newton_it_flux, lin_fv_balance) ---
-    // PARTIAL linearization indicator: geometric-face flux Taylor defect +
-    // storage Taylor defect. Does NOT yet include the nonlinear well/source
-    // Taylor defect Q(chi^k) - Q_lin^k or NNC linearization terms, so a small
-    // eta_lin is not proof that the full nonlinear reservoir residual remainder
-    // is small (external review, 2026-09-06).
+    // Linearization indicator: geometric-face flux Taylor defect, storage
+    // Taylor defect, and the reduced-balance well/NNC source Taylor defect.
     std::vector<std::vector<CompEval>> ownFlux_;      //!< [cell][conn] u_ic(chi^{k-1,n}), deriv wrt own cell only
     std::vector<CompFlux0>             ownAccumVal_;  //!< [cell] A_alpha(chi^{k-1,n})
     std::vector<CompEval>              ownAccumDeriv_;//!< [cell] A_alpha Evaluation (for its derivative wrt own cell)
     std::vector<std::vector<CompFlux0>> Flin_;        //!< [cell][conn] F^{k,n}_{alpha,ic} (eq. Newton_it_flux)
     std::vector<CompFlux0>             Lval_;         //!< [cell] L^{k,n}_{alpha,K} (linearized accumulation increment)
+    std::vector<CompFlux0> linAccumRateDef_; //!< [cell] V_K/tau times signed nonlinear accumulation remainder
+    std::vector<CompFlux0> linGeomThetaSum_; //!< [cell] sum of F_lin-F_new over geometric faces
+    BVector predictedLinearResidual_;
+    bool havePredictedLinearResidual_ {false};
+    bool sourceLinearizationComplete_ {false};
     bool haveLin_ {false};
     Scalar epsilon_ {1};  //!< Neumann-scaling parameter (eq. eps_norm); paper recommends 1
     bool cheapNorms_ {false};  //!< drop all *,K energy norms to the cheap diagonal form -- see setCheapNorms()
@@ -2150,14 +2564,19 @@ private:
     Scalar etaSp_   {0};
     Scalar etaSpT1_ {0};
     Scalar etaSpMim_ {0};
+    Scalar etaSpMimDarcy_ {0};
+    Scalar etaEq_ {0};
     Scalar etaTime_ {0};
     Scalar etaLin_  {0};
+    Scalar etaLinSource_ {0};
     Scalar etaAlg_  {0};
+    bool equilibrationPending_ {false};
 
     //! per-cell {eta_sp(mim), eta_time, eta_lin, eta_alg} for the spatial map;
     //! filled by compute() and computeAlgebraicEstimator(), dumped by
     //! dumpCellEstimators().
     std::vector<std::array<double, 4>> cellEta_;
+    std::vector<std::array<double, numComponents>> cellSpatialEtaByComponent_;
     bool   etaLinRigorousLastCall_ {false};
 };
 

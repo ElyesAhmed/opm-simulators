@@ -1,0 +1,4 @@
+Module: opm-adaptivity-probe
+Version: 0.1
+Maintainer: OPM adaptivity research
+Depends: dune-alugrid (>= 2.9)

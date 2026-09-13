@@ -549,6 +549,20 @@ setDynamicThpLimit(const std::optional<Scalar> thp_limit)
 
 template<typename Scalar, typename IndexTraits>
 void WellInterfaceGeneric<Scalar, IndexTraits>::
+refreshPerforationCells()
+{
+    if (perf_data_->size() != well_cells_.size()) {
+        throw std::logic_error(
+            "Cannot refresh live well cells after grid adaptation: "
+            "perforation count changed");
+    }
+    for (std::size_t perf = 0; perf < perf_data_->size(); ++perf) {
+        well_cells_[perf] = perf_data_->at(perf).cell_index;
+    }
+}
+
+template<typename Scalar, typename IndexTraits>
+void WellInterfaceGeneric<Scalar, IndexTraits>::
 updatePerforatedCell(std::vector<bool>& is_cell_perforated)
 {
     for (int perf_idx = 0; perf_idx < number_of_local_perforations_; ++perf_idx) {
