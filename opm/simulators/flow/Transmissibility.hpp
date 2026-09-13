@@ -80,6 +80,14 @@ public:
     Scalar transmissibility(unsigned elemIdx1, unsigned elemIdx2) const;
 
     /*!
+     * \brief Return a stored transmissibility, or zero when the grid has no such connection.
+     *
+     * This is intended for projecting transmissibilities onto an output grid whose
+     * topology may contain faces absent from the simulation grid.
+     */
+    Scalar transmissibilityOrZero(unsigned elemIdx1, unsigned elemIdx2) const;
+
+    /*!
      * \brief Return the transmissibility for a given boundary segment.
      */
     Scalar transmissibilityBoundary(unsigned elemIdx, unsigned boundaryFaceIdx) const;

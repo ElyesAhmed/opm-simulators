@@ -971,9 +971,32 @@ run()
             // NEXT substep -- here, inside the substep loop, so it governs
             // every substep and not only the first one of each report period.
             if (const auto apostDt = solver_().model().aposterioriSuggestedNextStep()) {
-                dt_estimate = solver_().model().aposterioriTimestepGrowthOverrideEnabled()
-                    ? *apostDt
-                    : std::min(dt_estimate, *apostDt);
+                const bool growthOverride =
+                    solver_().model().aposterioriTimestepGrowthOverrideEnabled();
+                dt_estimate = growthOverride ? *apostDt
+                                             : std::min(dt_estimate, *apostDt);
+
+                // AdaptiveSimulatorTimer normally replaces a request in the
+                // last third of a report interval by two equal half-interval
+                // steps. That generic anti-sliver rule can trap estimator
+                // growth at half the report-period length (for example, a
+                // 10.5-day request repeatedly becomes 7 days in a 14-day
+                // period). With explicit bidirectional estimator control,
+                // finish the report interval instead. This respects the hard
+                // report boundary while carrying the unconstrained estimator
+                // suggestion into the next report period.
+                const double remaining =
+                    this->substep_timer_.totalTime()
+                    - this->substep_timer_.simulationTimeElapsed();
+                const double boundarySpan = remaining > 0.0
+                    ? remaining : this->original_time_step_;
+                if (growthOverride
+                    && boundarySpan > 0.0
+                    && boundarySpan <= this->adaptive_time_stepping_.max_time_step_
+                    && dt_estimate > (2.0 / 3.0) * boundarySpan) {
+                    dt_estimate = boundarySpan;
+                }
+
                 // Never let the estimator drive dt below the solver minimum:
                 // a too-tight space/time band would otherwise stall the run
                 // (proposed dt < minTimeStep). Clamp and continue -- the

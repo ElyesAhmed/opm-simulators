@@ -33,6 +33,7 @@
 #include <opm/models/utils/prefetch.hh>
 
 #include <vector>
+#include <new>
 
 namespace Opm {
 
@@ -58,6 +59,17 @@ public:
         , elementMapper_(gridView_, Dune::mcmgElementLayout())
         , dofMapper_(dofMapper)
     {}
+
+    void resetGridView(const GridView& gridView)
+    {
+        elementMapper_.~ElementMapper();
+        gridView_.~GridView();
+        new (&gridView_) GridView(gridView);
+        new (&elementMapper_) ElementMapper(gridView_,
+                                            Dune::mcmgElementLayout());
+        data_.clear();
+        elemData_.clear();
+    }
 
     template <class DistFn>
     void update(const DistFn& distFn)

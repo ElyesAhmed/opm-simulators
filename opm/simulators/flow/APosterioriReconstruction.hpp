@@ -46,6 +46,34 @@
 namespace Opm::APosteriori {
 
 /*!
+ * \brief Weighted local equilibration indicator from an integrated balance residual.
+ *
+ * For a cellwise-constant balance residual r_K = R_K/|K|,
+ *
+ *   eta_eq,K = sqrt(tau) epsilon^{-1/2} c_K^{-1/2} h_K D_K^{ell/2}
+ *              ||r_K||_K
+ *            = sqrt(tau) epsilon^{-1/2} c_K^{-1/2} h_K D_K^{ell/2}
+ *              |R_K| / sqrt(|K|).
+ */
+template<class Scalar>
+Scalar
+equilibrationIndicator(Scalar integratedResidual,
+                       Scalar dt,
+                       Scalar epsilon,
+                       Scalar cKK,
+                       Scalar hK,
+                       Scalar dLambdaPow,
+                       Scalar volume)
+{
+    if (!(dt >= Scalar{0}) || !(epsilon > Scalar{0})
+        || !(cKK > Scalar{0}) || !(volume > Scalar{0})) {
+        return std::numeric_limits<Scalar>::quiet_NaN();
+    }
+    return std::sqrt(dt / (epsilon * cKK * volume))
+        * hK * dLambdaPow * std::abs(integratedResidual);
+}
+
+/*!
  * \brief Cell-centred least-squares gradient.
  *
  * Given a cell value \p uCell at the cell centre and, for each connection
@@ -111,6 +139,25 @@ leastSquaresGradient(Scalar uCell,
         }
     }
     return g;
+}
+
+/*!
+ * \brief Taylor extrapolation of a cell-centred value to a vertex.
+ *
+ * Given u_K, a reconstructed cell gradient g_K, and x_a-x_K, returns
+ *
+ *     u_{K->a} = u_K + g_K . (x_a-x_K).
+ *
+ * Averaging these values over all cells sharing a vertex gives a single
+ * vertex value and therefore an H1-conforming nodal reconstruction.
+ */
+template<class Scalar, int dim>
+Scalar
+taylorExtrapolate(Scalar uCell,
+                  const Dune::FieldVector<Scalar, dim>& gradient,
+                  const Dune::FieldVector<Scalar, dim>& vertexOffset)
+{
+    return uCell + gradient * vertexOffset;
 }
 
 /*!

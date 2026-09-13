@@ -193,6 +193,10 @@ public:
 
 
             // --- (7) rebuild discretization geometry/caches/matrix --------------
+            // The linear solver identifies a rebuilt matrix by its address. The
+            // allocator may reuse the old address, in which case ISTL would update
+            // an ILU/preconditioner built for the pre-adapt sparsity pattern.
+            this->newtonMethod().linearSolver().eraseMatrix();
             this->resetLinearizer();
             this->finishInit();
 
