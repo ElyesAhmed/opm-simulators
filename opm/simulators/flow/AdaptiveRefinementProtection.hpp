@@ -43,12 +43,32 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstdint>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace Opm {
+
+inline int refinementProtectionHaloFromEnvironment()
+{
+    const char* text = std::getenv("OPM_APOST_PROTECT_HALO");
+    if (text == nullptr) {
+        return 0;
+    }
+
+    int value = 0;
+    char trailing = '\0';
+    std::istringstream input(text);
+    if (!(input >> value) || (input >> trailing) || value < 0) {
+        throw std::invalid_argument(
+            "OPM_APOST_PROTECT_HALO must be a non-negative integer");
+    }
+    return value;
+}
 
 inline std::vector<int>
 buildProtectedRefinementCells(const Schedule& schedule,
