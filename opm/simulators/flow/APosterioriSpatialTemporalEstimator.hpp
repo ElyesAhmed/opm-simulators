@@ -185,6 +185,8 @@
 #include <opm/models/utils/propertysystem.hh>
 #include <opm/models/parallel/threadmanager.hpp>
 
+#include <opm/common/OpmLog/OpmLog.hpp>
+
 #include <opm/grid/utility/ElementChunks.hpp>
 
 #include <opm/simulators/flow/AluAdaptTransfer.hpp>
@@ -228,8 +230,27 @@ class APosterioriSpatialTemporalEstimator
     using Evaluation      = GetPropType<TypeTag, Properties::Evaluation>;
     using LocalResidual   = GetPropType<TypeTag, Properties::LocalResidual>;
     using BVector         = GetPropType<TypeTag, Properties::GlobalEqVector>;
+    using Model           = GetPropType<TypeTag, Properties::Model>;
 
     using Element   = typename GridView::template Codim<0>::Entity;
+
+    // Some multi-physics tags (e.g. FlowSolventFoamProblem) are built on a
+    // plain FvBaseLinearizer/LocalResidual rather than the TPFA one, so they
+    // lack getNeighborInfo() and/or take extra arguments in computeStorage().
+    // The "flow" dispatch binary links every tag's object file into one
+    // executable, so recordLinearizationDefect()/compute() (called
+    // unconditionally -- behind a runtime flag, not a compile-time one --
+    // from NonlinearSystemBlackOilReservoir) must still compile for those
+    // tags. Gate the geometry-dependent body on this trait instead: for an
+    // unsupported tag the two functions become no-ops (all estimator state
+    // stays at its default/"unavailable" value) and
+    // --enable-aposteriori-estimators simply has no effect on that deck.
+    static constexpr bool kSupportsGeometricEstimator =
+        Indices::numEq >= Indices::conti0EqIdx + FluidSystem::numComponents
+        && requires (Model& m, RateVector& storage, const IntensiveQuantities& iq) {
+            m.linearizer().getNeighborInfo();
+            LocalResidual::template computeStorage<Evaluation>(storage, iq);
+        };
 
     static constexpr int dim = GridView::dimensionworld;
     static constexpr unsigned numComponents = FluidSystem::numComponents;
@@ -540,6 +561,13 @@ public:
     //! before a solve to get the initial algebraic-error scale eta_alg^{(0)}.
     Scalar computeAlgebraicEstimator(const BVector& rAlg, Scalar dt)
     {
+        if constexpr (!kSupportsGeometricEstimator) {
+            (void) rAlg;
+            (void) dt;
+            etaAlg_ = Scalar{0};
+            return etaAlg_;
+        }
+        else {
         if (!geomValid_ || geom_.size() != simulator_.model().numGridDof())
             updateGeometry();
         const auto& gridView = simulator_.gridView();
@@ -581,6 +609,7 @@ public:
         sum2 = gridView.comm().sum(sum2);
         etaAlg_ = std::sqrt(std::max(sum2, Scalar{0}));
         return etaAlg_;
+        }
     }
 
     Scalar etaAlgebraic() const { return etaAlg_; }
@@ -713,8 +742,6 @@ public:
         const int gasPh = FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)
             ? FluidSystem::gasPhaseIdx : -1;
         const Scalar tau = std::max(dt, Scalar{0});
-        const Scalar epsInv = (epsilon_ > Scalar{0})
-            ? Scalar{1} / std::sqrt(epsilon_) : Scalar{0};
         Scalar sumCombined2 = 0;
         Scalar sumSource2 = 0;
 
@@ -732,17 +759,17 @@ public:
             const auto& iq = model.intensiveQuantities(i, /*timeIdx=*/0);
             const auto rhoRef =
                 componentRefDensities_(watPh, oilPh, gasPh, iq.pvtRegionIndex());
-            const Scalar pref = std::sqrt(tau) * epsInv / std::sqrt(g.cKK)
-                * g.hK * g.weightPow / std::sqrt(g.volume);
             Scalar cellSource2 = 0;
             for (unsigned c = 0; c < numComponents; ++c) {
-                const Scalar deltaResidual = rhoRef[c] * (
-                    getValue(nonlinearResidual[i][conti0EqIdx + c])
-                    - getValue(predictedLinearResidual_[i][conti0EqIdx + c]));
-                const Scalar sourceDefect =
-                    linAccumRateDef_[i][c] - linGeomThetaSum_[i][c]
-                    - deltaResidual;
-                const Scalar etaSource = pref * std::abs(sourceDefect);
+                const Scalar residualNew =
+                    rhoRef[c] * getValue(nonlinearResidual[i][conti0EqIdx + c]);
+                const Scalar residualLin =
+                    rhoRef[c] * getValue(predictedLinearResidual_[i][conti0EqIdx + c]);
+                const Scalar sourceDefect = APosteriori::sourceLinearizationDefect(
+                    linAccumRateDef_[i][c], linGeomThetaSum_[i][c],
+                    residualNew, residualLin);
+                const Scalar etaSource = APosteriori::equilibrationIndicator(
+                    sourceDefect, tau, epsilon_, g.cKK, g.hK, g.weightPow, g.volume);
                 cellSource2 += etaSource * etaSource;
             }
             const Scalar cellSource = std::sqrt(std::max(cellSource2, Scalar{0}));
@@ -1206,6 +1233,11 @@ public:
 
     void recordLinearizationDefect(Scalar dt, const BVector& dx)
     {
+        if constexpr (!kSupportsGeometricEstimator) {
+            haveLin_ = false;
+            return;
+        }
+        else {
         if (!geomValid_ || geom_.size() != simulator_.model().numGridDof())
             updateGeometry();
 
@@ -1355,6 +1387,7 @@ public:
           }
         }
         (void) dt; // reserved: the tau^n prefactor is applied when eta_lin is assembled in compute()
+        }
     }
 
     /*!
@@ -1370,6 +1403,32 @@ public:
      */
     void compute(Scalar dt, bool commitHistory = true)
     {
+        if constexpr (!kSupportsGeometricEstimator) {
+            // Unsupported tag (see kSupportsGeometricEstimator's docstring):
+            // leave every estimator output at its default/"unavailable"
+            // value rather than computing anything. This used to be a
+            // silent no-op -- surfaced once at runtime (2026-09-14) after
+            // it was mistaken for a working-but-degenerate estimator on a
+            // gas-water/CO2STORE deck; --enable-aposteriori-estimators
+            // otherwise gives no indication that nothing is being computed.
+            if (!warnedUnsupported_) {
+                warnedUnsupported_ = true;
+                if (!simulator_.gridView().comm().rank()) {
+                    OpmLog::warning(
+                        "The a posteriori estimator does not support this "
+                        "model/linearizer combination (see "
+                        "kSupportsGeometricEstimator in "
+                        "APosterioriSpatialTemporalEstimator.hpp): "
+                        "--enable-aposteriori-estimators and every "
+                        "--enable-aposteriori-* control have no effect on "
+                        "this run.");
+                }
+            }
+            (void) dt;
+            (void) commitHistory;
+            return;
+        }
+        else {
         if (!geomValid_ || geom_.size() != simulator_.model().numGridDof())
             updateGeometry();
 
@@ -1417,6 +1476,8 @@ public:
         Scalar sumSpMim2 = 0.0;  // mimetic (Corollary 3.13/3.14) companion sum -- see etaSpatialMimetic()
         Scalar sumTime2 = 0.0;
         Scalar sumLin2 = 0.0;
+        Scalar sumLinAccum2 = 0.0;  // eta_lin's accumulation-only (NA) term, reported separately
+        Scalar sumLinFlux2 = 0.0;   // eta_lin's geometric-face-flux-only term, reported separately
 
         // Per-cell independent: reads geom_/prevU_/prevIterU_/Flin_/ownAccumVal_
         // /Lval_ at [i] only, writes curU[i] only, and accumulates the five
@@ -1424,7 +1485,7 @@ public:
         // thread-count dependent (perturbation ~1e-14, immaterial to the
         // adaptive decisions).
 #ifdef _OPENMP
-#pragma omp parallel for reduction(+:sumSp2,sumSpT1_2,sumSpMim2,sumTime2,sumLin2)
+#pragma omp parallel for reduction(+:sumSp2,sumSpT1_2,sumSpMim2,sumTime2,sumLin2,sumLinAccum2,sumLinFlux2)
 #endif
         for (const auto& chunk : ElementChunks(gridView, Dune::Partitions::interior,
                                                ThreadManager::maxThreads())) {
@@ -1869,6 +1930,8 @@ public:
 
                     const Scalar etaL = etaLinFlux + etaNA;
                     sumLin2 += etaL * etaL; cLin2 += etaL * etaL;
+                    sumLinAccum2 += etaNA * etaNA;
+                    sumLinFlux2  += etaLinFlux * etaLinFlux;
                 }
                 else if (havePrevIter_) {
                     // Fallback (recordLinearizationDefect() never called this
@@ -1910,6 +1973,8 @@ public:
         sumSpMim2 = comm.sum(sumSpMim2);
         sumTime2  = comm.sum(sumTime2);
         sumLin2   = comm.sum(sumLin2);
+        sumLinAccum2 = comm.sum(sumLinAccum2);
+        sumLinFlux2  = comm.sum(sumLinFlux2);
 
         etaSp_    = std::sqrt(std::max(sumSp2, Scalar{0}));
         etaSpT1_  = std::sqrt(std::max(sumSpT1_2, Scalar{0}));
@@ -1922,6 +1987,12 @@ public:
         etaLin_  = (haveLinNow && std::isfinite(sumLin2))
                        ? std::sqrt(std::max(sumLin2, Scalar{0}))
                        : std::numeric_limits<Scalar>::quiet_NaN();
+        // Only the rigorous branch (haveLin_) separates accumulation/flux;
+        // the iterate-diff fallback does not decompose, so report 0 then.
+        etaLinAccum_ = (haveLin_ && std::isfinite(sumLinAccum2))
+                       ? std::sqrt(std::max(sumLinAccum2, Scalar{0})) : Scalar{0};
+        etaLinFlux_  = (haveLin_ && std::isfinite(sumLinFlux2))
+                       ? std::sqrt(std::max(sumLinFlux2, Scalar{0})) : Scalar{0};
         etaLinRigorousLastCall_ = haveLin_;
         haveLin_ = false; // consumed: next compute() falls back to the proxy
                           // unless recordLinearizationDefect() is called again first
@@ -1935,6 +2006,7 @@ public:
             prevIterU_ = curU;
         }
         havePrevIter_ = true;
+        }
     }
 
     //! T1+T3 (full eq. flux_est_cp split). T3 is currently an uncertified
@@ -1973,6 +2045,14 @@ public:
     Scalar etaTemporal()     const { return etaTime_; }
     Scalar etaLinearization() const { return etaLin_; }
     Scalar etaLinearizationSource() const { return etaLinSource_; }
+    //! Accumulation-defect (NA) and geometric-face-flux-defect contributions
+    //! to eta_lin, reported separately from the well/NNC source term above so
+    //! the three Taylor remainders composing eta_lin can be inspected
+    //! independently (diagnostic only; etaLinearization() remains their
+    //! combined RSS total). Only meaningful when linearizationRigorous() is
+    //! true -- the iterate-diff fallback does not separate these terms.
+    Scalar etaLinearizationAccumulation() const { return etaLinAccum_; }
+    Scalar etaLinearizationFlux() const { return etaLinFlux_; }
     bool   temporalAvailable()     const { return havePrev_ && std::isfinite(etaTime_); }
     bool   linearizationAvailable() const {
         return (havePrevIter_ || etaLinRigorousLastCall_)
@@ -2531,6 +2611,8 @@ private:
 
     std::vector<CellGeom> geom_;
     bool geomValid_ {false};
+    //! One-time guard for the kSupportsGeometricEstimator no-op warning.
+    bool warnedUnsupported_ {false};
 
     //! Cached MVEM flux mass matrix M_K per interior cell (flat nf*nf, row
     //! major). Rebuilt lazily on the first compute() after updateGeometry().
@@ -2569,6 +2651,8 @@ private:
     Scalar etaTime_ {0};
     Scalar etaLin_  {0};
     Scalar etaLinSource_ {0};
+    Scalar etaLinAccum_ {0};  //!< accumulation-only (NA) contribution to eta_lin, reported separately
+    Scalar etaLinFlux_ {0};   //!< geometric-face-flux-only contribution to eta_lin, reported separately
     Scalar etaAlg_  {0};
     bool equilibrationPending_ {false};
 
