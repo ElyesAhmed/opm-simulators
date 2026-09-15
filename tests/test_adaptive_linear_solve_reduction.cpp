@@ -165,3 +165,36 @@ BOOST_AUTO_TEST_CASE(MinIterationsGuardDisablesOnCheapSolves)
     a.recordLinearIterations(40);
     BOOST_CHECK(a.forcingTerm({{1.0}, {0.1}, {0.05}}).has_value());
 }
+
+BOOST_AUTO_TEST_CASE(EstimatorForcingHonoursConfiguredMaximum)
+{
+    AdaptiveLinearSolveReduction<double> a(true, gamma_, rmin, rmax);
+    a.reset();
+
+    // The raw Criteria_alg target is 0.5, but the controller's configured
+    // Newton-safety maximum remains authoritative.
+    const auto target = a.forcingTermFromEstimator(1.0, 5.0, 0.1);
+    BOOST_REQUIRE(target.has_value());
+    BOOST_CHECK_CLOSE(*target, rmax, 1e-10);
+}
+
+BOOST_AUTO_TEST_CASE(EstimatorForcingUsesCheapSolveGuard)
+{
+    AdaptiveLinearSolveReduction<double> a(true, gamma_, rmin, rmax,
+                                            /*min_iterations=*/10);
+    a.reset();
+    BOOST_REQUIRE(a.forcingTermFromEstimator(10.0, 1.0, 0.1).has_value());
+
+    a.recordLinearIterations(4);
+    BOOST_CHECK(a.forcingTermFromEstimator(10.0, 1.0, 0.1) == std::nullopt);
+
+    a.recordLinearIterations(12);
+    BOOST_REQUIRE(a.forcingTermFromEstimator(10.0, 1.0, 0.1).has_value());
+}
+
+BOOST_AUTO_TEST_CASE(EstimatorForcingNeedsValidBudget)
+{
+    auto a = makeEnabled();
+    BOOST_CHECK(a.forcingTermFromEstimator(1.0, 0.0, 0.1) == std::nullopt);
+    BOOST_CHECK(a.forcingTermFromEstimator(0.0, 1.0, 0.1) == std::nullopt);
+}

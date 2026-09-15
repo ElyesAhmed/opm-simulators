@@ -168,11 +168,12 @@ public:
      *        max(eta_sp,eta_time)), unlike eta_lin which is much smaller near
      *        Newton convergence.
      *
-     *        This is the ONLY rule allowed to stop the linear solve when it is
-     *        active: no few-iterations fallback to the static tolerance, and no
-     *        artificial ceiling below 1. The only limits are safety limits --
-     *        never ask for more accuracy than --linear-solver-reduction, and
-     *        never loosen past kStabilityCeiling (or the Newton update stalls).
+     *        A stricter solve also satisfies Criteria_alg.  The request is
+     *        therefore bounded by the same cost and Newton-stability guards as
+     *        the Eisenstat--Walker controller: keep the static tolerance after
+     *        an already-cheap solve, never ask for more accuracy than
+     *        --linear-solver-reduction, and never loosen beyond the configured
+     *        adaptive reduction maximum.
      *
      * \param etaAlg0     eta_alg of the un-reduced residual b (rAlg = b).
      * \param maxSpTime   max(eta_sp, eta_time) at the most recent iterate.
@@ -185,16 +186,23 @@ public:
     {
         if (!enabled_)
             return std::nullopt;
+
+        // A stricter solve still satisfies Criteria_alg.  If the previous
+        // solve was already cheap, loosening its tolerance cannot save useful
+        // work but can substantially degrade the Newton correction.
+        if (prev_iterations_ < min_iterations_)
+            return std::nullopt;
+
+        // Without a valid discretization-error budget there is no estimator
+        // basis for relaxing the user's configured linear tolerance.
         if (!(etaAlg0 > Scalar{0}) || !std::isfinite(maxSpTime) || maxSpTime <= Scalar{0})
-            return kStabilityCeiling;
+            return std::nullopt;
+
         Scalar target = gammaAlg * (maxSpTime / etaAlg0);
-        target = std::clamp(target, reduction_min_, kStabilityCeiling);
+        target = std::clamp(target, reduction_min_, reduction_max_);
         prev_target_ = target;
         return target;
     }
-
-    //! Loosest linear-solve reduction Criteria_alg may request (Newton-stability cap).
-    static constexpr Scalar kStabilityCeiling = Scalar{0.5};
 
     //! The relative reduction most recently returned by a forcingTerm* call
     //! (starting point for an enforcement re-solve).
