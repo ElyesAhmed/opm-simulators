@@ -117,7 +117,8 @@ public:
             .cartesianIndexMapper().cartesianDimensions();
         const auto protectedCells = buildProtectedRefinementCells(
             this->simulator().vanguard().schedule(),
-            {dims[0], dims[1], dims[2]});
+            {dims[0], dims[1], dims[2]},
+            refinementProtectionHaloFromEnvironment());
         protectedCartesianCells_.insert(protectedCells.begin(), protectedCells.end());
     }
 
@@ -239,7 +240,7 @@ private:
         OpmLog::info(fmt::format(
             "[alu-hadapt] OPM_ALU_ADAPT_TEST_BOX event {} of {}: "
             "i{}-{} j{}-{} k{}-{} "
-            "-> marked {} leaf cell(s) for refinement ({} vetoed: well cell)",
+            "-> marked {} leaf cell(s) for refinement ({} vetoed: protected cell)",
             testBoxAdaptCount_, testBoxAdaptLimit_(),
             b[0], b[1], b[2], b[3], b[4], b[5], n, vetoed));
         return grid.comm().sum(n);

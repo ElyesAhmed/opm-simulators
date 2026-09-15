@@ -348,12 +348,10 @@ int flowBlackoilTpfaAdaptiveDynamicMainStandalone(int argc, char** argv)
             }
 
             // (2) shared protected set (AdaptiveRefinementProtection.hpp)
-            int phalo = 0;
-            if (const char* hs = std::getenv("OPM_APOST_PROTECT_HALO"))
-                phalo = std::max(0, std::atoi(hs));
             const auto protVec = buildProtectedRefinementCells(
                 sim->vanguard().schedule(),
-                {static_cast<int>(NXg), static_cast<int>(NYg), static_cast<int>(NZg)}, phalo);
+                {static_cast<int>(NXg), static_cast<int>(NYg), static_cast<int>(NZg)},
+                refinementProtectionHaloFromEnvironment());
             const auto isProt = [&](long i, long j, long k) {
                 return std::binary_search(protVec.begin(), protVec.end(),
                     static_cast<int>((k * NYg + j) * NXg + i));
