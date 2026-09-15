@@ -319,7 +319,7 @@ public:
 
         this->mapRegionsOntoLeaf_();
         for (auto& region_pair : this->regions_) {
-            this->createLocalRegion_(region_pair.second);
+            this->createLocalRegion_(region_pair.first, region_pair.second);
         }
     }
 
