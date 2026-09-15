@@ -468,6 +468,7 @@ list (APPEND TEST_SOURCE_FILES
   tests/test_aposteriori_balancing.cpp
   tests/test_aposteriori_estimator_compile.cpp
   tests/test_aposteriori_reconstruction.cpp
+  tests/test_aposteriori_source_defect.cpp
   tests/test_aquifergridutils.cpp
   tests/test_aqantrc_flow_keyword.cpp
   tests/test_blackoil_amg.cpp

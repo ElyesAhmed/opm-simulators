@@ -74,6 +74,39 @@ equilibrationIndicator(Scalar integratedResidual,
 }
 
 /*!
+ * \brief Signed local balance-residual defect left by completing eta_lin's
+ *        reduced-balance well/NNC source Taylor remainder:
+ *
+ *   Delta Q_K = Delta A_K/tau - sum_geom(F_lin - F_new) - (R_new - R_lin)
+ *
+ * \p linAccumRateDef   is Delta A_K/tau, the nonlinear accumulation Taylor
+ *                       remainder rate (V_K/tau)*(A(chi^k)-A(chi^{k-1})-L),
+ *                       computed at recordLinearizationDefect()/compute() time.
+ * \p linGeomFluxDefect  is sum_geom(F_lin-F_new), the geometric-face flux
+ *                       Taylor remainder, also fixed at that same call.
+ * \p residualNew        is the well-eliminated nonlinear reservoir residual
+ *                       R_new,K assembled at chi^k (the next initialLinearization).
+ * \p residualLin        is the well-eliminated linear-solve residual R_lin,K =
+ *                       R(chi^{k-1}) - J_eff(chi^{k-1}) dx, captured by
+ *                       recordPredictedLinearResidual() right after the solve.
+ *
+ * Free function (no simulator state) so the balance identity and its
+ * Taylor-remainder scaling can be unit tested directly: any residualNew that
+ * differs from residualLin by exactly the accumulation/flux mismatch already
+ * captured must return zero, and a smooth nonlinear source's defect must
+ * shrink quadratically as the Newton increment shrinks.
+ */
+template<class Scalar>
+Scalar
+sourceLinearizationDefect(Scalar linAccumRateDef,
+                          Scalar linGeomFluxDefect,
+                          Scalar residualNew,
+                          Scalar residualLin)
+{
+    return linAccumRateDef - linGeomFluxDefect - (residualNew - residualLin);
+}
+
+/*!
  * \brief Cell-centred least-squares gradient.
  *
  * Given a cell value \p uCell at the cell centre and, for each connection
