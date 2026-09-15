@@ -448,8 +448,9 @@ private:
         const auto& dims = cartMapper.cartesianDimensions();
         Dune::MultipleCodimMultipleGeomTypeMapper<GridView>
             mapper(gv, Dune::mcmgElementLayout());
+        using Element = typename GridView::template Codim<0>::Entity;
 
-        std::vector<std::pair<double, unsigned>> candidates;
+        std::vector<std::tuple<double, unsigned, Element>> candidates;
         candidates.reserve(currentLeaves);
         double totalEnergy = 0.0;
         for (const auto& elem : elements(gv, Dune::Partitions::interior)) {
@@ -464,7 +465,7 @@ private:
                 || isProtectedForLevel_(cart, elem.level(), dims)) {
                 continue;
             }
-            candidates.emplace_back(energy, idx);
+            candidates.emplace_back(energy, idx, elem);
             totalEnergy += energy;
         }
         if (candidates.empty() || totalEnergy <= 0.0) {
@@ -472,20 +473,69 @@ private:
         }
         std::ranges::sort(candidates,
             [](const auto& lhs, const auto& rhs) {
-                return lhs.first > rhs.first;
+                return std::get<0>(lhs) > std::get<0>(rhs);
             });
 
+        // Greedy Dorfler selection, budgeted against the leaf count grid.adapt()
+        // will ACTUALLY produce -- not just the explicitly marked set. Coming
+        // into this event the grid is already 2:1-balanced (guaranteed by the
+        // previous event's own verifyAfterAdapt(), or by construction for the
+        // first event), so refining a candidate by one level can force AT MOST
+        // its immediate face-neighbors that currently sit exactly one level
+        // coarser to also close up by one level -- ALUGrid performs that
+        // closure internally, invisibly to markForGridAdaptation(). A naive
+        // budget of "1 marked leaf -> +7 leaves" (as if closure never
+        // happened) undercounts exactly these forced neighbor refinements and
+        // can overshoot maxLeaves once adapt() actually runs its own closure
+        // -- diagnosed 2026-09-14 on a max-level=2, multi-event five-spot run
+        // (event budgeted for exactly 178 marks at 7 leaves each = budget-
+        // exact 1246 new leaves; closure silently forced 3 more level-0
+        // neighbors to level 1, landing at 3021 leaves against a budget of
+        // 3000). verifyAfterAdapt() already catches the resulting overshoot,
+        // but by then grid.adapt() has committed in place with no rollback,
+        // so the whole run aborts (see fvbasediscretizationadaptivenative.hh's
+        // "Unrecoverable in-place grid adaptation" wrapper) -- the fix has to
+        // be a correct PRE-commit estimate, not a post-hoc check.
         std::vector<char> selected(currentLeaves, 0);
+        std::vector<char> closureForced(currentLeaves, 0);
         double retainedEnergy = 0.0;
         std::size_t selectedCount = 0;
-        for (const auto& [energy, idx] : candidates) {
-            if (selectedCount >= parentBudget
-                || retainedEnergy >= theta * totalEnergy) {
+        std::size_t closureCount = 0;
+        for (const auto& [energy, idx, elem] : candidates) {
+            if (retainedEnergy >= theta * totalEnergy) {
                 break;
             }
+            std::vector<unsigned> newClosure;
+            for (const auto& intersection : intersections(gv, elem)) {
+                if (!intersection.neighbor()) {
+                    continue;
+                }
+                const auto outside = intersection.outside();
+                if (outside.level() != elem.level() - 1) {
+                    continue; // already >= elem's post-refine level, or itself
+                              // a level-0 face against a level-0 elem: no
+                              // 2:1 gap opens up on this face.
+                }
+                const unsigned nidx = mapper.index(outside);
+                if (!selected[nidx] && !closureForced[nidx]) {
+                    newClosure.push_back(nidx);
+                }
+            }
+            if (selectedCount + closureCount + 1 + newClosure.size() > parentBudget) {
+                // This candidate's own closure cost does not fit what remains
+                // of the leaf budget -- skip it (not break: a lower-energy,
+                // cheaper-closure candidate further down the sorted list may
+                // still fit, and skipping costs nothing since candidates are
+                // energy-sorted, not budget-sorted).
+                continue;
+            }
             selected[idx] = 1;
-            retainedEnergy += energy;
             ++selectedCount;
+            for (const unsigned nidx : newClosure) {
+                closureForced[nidx] = 1;
+            }
+            closureCount += newClosure.size();
+            retainedEnergy += energy;
         }
         if (selectedCount == 0) {
             return 0;
@@ -501,10 +551,25 @@ private:
             }
         }
         ++estimatorAdaptCount_;
+        // Reserve headroom for closure on the NEXT event too: this event may
+        // itself have left some already-marked/closure-forced cells one level
+        // coarser than a still-untouched neighbor, which is fine (2:1-valid)
+        // but means a future event marking that neighbor inherits the same
+        // closure accounting this event just did for its own candidates --
+        // already handled there, nothing further to reserve here.
         lastEstimatorLeafBudget_ = maxLeaves;
-        const bool budgetLimited =
-            selectedCount >= parentBudget
-            && retainedEnergy < theta * totalEnergy;
+        // Closure cost varies per candidate (see the selection loop above), so
+        // "budget limited" no longer means selectedCount alone hit
+        // parentBudget: it means the loop ran out of candidates whose own
+        // marked-plus-closure cost still fit, before reaching theta's energy
+        // target. (If every candidate had instead been selected, retainedEnergy
+        // would equal totalEnergy >= theta*totalEnergy, so falling short here
+        // can only mean the budget check skipped candidates.)
+        const bool budgetLimited = retainedEnergy < theta * totalEnergy;
+        const std::size_t remainingSlots =
+            parentBudget > selectedCount + closureCount
+            ? parentBudget - (selectedCount + closureCount)
+            : 0;
         const unsigned adaptLimit = estimatorAdaptLimit_();
         const std::string adaptLimitLabel =
             adaptLimit == std::numeric_limits<unsigned>::max()
@@ -517,11 +582,19 @@ private:
             estimatorAdaptCount_, adaptLimitLabel, theta,
             marked, candidates.size(), 100.0 * retainedEnergy / totalEnergy,
             maxLeaves, currentLeaves));
+        if (closureCount > 0) {
+            OpmLog::info(fmt::format(
+                "[alu-hadapt] estimator event {} 2:1 closure: {} additional "
+                "leaf/leaves forced one level finer beyond the {} explicitly "
+                "marked (budgeted for, not extra)",
+                estimatorAdaptCount_, closureCount, marked));
+        }
         if (budgetLimited) {
             OpmLog::info(fmt::format(
                 "[alu-hadapt] estimator event {} budget limited: "
-                "Dorfler target not reached because only {} parent slots remain",
-                estimatorAdaptCount_, parentBudget));
+                "Dorfler target not reached because only {} parent slots "
+                "remain ({} already spent on closure)",
+                estimatorAdaptCount_, remainingSlots, closureCount));
         }
         return grid.comm().sum(marked);
     }
