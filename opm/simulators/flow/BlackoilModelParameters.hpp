@@ -128,8 +128,17 @@ struct EnableAposterioriNewtonStopping { static constexpr bool value = false; };
 // Gamma_alg * max(eta_sp,eta_time) / eta_alg^(0), with eta_alg^(0) the weighted
 // algebraic estimator of the well-eliminated residual (evaluated after
 // wellModel().linearize()). The weighted eta_alg after the solve is measured
-// and logged but NOT enforced by default. --aposteriori-alg-max-resolves>0
-// opts into an experimental one tighter re-solve. Requires
+// and, if it still exceeds 1.2*target, corrected by up to
+// --aposteriori-alg-max-resolves further guarded re-solves, each one
+// re-deriving its own reduction target from the just-measured shortfall
+// rather than repeating the first guess. See
+// AposterioriAlgMaxResolves's own comment for why this reconstructed-residual
+// correction is trustworthy: on the L40 five-spot diagnostic sweep
+// (2026-09-13, apost_lindump_*.csv, 8 Newton solves spanning the full 220-day
+// run), eta_alg(r) followed a power law C*r^p in the solver's own relative
+// residual reduction r with p in [0.968,0.986] and R^2>0.998 in every case --
+// i.e. very close to the linear model this formula already assumes, with
+// <=1.5x error at the single first-solve measurement. Requires
 // --enable-aposteriori-estimators.
 struct EnableAposterioriLinearTolerance { static constexpr bool value = false; };
 
@@ -218,10 +227,29 @@ template<class Scalar>
 struct AposterioriGammaAlg { static constexpr Scalar value = 0.1; };
 
 // How many tighter linear re-solves --enable-aposteriori-linear-tolerance may
-// do when the weighted eta_alg exceeds 1.2 * Gamma_alg*max(eta_sp,eta_time)
-// after the first solve. If it still fails, the increment is kept but
-// estimator-based Newton acceptance is disabled for that iteration. 1 =
-// at most one guarded re-solve; 0 (default) = never re-solve.
+// do when the weighted eta_alg exceeds 1.2 * Gamma_alg*max(eta_sp,eta_time).
+// Each re-solve re-measures eta_alg and, if still short, derives the NEXT
+// reduction target from that fresh measurement (same formula as the first
+// guess, not a repeat of it), stopping as soon as the target is met or the
+// budget is exhausted. If the budget runs out first, the increment is kept
+// but estimator-based Newton acceptance is disabled for that iteration --
+// this loop only ever spends extra Krylov work to try to earn that
+// acceptance, it never blocks or degrades the underlying Newton step.
+// 0 (default) = never re-solve (bare one-shot forcing term only); the
+// resolve loop and the estimator-Newton-acceptance gate it feeds
+// (aposteriori_alg_unmet_) are both dormant. CAUTION (2026-09-13): enabling
+// this (value=2) on the L40 five-spot Newton+time+Gamma_alg configuration
+// caused a severe regression -- repeated timestep chops, Newton iteration
+// counts 40-70x higher than with resolves disabled. Isolated to this exact
+// combination (resolves>0 AND --enable-aposteriori-newton-stopping); the
+// constructor forcibly resets max-resolves to 0 whenever both are set, with
+// a warning. NOTE: this isolation predates the 2026-09-13 fix to eta_alg's
+// residual lifecycle (the RHS used to be re-read from the linearizer after
+// solveJacobianSystem() had already used/mutated it as workspace, instead of
+// being snapshotted immediately before the solve) -- the resolve loop's own
+// eta_alg measurements were subject to that same bug, so the regression
+// should be re-characterized against the corrected residual before assuming
+// the mechanism described at the constructor guard is still the full story.
 struct AposterioriAlgMaxResolves { static constexpr int value = 0; };
 
 // Material-balance tolerance for the a posteriori Criteria_newton gate. The
