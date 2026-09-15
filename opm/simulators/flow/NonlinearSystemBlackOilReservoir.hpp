@@ -356,6 +356,10 @@ private:
     //! eta_sp_T1+T3, eta_time, eta_lin_CNVproxy, eta_lin_weighted,
     //! eta_alg, eta_eq)
     std::vector<std::array<Scalar, 8>> aposteriori_rows_;
+    //! eta_alg of the immutable, post-Schur right-hand side immediately
+    //! before each linear solve. Kept separately from eta_alg in
+    //! aposteriori_rows_, which is the reconstructed post-solve residual.
+    std::vector<Scalar> aposteriori_alg_rhs_;
     //! max-over-components mass-balance residual from the last convergence
     //! check (getReservoirConvergence), fed into the Criteria_newton diagnostic
     //! -- previously hardcoded to 0.0, which made the "non-negotiable" MB

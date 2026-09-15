@@ -366,9 +366,16 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::AposterioriAlgMaxResolves>
         ("Tighter linear re-solves --enable-aposteriori-linear-tolerance may "
          "perform when the measured weighted eta_alg exceeds 1.2 * "
-         "Gamma_alg*max(eta_sp,eta_time). If it still fails, the increment is "
-         "kept but estimator-based Newton acceptance is disabled that iteration. "
-         "1 = one guarded re-solve; 0 (default) = gate Newton acceptance only.");
+         "Gamma_alg*max(eta_sp,eta_time); each re-solve re-derives its target "
+         "from the freshly measured shortfall and the loop stops as soon as "
+         "the target is met. If the budget runs out first, the increment is "
+         "kept but estimator-based Newton acceptance is disabled that "
+         "iteration. 0 (default) = gate Newton acceptance only, never "
+         "re-solve. CAUTION: a nonzero value combined with "
+         "--enable-aposteriori-newton-stopping is forcibly reset to 0 at "
+         "startup -- see the constructor warning -- because that exact "
+         "combination caused severe Newton instability (diagnosed "
+         "2026-09-13).");
     Parameters::Register<Parameters::AposterioriTolMb<Scalar>>
         ("Material-balance tolerance for the a posteriori Criteria_newton "
          "gate. <=0 (default) means use the simulator's own --tolerance-mb, "
