@@ -163,6 +163,23 @@ struct AposterioriRigorousLin { static constexpr bool value = true; };
 // own c_KK^{-1/2} scalar formula either way.
 struct AposterioriCheapNorms { static constexpr bool value = false; };
 
+// Ablation switch: drop the c_KK (smallest eigenvalue of K|_K) weight from
+// the Neumann-restoring zeroth-order term of the equilibration indicator
+// eta_eq,K (eq. eps_norm in the paper), i.e. evaluate it as if c_KK=1 on
+// every cell instead of the local permeability. Default false = paper
+// formula (both terms of the augmented norm carry units of permeability,
+// giving K-robustness on a high-contrast deck). True is provided only to
+// see empirically how much that weighting matters on such a deck; it is
+// not expected to be reliable on strongly heterogeneous permeability.
+struct AposterioriDisableCkkWeight { static constexpr bool value = false; };
+
+// Experimental Neumann quotient-space treatment for the spatial estimator.
+// eta_eq remains computed and reported, but is not added to eta_sp or the
+// per-cell/component fields used for mesh marking. The global constant mode
+// remains guarded by OPM's material-balance test. Default false preserves the
+// paper implementation until reference-effectivity tests justify a change.
+struct AposterioriSeparateNeumannMean { static constexpr bool value = false; };
+
 // Skip the (expensive) per-iteration estimator evaluation -- compute() and
 // recordLinearizationDefect() -- on Newton iterations before this one. The
 // early iterates are never a Criteria_newton accept candidate (the plateau
@@ -521,6 +538,14 @@ public:
 
     /// Evaluate all *,K energy norms cheaply (diagonal K, no stability term)
     bool aposteriori_cheap_norms_;
+
+    /// Ablation: eta_eq,K's Neumann-restoring term uses c_KK=1 instead of
+    /// the local permeability's smallest eigenvalue
+    bool aposteriori_disable_ckk_weight_;
+
+    /// Experimental H1/R spatial norm: report eta_eq separately and use the
+    /// tensor Darcy estimator alone for spatial marking
+    bool aposteriori_separate_neumann_mean_;
 
     /// Skip per-iteration estimator evaluation before this Newton iteration
     int aposteriori_first_eval_iter_;

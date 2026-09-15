@@ -112,6 +112,23 @@ public:
         // a uniform deck but ~18% off on a heterogeneous one (found via SPE9).
         this->setLookUpCartesianIndexMapper(
             &this->simulator().vanguard().cartesianIndexMapper());
+        // The CartesianIndexMapper above returns the RAW, uncompacted
+        // Cartesian index; field-property vectors are active-compacted
+        // whenever the deck has inactive cells (e.g. PORO == 0), so this
+        // translator is required too -- see
+        // LookUpData::setCartesianToActiveIndex()'s doc. Without it, a
+        // refined child whose level-0 ancestor's Cartesian index lies past
+        // the active-cell count reads past the end of the field-property
+        // vector: silent garbage (found via SPE10 Model 2 layer 85, which
+        // is the first deck this project ran ALUGrid h-adaptivity on that
+        // has any inactive cells). EclipseGrid::activeIndex() is the
+        // identity when the deck has no inactive cells, so this is safe to
+        // install unconditionally.
+        const auto& inputGrid = this->simulator().vanguard().eclState().getInputGrid();
+        this->setLookUpCartesianToActiveIndex(
+            [&inputGrid](int cart) {
+                return static_cast<int>(inputGrid.activeIndex(static_cast<std::size_t>(cart)));
+            });
 
         const auto& dims = this->simulator().vanguard()
             .cartesianIndexMapper().cartesianDimensions();
