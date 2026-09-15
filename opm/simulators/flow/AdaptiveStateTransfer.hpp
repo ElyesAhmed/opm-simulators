@@ -357,6 +357,7 @@ verifyPerParentConservation(
     if (nMissing || nExtra) ok = false;
 
     int nBad = 0, nChecked = 0, nNonFinite = 0;
+    std::vector<std::string> invalidDetails;
     std::array<double, 4> worstRel{0, 0, 0, 0}, worstAbs{0, 0, 0, 0};
     std::array<double, 4> sumSigned{0, 0, 0, 0}, sumAbs{0, 0, 0, 0};
     std::array<std::int64_t, 4> worstRelKey{-1, -1, -1, -1};
@@ -369,7 +370,15 @@ verifyPerParentConservation(
         bool bad = false;
         for (int c = 0; c < 4; ++c) {
             if (!std::isfinite(a[c]) || !std::isfinite(b[c])
-                || a[c] < -1e-12 || b[c] < -1e-12) { ++nNonFinite; bad = true; continue; }
+                || a[c] < -1e-12 || b[c] < -1e-12) {
+                ++nNonFinite;
+                bad = true;
+                if (invalidDetails.size() < 8)
+                    invalidDetails.push_back(fmt::format(
+                        "  invalid {} @cart {}: before={:.17g}, after={:.17g}",
+                        nm[c], key, b[c], a[c]));
+                continue;
+            }
             const double d = a[c] - b[c];
             const double s = std::max(std::abs(a[c]), std::abs(b[c]));
             const double rel = s > 0.0 ? std::abs(d) / s : 0.0;
@@ -392,6 +401,8 @@ verifyPerParentConservation(
             "signed-sum {:+.3e}  abs-sum {:.3e}",
             nm[c], worstRel[c], worstRelKey[c], worstRelScale[c],
             worstAbs[c], sumSigned[c], sumAbs[c]);
+    for (const auto& detail : invalidDetails)
+        msg += "\n" + detail;
 
     ok = ok && (nBad == 0) && (nNonFinite == 0);
     if (ok) OpmLog::info(msg);
