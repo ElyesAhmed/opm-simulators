@@ -54,6 +54,16 @@ BOOST_AUTO_TEST_CASE(EquilibrationIndicatorHasExpectedScaling)
         0.0, 4.0, 0.25, 9.0, 3.0, 5.0, 16.0), tol);
 }
 
+BOOST_AUTO_TEST_CASE(NeumannMeanPolicySeparatesCompatibilityDefect)
+{
+    constexpr double darcy = 5.0;
+    constexpr double equilibration = 2.0;
+    BOOST_CHECK_EQUAL(
+        spatialIndicatorWithMeanPolicy(darcy, equilibration, false), 7.0);
+    BOOST_CHECK_EQUAL(
+        spatialIndicatorWithMeanPolicy(darcy, equilibration, true), darcy);
+}
+
 // ---------------------------------------------------------------------------
 //  Least-squares gradient
 // ---------------------------------------------------------------------------

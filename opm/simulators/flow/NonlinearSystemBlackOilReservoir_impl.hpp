@@ -137,6 +137,8 @@ NonlinearSystemBlackOilReservoir(Simulator& simulator,
         aposteriori_estimator_->setWeightExponent(this->param_.aposteriori_weight_exponent_);
         aposteriori_estimator_->setEpsilon(this->param_.aposteriori_epsilon_);
         aposteriori_estimator_->setCheapNorms(this->param_.aposteriori_cheap_norms_);
+        aposteriori_estimator_->setDisableCkkWeight(this->param_.aposteriori_disable_ckk_weight_);
+        aposteriori_estimator_->setSeparateNeumannMean(this->param_.aposteriori_separate_neumann_mean_);
         aposteriori_estimator_->setUseLiftedRelperm(this->param_.aposteriori_use_lifted_relperm_);
         aposteriori_estimator_->setUseBubbleCorrection(this->param_.aposteriori_use_bubble_correction_);
         aposteriori_estimator_->setPressureReconstruction(
@@ -377,6 +379,7 @@ initialLinearization(SimulatorReportSingle& report,
             // loosened. (Copilot's earlier "MB=1" experiment did exactly this
             // loosening; see AposterioriTolMb's doc comment for the tradeoff.)
             const bool mbOverrideAllowed =
+                !this->param_.aposteriori_separate_neumann_mean_ &&
                 this->param_.aposteriori_tol_mb_ > this->param_.tolerance_mb_;
             const auto& failures = convrep.reservoirFailures();
             const bool onlyCnvFailures = !failures.empty() &&
@@ -883,10 +886,13 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
                               k + 1, r[0], r[7], r[1], r[2], r[3], r[4], r[5], etaAlgRhs, r[6],
                               100.0 * dSp, 100.0 * dTm);
         }
+        const char* etaSpComposition = this->param_.aposteriori_separate_neumann_mean_
+            ? "  eta_sp(total) is the mimetic Darcy defect; eta_eq is reported separately (H1/R mode);\n"
+            : "  eta_sp(total) is the local sum of the mimetic Darcy defect and eta_eq;\n";
         os << fmt::format("  ----------------------------------------------------------------------------------------------\n"
                           "  eta_sp(total) / eta_time should plateau while eta_lin(wtd) falls "
                           "=> spatial/temporal error is split out.  (ratio eta_time/eta_sp(mim) = {:.3f})\n"
-                          "  eta_sp(total) is the local sum of the mimetic Darcy defect and eta_eq;\n"
+                          "{}"
                           "  eta_eq is the unsigned componentwise FV balance residual in the weighted\n"
                           "  Neumann dual norm (OPM's global signed MB remains a separate safeguard).\n"
                           "  The Darcy part is the flux-energy replacement for T1+T3 (eq. 3.13,\n"
@@ -898,7 +904,7 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
                           "  eta_lin(CNV) is a familiar but dimensionally-inconsistent reference only; "
                           "eta_lin(wtd) combines geometric-face flux, storage, and reduced-balance\n"
                           "  well/NNC source Taylor defects.",
-                          haveT ? ratio : 0.0);
+                          haveT ? ratio : 0.0, etaSpComposition);
         OpmLog::info(os.str());
     }
 }

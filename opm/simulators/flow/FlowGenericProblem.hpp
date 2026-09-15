@@ -398,6 +398,15 @@ public:
     void setLookUpCartesianIndexMapper(const Dune::CartesianIndexMapper<Grid>* cartMapper)
     { lookUpData_.setCartesianIndexMapper(cartMapper); }
 
+    //! Give the field-property lookup a Cartesian-index -> active-index
+    //! translator -- needed alongside setLookUpCartesianIndexMapper() on a
+    //! GENERAL (non-CpGrid) locally adapted grid whose deck has inactive
+    //! cells (e.g. PORO == 0); see LookUpData::setCartesianToActiveIndex()'s
+    //! doc. No-op if never called (safe: only decks with inactive cells
+    //! need it).
+    void setLookUpCartesianToActiveIndex(std::function<int(int)> cartesianToActive)
+    { lookUpData_.setCartesianToActiveIndex(std::move(cartesianToActive)); }
+
     //! Rebuild the field-property lookup's own element mapper after a
     //! grid.adapt() -- see LookUpData::refreshElementMapper()'s doc. Must be
     //! called before any other post-adapt LookUpData-backed query (i.e.

@@ -84,6 +84,8 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     enable_aposteriori_linear_tolerance_ = Parameters::Get<Parameters::EnableAposterioriLinearTolerance>();
     aposteriori_rigorous_lin_ = Parameters::Get<Parameters::AposterioriRigorousLin>();
     aposteriori_cheap_norms_ = Parameters::Get<Parameters::AposterioriCheapNorms>();
+    aposteriori_disable_ckk_weight_ = Parameters::Get<Parameters::AposterioriDisableCkkWeight>();
+    aposteriori_separate_neumann_mean_ = Parameters::Get<Parameters::AposterioriSeparateNeumannMean>();
     aposteriori_first_eval_iter_ = Parameters::Get<Parameters::AposterioriFirstEvalIter>();
     enable_aposteriori_timestep_control_ = Parameters::Get<Parameters::EnableAposterioriTimestepControl>();
     aposteriori_gamma_time_ = Parameters::Get<Parameters::AposterioriGammaTime<Scalar>>();
@@ -312,6 +314,23 @@ void BlackoilModelParameters<Scalar>::registerParameters()
          "form. Default false (full rigour, all terms on the same footing). "
          "Provided so both can be tested. eta_lin's accumulation-defect "
          "term uses the paper's c_KK^{-1/2} formula either way.");
+    Parameters::Register<Parameters::AposterioriDisableCkkWeight>
+        ("Ablation: evaluate the equilibration indicator eta_eq,K's "
+         "Neumann-restoring zeroth-order term with c_KK=1 instead of the "
+         "local permeability tensor's smallest eigenvalue on that cell, "
+         "i.e. drop the weighting that keeps the augmented energy norm's "
+         "two terms dimensionally consistent under a heterogeneous "
+         "permeability field. Default false (paper formula, K-robust). "
+         "True is for comparing against the unweighted form on a "
+         "high-permeability-contrast deck; not expected to be reliable "
+         "there.");
+    Parameters::Register<Parameters::AposterioriSeparateNeumannMean>
+        ("Experimental Neumann quotient-space spatial norm: compute and "
+         "report the local equilibration defect eta_eq, but do not add it "
+         "to eta_sp or the per-cell fields used for mesh marking. Spatial "
+         "adaptation then uses the full-tensor MVEM Darcy defect, while "
+         "OPM's global material-balance check guards the constant mode. "
+         "Default false; intended for controlled effectivity experiments.");
     Parameters::Register<Parameters::AposterioriFirstEvalIter>
         ("Skip the per-iteration a posteriori estimator evaluation "
          "(compute() and the rigorous eta_lin Jacobian capture) on Newton "

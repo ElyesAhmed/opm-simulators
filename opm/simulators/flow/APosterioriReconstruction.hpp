@@ -45,6 +45,22 @@
 
 namespace Opm::APosteriori {
 
+/*! \brief Combine the Darcy defect with the local Neumann mean defect.
+ *
+ * The default reproduces the paper estimator. In the experimental H1/R
+ * policy, the local mean defect is reported separately and the spatial norm
+ * contains the Darcy defect only; the global constant mode is guarded by the
+ * simulator's material-balance test.
+ */
+template<class Scalar>
+constexpr Scalar
+spatialIndicatorWithMeanPolicy(Scalar darcy,
+                               Scalar equilibration,
+                               bool separateNeumannMean)
+{
+    return darcy + (separateNeumannMean ? Scalar{0} : equilibration);
+}
+
 /*!
  * \brief Weighted local equilibration indicator from an integrated balance residual.
  *

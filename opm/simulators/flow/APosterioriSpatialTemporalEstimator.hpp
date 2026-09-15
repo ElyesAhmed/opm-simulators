@@ -329,6 +329,18 @@ public:
     //! energy norm -- no mimetic upgrade applies).
     void setCheapNorms(bool on) { cheapNorms_ = on; mvemMtotCache_.clear(); mvemCacheBuilt_ = false; }
 
+    //! Ablation: make equilibrationIndicator() calls use c_KK=1 instead of
+    //! the local permeability tensor's smallest eigenvalue, i.e. drop the
+    //! weight that keeps eta_eq,K's augmented norm dimensionally consistent
+    //! under a heterogeneous K (eq. eps_norm in the paper). Default false.
+    void setDisableCkkWeight(bool on) { disableCkkWeight_ = on; }
+
+    //! Experimental H1/R treatment: retain eta_eq as a separately reported
+    //! compatibility diagnostic, but keep it out of the spatial norm and the
+    //! per-cell/component marking fields. OPM's global MB test remains the
+    //! constant-mode acceptance gate.
+    void setSeparateNeumannMean(bool on) { separateNeumannMean_ = on; }
+
     //! Compressed indices of the cells carrying a well connection; used to bound
     //! the near-well weight d_Lambda(x_K) <= D_K by  dist(x_K, wells) + h_K.
     //! Must be sorted ascending.
@@ -658,18 +670,21 @@ public:
             const auto& iq = model.intensiveQuantities(i, /*timeIdx=*/0);
             const auto rhoRef =
                 componentRefDensities_(watPh, oilPh, gasPh, iq.pvtRegionIndex());
+            const Scalar cKKeff = disableCkkWeight_ ? Scalar{1} : g.cKK;
             Scalar cellEq2 = 0;
             for (unsigned c = 0; c < numComponents; ++c) {
                 const Scalar residual =
                     rhoRef[c] * getValue(nonlinearResidual[i][conti0EqIdx + c]);
                 const Scalar etaEq = APosteriori::equilibrationIndicator(
-                    residual, dt, epsilon_, g.cKK, g.hK, g.weightPow, g.volume);
+                    residual, dt, epsilon_, cKKeff, g.hK, g.weightPow, g.volume);
                 cellEq2 += etaEq * etaEq;
-                cellSpatialEtaByComponent_[i][c] += etaEq;
+                if (!separateNeumannMean_)
+                    cellSpatialEtaByComponent_[i][c] += etaEq;
             }
             const Scalar cellEq = std::sqrt(std::max(cellEq2, Scalar{0}));
-            const Scalar cellCombined =
-                static_cast<Scalar>(cellEta_[i][0]) + cellEq;
+            cellEquilibrationEta_[i] = cellEq;
+            const Scalar cellCombined = APosteriori::spatialIndicatorWithMeanPolicy(
+                static_cast<Scalar>(cellEta_[i][0]), cellEq, separateNeumannMean_);
             cellEta_[i][0] = cellCombined;
             sumEq2 += cellEq2;
             sumCombined2 += cellCombined * cellCombined;
@@ -759,6 +774,7 @@ public:
             const auto& iq = model.intensiveQuantities(i, /*timeIdx=*/0);
             const auto rhoRef =
                 componentRefDensities_(watPh, oilPh, gasPh, iq.pvtRegionIndex());
+            const Scalar cKKeff = disableCkkWeight_ ? Scalar{1} : g.cKK;
             Scalar cellSource2 = 0;
             for (unsigned c = 0; c < numComponents; ++c) {
                 const Scalar residualNew =
@@ -769,7 +785,7 @@ public:
                     linAccumRateDef_[i][c], linGeomThetaSum_[i][c],
                     residualNew, residualLin);
                 const Scalar etaSource = APosteriori::equilibrationIndicator(
-                    sourceDefect, tau, epsilon_, g.cKK, g.hK, g.weightPow, g.volume);
+                    sourceDefect, tau, epsilon_, cKKeff, g.hK, g.weightPow, g.volume);
                 cellSource2 += etaSource * etaSource;
             }
             const Scalar cellSource = std::sqrt(std::max(cellSource2, Scalar{0}));
@@ -793,13 +809,19 @@ public:
     //! columns cell, x, y, z, eta_sp(mim), eta_time, eta_lin, eta_alg,
     //! h_K, D_K, weightPow (D_K^{l/2}) -- the last three expose the near-well
     //! weight field so the default d_Lambda+h_K bound and OPM_APOST_WEIGHT_MINMAX
-    //! can be compared directly.
+    //! can be compared directly. eta_sp_water/oil/gas are the per-component
+    //! (not combined) spatial estimator, cellSpatialEtaByComponent_[i][c] --
+    //! same construction as the combined eta_sp, just split by phase instead
+    //! of root-sum-squared together; -1 for an inactive phase. In experimental
+    //! H1/R mode these columns and eta_sp contain only the Darcy term, while
+    //! eta_eq remains available in its own column.
     void dumpCellEstimators(const std::string& path) const
     {
         std::ofstream os(path);
         if (!os) return;
-        os << "cell,x,y,z,eta_sp,eta_time,eta_lin,eta_alg,h_K,D_K,weightPow,"
-              "sw,so,sg,p_oil,permx,permz\n";
+        os << "cell,x,y,z,eta_sp,eta_eq,eta_time,eta_lin,eta_alg,h_K,D_K,weightPow,"
+              "sw,so,sg,p_oil,permx,permz,"
+              "eta_sp_water,eta_sp_oil,eta_sp_gas\n";
         auto& model = simulator_.model();
         const int watPh = FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)
             ? FluidSystem::waterPhaseIdx : -1;
@@ -807,13 +829,25 @@ public:
             ? FluidSystem::oilPhaseIdx : -1;
         const int gasPh = FluidSystem::phaseIsActive(FluidSystem::gasPhaseIdx)
             ? FluidSystem::gasPhaseIdx : -1;
+        const int watComp = watPh >= 0 ? static_cast<int>(
+            FluidSystem::canonicalToActiveCompIdx(
+                FluidSystem::solventComponentIndex(watPh))) : -1;
+        const int oilComp = oilPh >= 0 ? static_cast<int>(
+            FluidSystem::canonicalToActiveCompIdx(
+                FluidSystem::solventComponentIndex(oilPh))) : -1;
+        const int gasComp = gasPh >= 0 ? static_cast<int>(
+            FluidSystem::canonicalToActiveCompIdx(
+                FluidSystem::solventComponentIndex(gasPh))) : -1;
         const std::size_t n = std::min(cellEta_.size(), geom_.size());
+        const bool haveByComponent = cellSpatialEtaByComponent_.size() == geom_.size();
         for (std::size_t i = 0; i < n; ++i) {
             const auto& g = geom_[i];
             os << i;
             for (int d = 0; d < 3; ++d)
                 os << ',' << (d < dim ? g.center[std::min(d, dim - 1)] : Scalar{0});
-            os << ',' << cellEta_[i][0] << ',' << cellEta_[i][1] << ','
+            os << ',' << cellEta_[i][0] << ','
+               << (i < cellEquilibrationEta_.size() ? cellEquilibrationEta_[i] : 0.0)
+               << ',' << cellEta_[i][1] << ','
                << cellEta_[i][2] << ',' << cellEta_[i][3]
                << ',' << g.hK << ',' << g.DK << ',' << g.weightPow;
             Scalar sw = 0, so = 0, sg = 0, po = 0;
@@ -826,8 +860,14 @@ public:
                 else if (watPh >= 0) po = getValue(fs.pressure(watPh));
             }
             os << ',' << sw << ',' << so << ',' << sg << ',' << po
-               << ',' << g.permDiag[0] << ',' << (dim > 2 ? g.permDiag[2] : g.permDiag[0])
-               << '\n';
+               << ',' << g.permDiag[0] << ',' << (dim > 2 ? g.permDiag[2] : g.permDiag[0]);
+            const Scalar etaW = (haveByComponent && watComp >= 0)
+                ? cellSpatialEtaByComponent_[i][watComp] : Scalar{-1};
+            const Scalar etaO = (haveByComponent && oilComp >= 0)
+                ? cellSpatialEtaByComponent_[i][oilComp] : Scalar{-1};
+            const Scalar etaG = (haveByComponent && gasComp >= 0)
+                ? cellSpatialEtaByComponent_[i][gasComp] : Scalar{-1};
+            os << ',' << etaW << ',' << etaO << ',' << etaG << '\n';
         }
     }
 
@@ -1452,6 +1492,7 @@ public:
             cellEta_.assign(nc, std::array<double, 4>{0, 0, 0, 0});
         cellSpatialEtaByComponent_.assign(
             nc, std::array<double, numComponents>{});
+        cellEquilibrationEta_.assign(nc, 0.0);
         linAccumRateDef_.assign(nc, CompFlux0{});
         linGeomThetaSum_.assign(nc, CompFlux0{});
         sourceLinearizationComplete_ = false;
@@ -2642,6 +2683,8 @@ private:
     bool haveLin_ {false};
     Scalar epsilon_ {1};  //!< Neumann-scaling parameter (eq. eps_norm); paper recommends 1
     bool cheapNorms_ {false};  //!< drop all *,K energy norms to the cheap diagonal form -- see setCheapNorms()
+    bool disableCkkWeight_ {false};  //!< eta_eq,K ablation: c_KK=1 -- see setDisableCkkWeight()
+    bool separateNeumannMean_ {false};  //!< H1/R experiment: eta_eq is diagnostic, not marking energy
 
     Scalar etaSp_   {0};
     Scalar etaSpT1_ {0};
@@ -2661,6 +2704,7 @@ private:
     //! dumpCellEstimators().
     std::vector<std::array<double, 4>> cellEta_;
     std::vector<std::array<double, numComponents>> cellSpatialEtaByComponent_;
+    std::vector<double> cellEquilibrationEta_;
     bool   etaLinRigorousLastCall_ {false};
 };
 
