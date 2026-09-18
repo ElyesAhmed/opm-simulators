@@ -274,7 +274,8 @@ public:
                                   const bool contract_d_diagonal) const
     {
         OPM_TIMEBLOCK(addWellPressureEquations);
-        wellOper_.addWellPressureEquations(jacobian, weights, use_well_weights, contract_d_diagonal);
+        wellOper_.addWellPressureEquations(
+            jacobian, weights, use_well_weights, contract_d_diagonal);
     }
 
     void addWellPressureEquationsStruct(PressureMatrix& jacobian) const
@@ -372,7 +373,8 @@ public:
                                   const bool contract_d_diagonal) const
     {
         OPM_TIMEBLOCK(addWellPressureEquations);
-        wellOper_.addWellPressureEquations(jacobian, weights, use_well_weights, contract_d_diagonal);
+        wellOper_.addWellPressureEquations(
+            jacobian, weights, use_well_weights, contract_d_diagonal);
     }
 
     void addWellPressureEquationsStruct(PressureMatrix& jacobian) const
