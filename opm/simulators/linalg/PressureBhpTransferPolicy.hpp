@@ -211,8 +211,8 @@ namespace Opm
             const auto diagonal = prm_.get<std::string>("well_coarse_diagonal", "row_sum");
             if (diagonal != "row_sum" && diagonal != "contract_d") {
                 OPM_THROW(std::invalid_argument,
-                          "Unknown well_coarse_diagonal '" + diagonal +
-                          "'. Valid values are 'row_sum' and 'contract_d'.");
+                          "Unknown well_coarse_diagonal '" + diagonal
+                              + "'. Valid values are 'row_sum' and 'contract_d'.");
             }
             const bool contract_d_diagonal = (diagonal == "contract_d");
             fineOperator.addWellPressureEquations(*coarseLevelMatrix_, weights_,

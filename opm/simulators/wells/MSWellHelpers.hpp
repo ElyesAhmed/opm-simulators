@@ -25,8 +25,8 @@
 
 #include <dune/istl/matrix.hh>
 
-#include <cmath>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 
 namespace Dune {
