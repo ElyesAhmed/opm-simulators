@@ -180,6 +180,27 @@ struct AposterioriDisableCkkWeight { static constexpr bool value = false; };
 // paper implementation until reference-effectivity tests justify a change.
 struct AposterioriSeparateNeumannMean { static constexpr bool value = false; };
 
+// Relative diagonal regularisation for the component mobility matrix induced
+// by Appendix A.4: L = C diag(lambda_beta) C^T. The added diagonal is this
+// fraction times max(lambda_beta) times the squared norm of that component's
+// row of C. This preserves the norm under consistent component-unit scaling.
+// It handles phase disappearance and a nearly singular oil/gas mixing matrix
+// but is not part of the guaranteed K^{-1} residual estimator.
+template<class Scalar>
+struct AposterioriMobilityFloorFraction { static constexpr Scalar value = 1e-12; };
+
+// Experimental coupled black-oil energy. Instead of measuring each conserved
+// mass-component defect independently in K^{-1}, use the mobility induced by
+// u=Cv: (C diag(lambda_beta) C^T tensor K)^{-1}. This includes b, Rs and Rv
+// and operates on the actual component defect. It is an effectivity experiment,
+// not part of the current component-residual reliability result.
+struct AposterioriMobilityEnergyNorm { static constexpr bool value = false; };
+
+// Use the complete spatial estimator (Darcy plus local equilibration defect)
+// as the stopping/control budget. False keeps the Darcy-only budget, which
+// avoids letting the current nonlinear residual enlarge its own tolerance.
+struct AposterioriUseTotalSpatialBudget { static constexpr bool value = false; };
+
 // Skip the (expensive) per-iteration estimator evaluation -- compute() and
 // recordLinearizationDefect() -- on Newton iterations before this one. The
 // early iterates are never a Criteria_newton accept candidate (the plateau
@@ -212,62 +233,52 @@ template<class Scalar>
 struct AposterioriWeightExponent { static constexpr Scalar value = 0.0; };
 
 // Evaluate lambda_beta(s_hat) at the lifted vertex-patch saturation via the
-// real MaterialLaw, instead of the FV cell mobility (see rem:est in the paper
-// -- this is what makes u_alpha mimic -lambda(s) K grad(p) consistently).
-struct AposterioriUseLiftedRelperm { static constexpr bool value = true; };
+// real MaterialLaw instead of the FV cell mobility. Off by operational
+// default because patch averaging can smear sharp fronts.
+struct AposterioriUseLiftedRelperm { static constexpr bool value = false; };
 
 // Point-value bubble correction of the lifted saturation/pressure to the FV
 // cell mean (eq. eq:averaging_bubble, point-value form only).
 struct AposterioriUseBubbleCorrection { static constexpr bool value = true; };
 
 // Use the transmissibility-weighted least-squares fit of the raw connection
-// pressure drops for grad p_hat instead of the default vertex patch-average
-// (H1) lift -- for comparing the two reconstructions.
-struct AposterioriUseConnectionLSGradient { static constexpr bool value = false; };
+// pressure drops for grad p_hat. This is the operational default because it
+// produced decreasing estimates under refinement on both five-spot and SPE10
+// layer 85. Set false to recover the paper's vertex patch-average H1 lift.
+struct AposterioriUseConnectionLSGradient { static constexpr bool value = true; };
 
 // Build the H1 pressure lift by first reconstructing a Darcy-flux-consistent
 // pressure gradient in every cell, Taylor-extrapolating the cell pressure to
 // its vertices, and averaging the extrapolated values over each vertex patch.
 // When false, the default H1 lift averages the raw cell pressures at vertices.
-// Ignored when AposterioriUseConnectionLSGradient is true.
+// Takes precedence over AposterioriUseConnectionLSGradient when enabled.
 struct AposterioriUseFluxTaylorPressure { static constexpr bool value = false; };
 
 // The admissible relative linearization error Gamma_lin in (0,1] (eq.
 // Criteria_newton): eta_lin <= Gamma_lin * max(eta_sp, eta_time).
 template<class Scalar>
-struct AposterioriGammaLin { static constexpr Scalar value = 0.1; };
+struct AposterioriGammaLin { static constexpr Scalar value = 0.01; };
+
+// Maximum relative change of eta_sp and eta_time between successive Newton
+// iterates before Criteria_newton may accept. Set to zero to apply the bare
+// estimator criterion without the empirical plateau guard.
+template<class Scalar>
+struct AposterioriNewtonPlateauTolerance { static constexpr Scalar value = 0.0; };
 
 // The admissible relative algebraic error Gamma_alg in (0,1] (eq.
 // Criteria_alg): used by --enable-aposteriori-linear-tolerance as the
 // linear-solve forcing term Gamma_alg * max(eta_sp,eta_time) / eta_alg^(0).
 template<class Scalar>
-struct AposterioriGammaAlg { static constexpr Scalar value = 0.1; };
+struct AposterioriGammaAlg { static constexpr Scalar value = 0.01; };
 
-// How many tighter linear re-solves --enable-aposteriori-linear-tolerance may
-// do when the weighted eta_alg exceeds 1.2 * Gamma_alg*max(eta_sp,eta_time).
-// Each re-solve re-measures eta_alg and, if still short, derives the NEXT
-// reduction target from that fresh measurement (same formula as the first
-// guess, not a repeat of it), stopping as soon as the target is met or the
-// budget is exhausted. If the budget runs out first, the increment is kept
-// but estimator-based Newton acceptance is disabled for that iteration --
-// this loop only ever spends extra Krylov work to try to earn that
-// acceptance, it never blocks or degrades the underlying Newton step.
-// 0 (default) = never re-solve (bare one-shot forcing term only); the
-// resolve loop and the estimator-Newton-acceptance gate it feeds
-// (aposteriori_alg_unmet_) are both dormant. CAUTION (2026-09-13): enabling
-// this (value=2) on the L40 five-spot Newton+time+Gamma_alg configuration
-// caused a severe regression -- repeated timestep chops, Newton iteration
-// counts 40-70x higher than with resolves disabled. Isolated to this exact
-// combination (resolves>0 AND --enable-aposteriori-newton-stopping); the
-// constructor forcibly resets max-resolves to 0 whenever both are set, with
-// a warning. NOTE: this isolation predates the 2026-09-13 fix to eta_alg's
-// residual lifecycle (the RHS used to be re-read from the linearizer after
-// solveJacobianSystem() had already used/mutated it as workspace, instead of
-// being snapshotted immediately before the solve) -- the resolve loop's own
-// eta_alg measurements were subject to that same bug, so the regression
-// should be re-characterized against the corrected residual before assuming
-// the mechanism described at the constructor guard is still the full story.
-struct AposterioriAlgMaxResolves { static constexpr int value = 0; };
+// How many full-increment correction solves endpoint-verified Criteria_alg may
+// perform. A correction recomputes the full increment from zero and tightens
+// the preceding request by 0.5*target/eta_alg. If the target remains unmet,
+// estimator Newton acceptance
+// is disabled for that iteration and the next Newton solve is latched to the
+// configured strict reduction. 0 keeps prediction-only mode; 1 enables the
+// endpoint-verified controller.
+struct AposterioriAlgMaxResolves { static constexpr int value = 2; };
 
 // Material-balance tolerance for the a posteriori Criteria_newton gate. The
 // paper makes MB non-negotiable, so the default (<= 0) means "use the
@@ -285,6 +296,16 @@ struct AposterioriTolMb { static constexpr Scalar value = -1.0; };
 // nonlinear-accumulation-defect term of eta_lin. Paper recommendation: 1.
 template<class Scalar>
 struct AposterioriEpsilon { static constexpr Scalar value = 1.0; };
+
+// mvemFluxMassMatrix's stability-term floor: D_K[f] = max(consistency part,
+// this * trace(M^c)/nf). Was hardcoded to 1e-2 with no override; exposed here
+// to test whether the MVEM stability term M^s's failure to shrink under
+// h-refinement (confirmed empirically on SPE3: rigorous eta_sp grows under
+// refinement while the M^s-free cheap/T1-only norm shrinks correctly) is
+// sensitive to this floor. Mimetic theory (Lemma 3.7) only guarantees
+// spectral equivalence at this floor, not that it vanishes with h.
+template<class Scalar>
+struct AposterioriMvemStabilityEpsilon { static constexpr Scalar value = 1e-2; };
 
 // Maximum per-rescale growth/shrink factor applied to the suggested next dt
 // (eq. Criteria_space_time_balance). Only reached when
@@ -547,6 +568,18 @@ public:
     /// tensor Darcy estimator alone for spatial marking
     bool aposteriori_separate_neumann_mean_;
 
+    /// Experimental coupled black-oil component-mobility energy for eta_sp
+    bool aposteriori_mobility_energy_norm_;
+
+    /// Use eta_sp,total instead of eta_sp,D as the control budget
+    bool aposteriori_use_total_spatial_budget_;
+
+    /// Relative diagonal regularisation for the induced mobility matrix
+    Scalar aposteriori_mobility_floor_fraction_;
+
+    /// mvemFluxMassMatrix's stability-term floor fraction (was hardcoded 1e-2)
+    Scalar aposteriori_mvem_stability_epsilon_;
+
     /// Skip per-iteration estimator evaluation before this Newton iteration
     int aposteriori_first_eval_iter_;
 
@@ -574,6 +607,9 @@ public:
 
     /// Admissible relative linearization error Gamma_lin
     Scalar aposteriori_gamma_lin_;
+
+    /// Relative eta_sp/eta_time plateau tolerance; zero disables the guard
+    Scalar aposteriori_newton_plateau_tolerance_;
 
     /// Admissible relative algebraic error Gamma_alg (linear-solve forcing term)
     Scalar aposteriori_gamma_alg_;

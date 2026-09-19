@@ -86,6 +86,11 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     aposteriori_cheap_norms_ = Parameters::Get<Parameters::AposterioriCheapNorms>();
     aposteriori_disable_ckk_weight_ = Parameters::Get<Parameters::AposterioriDisableCkkWeight>();
     aposteriori_separate_neumann_mean_ = Parameters::Get<Parameters::AposterioriSeparateNeumannMean>();
+    aposteriori_mobility_energy_norm_ = Parameters::Get<Parameters::AposterioriMobilityEnergyNorm>();
+    aposteriori_use_total_spatial_budget_ =
+        Parameters::Get<Parameters::AposterioriUseTotalSpatialBudget>();
+    aposteriori_mobility_floor_fraction_ = Parameters::Get<Parameters::AposterioriMobilityFloorFraction<Scalar>>();
+    aposteriori_mvem_stability_epsilon_ = Parameters::Get<Parameters::AposterioriMvemStabilityEpsilon<Scalar>>();
     aposteriori_first_eval_iter_ = Parameters::Get<Parameters::AposterioriFirstEvalIter>();
     enable_aposteriori_timestep_control_ = Parameters::Get<Parameters::EnableAposterioriTimestepControl>();
     aposteriori_gamma_time_ = Parameters::Get<Parameters::AposterioriGammaTime<Scalar>>();
@@ -96,6 +101,8 @@ BlackoilModelParameters<Scalar>::BlackoilModelParameters()
     aposteriori_use_connection_ls_gradient_ = Parameters::Get<Parameters::AposterioriUseConnectionLSGradient>();
     aposteriori_use_flux_taylor_pressure_ = Parameters::Get<Parameters::AposterioriUseFluxTaylorPressure>();
     aposteriori_gamma_lin_ = Parameters::Get<Parameters::AposterioriGammaLin<Scalar>>();
+    aposteriori_newton_plateau_tolerance_ =
+        Parameters::Get<Parameters::AposterioriNewtonPlateauTolerance<Scalar>>();
     aposteriori_gamma_alg_ = Parameters::Get<Parameters::AposterioriGammaAlg<Scalar>>();
     aposteriori_alg_max_resolves_ = Parameters::Get<Parameters::AposterioriAlgMaxResolves>();
     aposteriori_tol_mb_ = Parameters::Get<Parameters::AposterioriTolMb<Scalar>>();
@@ -331,11 +338,35 @@ void BlackoilModelParameters<Scalar>::registerParameters()
          "adaptation then uses the full-tensor MVEM Darcy defect, while "
          "OPM's global material-balance check guards the constant mode. "
          "Default false; intended for controlled effectivity experiments.");
+    Parameters::Register<Parameters::AposterioriMobilityEnergyNorm>
+        ("Experimental coupled black-oil energy for eta_sp. For the Appendix "
+         "A.4 component flux u=Cv, measure the actual mass-component defect in "
+         "(C diag(lambda_beta) C^T tensor K)^{-1}; C includes b, Rs and Rv. "
+         "A relative diagonal regularisation handles phase disappearance. "
+         "Default false preserves the proven component-residual K^{-1} metric.");
+    Parameters::Register<Parameters::AposterioriUseTotalSpatialBudget>
+        ("Use the complete componentwise spatial estimator (Darcy plus "
+         "equilibration defect) in Newton, algebraic, and time-step budgets. "
+         "Default false uses the Darcy-only budget so the current nonlinear "
+         "residual cannot relax its own stopping tolerance.");
+    Parameters::Register<Parameters::AposterioriMobilityFloorFraction<Scalar>>
+        ("Relative diagonal regularisation for the component mobility matrix "
+         "used by --aposteriori-mobility-energy-norm. Component a receives "
+         "delta_a equal to this value times max(lambda_beta) times ||C_a||^2, "
+         "which preserves component-unit scaling. Default 1e-12. This is an "
+         "experimental degeneracy control, not a universal physical constant.");
+    Parameters::Register<Parameters::AposterioriMvemStabilityEpsilon<Scalar>>
+        ("Floor fraction in the MVEM stability term M^s's per-face diagonal: "
+         "D_K[f] = max(consistency part, this * trace(M^c)/n_faces). Was "
+         "hardcoded to 1e-2 with no override. Mimetic theory (Lemma 3.7) only "
+         "guarantees M^s is spectrally equivalent to the consistency term at "
+         "this floor, not that it shrinks under h-refinement -- lowering it "
+         "is an experimental probe of that gap, not a certified fix.");
     Parameters::Register<Parameters::AposterioriFirstEvalIter>
         ("Skip the per-iteration a posteriori estimator evaluation "
          "(compute() and the rigorous eta_lin Jacobian capture) on Newton "
          "iterations before this one. The early iterates cannot be a "
-         "Criteria_newton accept anyway (plateau guard + min-iteration), so "
+         "Criteria_newton accept before the configured minimum iteration, so "
          "evaluating them only costs time. 1 (default) evaluates every "
          "iteration.");
     Parameters::Register<Parameters::EnableAposterioriTimestepControl>
@@ -360,41 +391,48 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::AposterioriUseLiftedRelperm>
         ("Evaluate lambda_beta at the lifted (H1) vertex-patch-average "
          "saturation via the real MaterialLaw, instead of the FV cell "
-         "mobility, so u_alpha mimics the continuous flux consistently.");
+         "mobility. Default false because patch averaging can smear sharp "
+         "fronts. Only used by the H1 pressure-lift reconstructions.");
     Parameters::Register<Parameters::AposterioriUseBubbleCorrection>
         ("Bubble-correct the lifted point saturation/pressure to the FV cell "
          "mean before evaluating relperm (eq. eq:averaging_bubble, "
          "point-value form).");
     Parameters::Register<Parameters::AposterioriUseConnectionLSGradient>
         ("Use a transmissibility-weighted least-squares fit of the raw "
-         "connection pressure drops for grad p_hat instead of the default "
-         "H1 vertex-patch lift (eq. eq:averaging) -- for comparison.");
+         "connection pressure drops for grad p_hat. Default true for robust "
+         "operational mesh marking; set false to recover the paper's H1 "
+         "vertex-patch lift (eq. eq:averaging).");
     Parameters::Register<Parameters::AposterioriUseFluxTaylorPressure>
         ("Build the H1 pressure lift from flux-derived cell gradients: "
          "Taylor-extrapolate each cell pressure to its vertices and average "
-         "the extrapolated values over the vertex patch. Ignored when "
-         "--aposteriori-use-connection-ls-gradient=true.");
+         "the extrapolated values over the vertex patch. Takes precedence "
+         "over --aposteriori-use-connection-ls-gradient when enabled.");
     Parameters::Register<Parameters::AposterioriGammaLin<Scalar>>
         ("Admissible relative linearization error Gamma_lin in (0,1] (eq. "
          "Criteria_newton): the a posteriori Newton stop needs "
-         "eta_lin <= Gamma_lin*max(eta_sp,eta_time).");
+         "eta_lin <= Gamma_lin*max(eta_sp,eta_time). The default 0.01 is the value "
+         "used for the matched quarter five-spot factorial; it was not "
+         "recalibrated on other models.");
+    Parameters::Register<Parameters::AposterioriNewtonPlateauTolerance<Scalar>>
+        ("Maximum relative change of both eta_sp and eta_time between "
+         "successive evaluated Newton iterates before Criteria_newton may "
+         "accept. The default zero disables this empirical guard and applies "
+         "the bare estimator criterion; positive values enable the guard.");
     Parameters::Register<Parameters::AposterioriGammaAlg<Scalar>>
         ("Admissible relative algebraic error Gamma_alg in (0,1] (eq. "
          "Criteria_alg): used by --enable-aposteriori-linear-tolerance as the "
-         "linear-solve forcing term Gamma_alg*max(eta_sp,eta_time)/eta_alg^(0).");
+         "linear-solve forcing term Gamma_alg*max(eta_sp,eta_time)/eta_alg^(0). "
+         "The default 0.01 is the value used for the matched quarter five-spot "
+         "factorial; it was not recalibrated on other models.");
     Parameters::Register<Parameters::AposterioriAlgMaxResolves>
-        ("Tighter linear re-solves --enable-aposteriori-linear-tolerance may "
-         "perform when the measured weighted eta_alg exceeds 1.2 * "
-         "Gamma_alg*max(eta_sp,eta_time); each re-solve re-derives its target "
-         "from the freshly measured shortfall and the loop stops as soon as "
-         "the target is met. If the budget runs out first, the increment is "
-         "kept but estimator-based Newton acceptance is disabled that "
-         "iteration. 0 (default) = gate Newton acceptance only, never "
-         "re-solve. CAUTION: a nonzero value combined with "
-         "--enable-aposteriori-newton-stopping is forcibly reset to 0 at "
-         "startup -- see the constructor warning -- because that exact "
-         "combination caused severe Newton instability (diagnosed "
-         "2026-09-13).");
+        ("Full-increment correction solves endpoint-verified Criteria_alg may "
+         "perform when the measured physical eta_alg exceeds "
+         "Gamma_alg*max(eta_sp,eta_time). A correction tightens the preceding "
+         "request by the measured physical endpoint shortfall. If the target remains "
+         "unmet, estimator Newton acceptance is disabled for that iteration "
+         "and the next Newton solve uses the configured strict tolerance. "
+         "0 keeps prediction-only mode; the validated default 2 enables up to "
+         "two endpoint-verification corrections.");
     Parameters::Register<Parameters::AposterioriTolMb<Scalar>>
         ("Material-balance tolerance for the a posteriori Criteria_newton "
          "gate. <=0 (default) means use the simulator's own --tolerance-mb, "
@@ -410,9 +448,10 @@ void BlackoilModelParameters<Scalar>::registerParameters()
     Parameters::Register<Parameters::AposterioriMaxGrow<Scalar>>
         ("Maximum per-rescale growth factor the space/time-balance override "
          "may request for the next dt (only meaningful with "
-         "--enable-aposteriori-timestep-control=true). Default 2.0 sits at or "
-         "below AdaptiveTimeStepping's own empirically observed growth cap "
-         "(~2.2x); a value above that lets the override request more growth "
+         "--enable-aposteriori-timestep-control=true). The conservative "
+         "cross-deck default is 1.25; the selected five-spot validation "
+         "explicitly uses 2.0, still below AdaptiveTimeStepping's empirically "
+         "observed growth cap (~2.2x). A larger value lets the override request more growth "
          "than the solver's own heuristic considers safe, which can increase "
          "oscillation/chop events and total nonlinear work instead of "
          "reducing it -- tune down (e.g. 1.25-1.5) on decks where that "

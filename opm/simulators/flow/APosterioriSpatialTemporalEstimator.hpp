@@ -40,22 +40,23 @@
  *   - u_a  the "continuous constitutive" flux, eq. (constitutive_flux):
  *          v_hat_beta = -lambda_beta(s_hat) K (grad p_hat_beta - rho_beta g grad z),
  *          u_w = b_w v_w, u_o = b_o v_o + r_v b_g v_g, u_g = b_g v_g + r_s b_o v_o,
- *          in surface-volume units.  grad p_hat_beta is, by default
- *          (PressureRecon::PatchAverageLift), the gradient of the H1-conforming
- *          lift of eq. (eq:averaging): vertex patch averages of the phase
+ *          in surface-volume units. PressureRecon::ConnectionLS, the
+ *          operational default, uses a transmissibility-weighted fit of the
+ *          raw connection pressure drops. PressureRecon::PatchAverageLift
+ *          instead uses the gradient of the H1-conforming lift of
+ *          eq. (eq:averaging): vertex patch averages of the phase
  *          pressures, extended by mean-value coordinates (which reproduce affine
  *          fields, so grad p_hat|_K is the least-squares fit of the nodal values;
  *          the bubble of eq. (eq:averaging_bubble) has zero cell-mean gradient
  *          and does not affect the piecewise-constant u_a).  Capillary gradients
- *          are retained by lifting each phase pressure.  PressureRecon::ConnectionLS
- *          selects instead a transmissibility-weighted LS fit of the raw
- *          connection pressure drops, for comparison;
+ *          are retained by lifting each phase pressure;
  *   - lambda_beta(s_hat) and grad p_hat_beta are BOTH evaluated from a single
  *     lifted state per cell -- point saturations s_hat(x_K) (vertex patch
  *     average, optionally bubble-corrected to the FV cell mean) fed through the
  *     real MaterialLaw::relativePermeabilities -- so u_a mimics the continuous
  *     flux consistently rather than mixing a reconstructed gradient with
- *     discrete-state coefficients (setUseLiftedRelperm(), on by default).  b_beta,
+ *     discrete-state coefficients (setUseLiftedRelperm(), off by operational
+ *     default because patch averaging smears sharp fronts).  b_beta,
  *     rho_beta, R_s, R_v and the viscosities remain at the FV cell state (Tier A;
  *     see the Scope note below);
  *   - || . ||_{*,K}  the weighted dual norm  || d_Lambda^{l/2} K^{-1/2} . ||_K,
@@ -197,6 +198,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <fstream>
+#include <iomanip>
 #include <string>
 #include <cmath>
 #include <cstddef>
@@ -295,11 +297,10 @@ public:
     void setPressureReconstruction(PressureRecon r) { pressureRecon_ = r; }
     PressureRecon pressureReconstruction() const { return pressureRecon_; }
 
-    //! u_a should mimic the continuous flux -Kb: evaluate lambda_beta at the
-    //! lifted saturation s_hat(x_K) (via the real MaterialLaw) rather than the
-    //! FV cell state.  On by default; only used with PressureRecon::PatchAverageLift
-    //! (where a saturation lift is available).  One extra relativePermeabilities
-    //! call per cell per compute() -- turn off for cheaper, less rigorous evals.
+    //! Evaluate lambda_beta at the lifted saturation s_hat(x_K) rather than
+    //! the FV cell state. Off by operational default because patch averaging
+    //! smeared fronts and degraded refinement response in homogeneous and
+    //! strongly heterogeneous tests. Only used by the two H1 lift modes.
     void setUseLiftedRelperm(bool on) { useLiftedRelperm_ = on; }
     bool useLiftedRelperm() const { return useLiftedRelperm_; }
 
@@ -315,7 +316,7 @@ public:
 
     //! epsilon > 0, the Neumann-scaling parameter of eq. eq:eps_norm; used in
     //! the accumulation-defect (NA) term of eta_lin.  Paper recommendation: 1.
-    void setEpsilon(Scalar eps) { epsilon_ = eps; mvemMtotCache_.clear(); mvemCacheBuilt_ = false; }
+    void setEpsilon(Scalar eps) { epsilon_ = eps; mvemMcCache_.clear(); mvemMsCache_.clear(); mvemCacheBuilt_ = false; }
 
     //! When false (default), ALL the *,K-energy-norm terms are evaluated on
     //! the same footing: eta_D and eta_lin's flux term via the full mimetic
@@ -327,7 +328,7 @@ public:
     //! The eta_lin accumulation-defect term follows the paper's own
     //! c_KK^{-1/2} formula in both modes (it is a scalar L2 norm, not a flux
     //! energy norm -- no mimetic upgrade applies).
-    void setCheapNorms(bool on) { cheapNorms_ = on; mvemMtotCache_.clear(); mvemCacheBuilt_ = false; }
+    void setCheapNorms(bool on) { cheapNorms_ = on; mvemMcCache_.clear(); mvemMsCache_.clear(); mvemCacheBuilt_ = false; }
 
     //! Ablation: make equilibrationIndicator() calls use c_KK=1 instead of
     //! the local permeability tensor's smallest eigenvalue, i.e. drop the
@@ -340,6 +341,23 @@ public:
     //! per-cell/component marking fields. OPM's global MB test remains the
     //! constant-mode acceptance gate.
     void setSeparateNeumannMean(bool on) { separateNeumannMean_ = on; }
+
+    //! Experimental coupled component energy: for u=Cv use
+    //! (C diag(lambda_beta) C^T tensor K)^{-1} on the mass-component defect.
+    void setMobilityEnergyNorm(bool on) { mobilityEnergyNorm_ = on; }
+
+    //! Relative diagonal regularisation of the induced component-mobility
+    //! matrix used by setMobilityEnergyNorm(true). Default 1e-12.
+    void setMobilityFloorFraction(Scalar frac) { mobilityFloorFraction_ = frac; }
+
+    //! mvemFluxMassMatrix's M^s stability-term floor fraction (was hardcoded
+    //! 1e-2, no override). See AposterioriMvemStabilityEpsilon.
+    void setMvemStabilityEpsilon(Scalar eps) {
+        mvemStabilityEpsilon_ = eps;
+        mvemMcCache_.clear();
+        mvemMsCache_.clear();
+        mvemCacheBuilt_ = false;
+    }
 
     //! Compressed indices of the cells carrying a well connection; used to bound
     //! the near-well weight d_Lambda(x_K) <= D_K by  dist(x_K, wells) + h_K.
@@ -451,8 +469,9 @@ public:
         // Newton iterate. updateGeometry() runs every iteration (setWellCells
         // invalidates geomValid_), so only drop the M_K cache when the cell
         // count actually changes; setEpsilon()/setCheapNorms() drop it too.
-        if (mvemMtotCache_.size() != nc) {
-            mvemMtotCache_.assign(nc, {});
+        if (mvemMcCache_.size() != nc) {
+            mvemMcCache_.assign(nc, {});
+            mvemMsCache_.assign(nc, {});
             mvemCacheBuilt_ = false;
         }
         geomValid_ = true;
@@ -608,10 +627,20 @@ public:
             const auto rhoRef = componentRefDensities_(watPh, oilPh, gasPh, iq.pvtRegionIndex());
             const Scalar pref = std::sqrt(tau) * epsInv / std::sqrt(g.cKK)
                 * g.hK * g.weightPow / std::sqrt(g.volume);
+            std::array<Scalar, numComponents> residual{};
+            for (unsigned c = 0; c < numComponents; ++c) {
+                residual[c] =
+                    rhoRef[c] * getValue(rAlg[i][conti0EqIdx + c]);
+            }
+            if (mobilityEnergyNorm_ && i < cellComponentMobility_.size()) {
+                const auto lower = APosteriori::choleskyLower<Scalar, numComponents>(
+                    cellComponentMobility_[i]);
+                residual = APosteriori::solveLower<Scalar, numComponents>(
+                    lower, residual);
+            }
             Scalar cAlg2 = 0;
             for (unsigned c = 0; c < numComponents; ++c) {
-                const Scalar rc = rhoRef[c] * getValue(rAlg[i][conti0EqIdx + c]);
-                const Scalar e = pref * std::abs(rc);
+                const Scalar e = pref * std::abs(residual[c]);
                 sum2 += e * e; cAlg2 += e * e;
             }
             if (i < cellEta_.size())
@@ -671,20 +700,38 @@ public:
             const auto rhoRef =
                 componentRefDensities_(watPh, oilPh, gasPh, iq.pvtRegionIndex());
             const Scalar cKKeff = disableCkkWeight_ ? Scalar{1} : g.cKK;
+            std::array<Scalar, numComponents> residual{};
+            for (unsigned c = 0; c < numComponents; ++c) {
+                residual[c] =
+                    rhoRef[c] * getValue(nonlinearResidual[i][conti0EqIdx + c]);
+            }
+            if (mobilityEnergyNorm_ && i < cellComponentMobility_.size()) {
+                const auto lower = APosteriori::choleskyLower<Scalar, numComponents>(
+                    cellComponentMobility_[i]);
+                residual = APosteriori::solveLower<Scalar, numComponents>(
+                    lower, residual);
+            }
+            std::array<Scalar, numComponents> etaEqByMode{};
             Scalar cellEq2 = 0;
             for (unsigned c = 0; c < numComponents; ++c) {
-                const Scalar residual =
-                    rhoRef[c] * getValue(nonlinearResidual[i][conti0EqIdx + c]);
                 const Scalar etaEq = APosteriori::equilibrationIndicator(
-                    residual, dt, epsilon_, cKKeff, g.hK, g.weightPow, g.volume);
+                    residual[c], dt, epsilon_, cKKeff, g.hK, g.weightPow, g.volume);
+                etaEqByMode[c] = etaEq;
                 cellEq2 += etaEq * etaEq;
                 if (!separateNeumannMean_)
                     cellSpatialEtaByComponent_[i][c] += etaEq;
             }
             const Scalar cellEq = std::sqrt(std::max(cellEq2, Scalar{0}));
             cellEquilibrationEta_[i] = cellEq;
-            const Scalar cellCombined = APosteriori::spatialIndicatorWithMeanPolicy(
-                static_cast<Scalar>(cellEta_[i][0]), cellEq, separateNeumannMean_);
+            std::array<Scalar, numComponents> darcyByMode{};
+            for (unsigned c = 0; c < numComponents; ++c) {
+                darcyByMode[c] = separateNeumannMean_
+                    ? static_cast<Scalar>(cellSpatialEtaByComponent_[i][c])
+                    : static_cast<Scalar>(cellSpatialEtaByComponent_[i][c]) - etaEqByMode[c];
+            }
+            const Scalar cellCombined =
+                APosteriori::componentwiseCombinedIndicator(
+                    darcyByMode, etaEqByMode, separateNeumannMean_);
             cellEta_[i][0] = cellCombined;
             sumEq2 += cellEq2;
             sumCombined2 += cellCombined * cellCombined;
@@ -775,22 +822,34 @@ public:
             const auto rhoRef =
                 componentRefDensities_(watPh, oilPh, gasPh, iq.pvtRegionIndex());
             const Scalar cKKeff = disableCkkWeight_ ? Scalar{1} : g.cKK;
-            Scalar cellSource2 = 0;
+            std::array<Scalar, numComponents> sourceDefect{};
             for (unsigned c = 0; c < numComponents; ++c) {
                 const Scalar residualNew =
                     rhoRef[c] * getValue(nonlinearResidual[i][conti0EqIdx + c]);
                 const Scalar residualLin =
                     rhoRef[c] * getValue(predictedLinearResidual_[i][conti0EqIdx + c]);
-                const Scalar sourceDefect = APosteriori::sourceLinearizationDefect(
+                sourceDefect[c] = APosteriori::sourceLinearizationDefect(
                     linAccumRateDef_[i][c], linGeomThetaSum_[i][c],
                     residualNew, residualLin);
-                const Scalar etaSource = APosteriori::equilibrationIndicator(
-                    sourceDefect, tau, epsilon_, cKKeff, g.hK, g.weightPow, g.volume);
-                cellSource2 += etaSource * etaSource;
             }
-            const Scalar cellSource = std::sqrt(std::max(cellSource2, Scalar{0}));
-            const Scalar cellCombined =
-                static_cast<Scalar>(cellEta_[i][2]) + cellSource;
+            if (mobilityEnergyNorm_ && i < cellComponentMobility_.size()) {
+                const auto lower = APosteriori::choleskyLower<Scalar, numComponents>(
+                    cellComponentMobility_[i]);
+                sourceDefect = APosteriori::solveLower<Scalar, numComponents>(
+                    lower, sourceDefect);
+            }
+            Scalar cellSource2 = 0;
+            Scalar cellCombined2 = 0;
+            for (unsigned c = 0; c < numComponents; ++c) {
+                const Scalar etaSource = APosteriori::equilibrationIndicator(
+                    sourceDefect[c], tau, epsilon_, cKKeff, g.hK, g.weightPow, g.volume);
+                cellSource2 += etaSource * etaSource;
+                const Scalar combined =
+                    cellLinearizationEtaByComponent_[i][c] + etaSource;
+                cellLinearizationEtaByComponent_[i][c] = combined;
+                cellCombined2 += combined * combined;
+            }
+            const Scalar cellCombined = std::sqrt(std::max(cellCombined2, Scalar{0}));
             cellEta_[i][2] = cellCombined;
             sumSource2 += cellSource2;
             sumCombined2 += cellCombined * cellCombined;
@@ -812,16 +871,31 @@ public:
     //! can be compared directly. eta_sp_water/oil/gas are the per-component
     //! (not combined) spatial estimator, cellSpatialEtaByComponent_[i][c] --
     //! same construction as the combined eta_sp, just split by phase instead
-    //! of root-sum-squared together; -1 for an inactive phase. In experimental
-    //! H1/R mode these columns and eta_sp contain only the Darcy term, while
-    //! eta_eq remains available in its own column.
+    //! of root-sum-squared together; -1 for an inactive phase. They are -1 in
+    //! coupled-mobility mode because that norm is not component-separable.
+    //! eta_darcy_mode0/1/2 then expose its Cholesky modes instead. The
+    //! equilibration contribution is transformed into the same modes before
+    //! it is combined with Darcy. In experimental H1/R mode eta_sp contains
+    //! only the Darcy term,
+    //! while eta_eq remains available in its own column.
     void dumpCellEstimators(const std::string& path) const
     {
         std::ofstream os(path);
         if (!os) return;
-        os << "cell,x,y,z,eta_sp,eta_eq,eta_time,eta_lin,eta_alg,h_K,D_K,weightPow,"
+        // Preserve small regularising eigenvalues and energy-decomposition
+        // identities in post-processing. The default six significant digits
+        // can make an ill-conditioned but SPD mobility matrix appear singular
+        // or indefinite after CSV round-off.
+        os << std::setprecision(std::numeric_limits<Scalar>::max_digits10);
+        os << "cell,x,y,z,eta_sp,eta_eq,eta_darcy,eta_consistency,eta_stability,"
+              "eta_time,eta_lin,eta_alg,h_K,D_K,weightPow,"
               "sw,so,sg,p_oil,permx,permz,"
-              "eta_sp_water,eta_sp_oil,eta_sp_gas\n";
+              "eta_sp_water,eta_sp_oil,eta_sp_gas,"
+              "eta_darcy_mode0,eta_darcy_mode1,eta_darcy_mode2,"
+              "eta_t1_water,eta_t1_oil,eta_t1_gas,"
+              "eta_mc_water,eta_mc_oil,eta_mc_gas,"
+              "uw_x,uw_y,uw_z,uo_x,uo_y,uo_z,ug_x,ug_y,ug_z,"
+              "mob_ww,mob_wo,mob_wg,mob_oo,mob_og,mob_gg\n";
         auto& model = simulator_.model();
         const int watPh = FluidSystem::phaseIsActive(FluidSystem::waterPhaseIdx)
             ? FluidSystem::waterPhaseIdx : -1;
@@ -847,6 +921,9 @@ public:
                 os << ',' << (d < dim ? g.center[std::min(d, dim - 1)] : Scalar{0});
             os << ',' << cellEta_[i][0] << ','
                << (i < cellEquilibrationEta_.size() ? cellEquilibrationEta_[i] : 0.0)
+               << ',' << (i < cellDarcyEta_.size() ? cellDarcyEta_[i] : 0.0)
+               << ',' << (i < cellConsistencyEta_.size() ? cellConsistencyEta_[i] : 0.0)
+               << ',' << (i < cellStabilityEta_.size() ? cellStabilityEta_[i] : 0.0)
                << ',' << cellEta_[i][1] << ','
                << cellEta_[i][2] << ',' << cellEta_[i][3]
                << ',' << g.hK << ',' << g.DK << ',' << g.weightPow;
@@ -861,13 +938,55 @@ public:
             }
             os << ',' << sw << ',' << so << ',' << sg << ',' << po
                << ',' << g.permDiag[0] << ',' << (dim > 2 ? g.permDiag[2] : g.permDiag[0]);
-            const Scalar etaW = (haveByComponent && watComp >= 0)
+            const Scalar etaW = (haveByComponent && !mobilityEnergyNorm_ && watComp >= 0)
                 ? cellSpatialEtaByComponent_[i][watComp] : Scalar{-1};
-            const Scalar etaO = (haveByComponent && oilComp >= 0)
+            const Scalar etaO = (haveByComponent && !mobilityEnergyNorm_ && oilComp >= 0)
                 ? cellSpatialEtaByComponent_[i][oilComp] : Scalar{-1};
-            const Scalar etaG = (haveByComponent && gasComp >= 0)
+            const Scalar etaG = (haveByComponent && !mobilityEnergyNorm_ && gasComp >= 0)
                 ? cellSpatialEtaByComponent_[i][gasComp] : Scalar{-1};
-            os << ',' << etaW << ',' << etaO << ',' << etaG << '\n';
+            os << ',' << etaW << ',' << etaO << ',' << etaG;
+            for (unsigned mode = 0; mode < 3; ++mode) {
+                const Scalar etaMode = (haveByComponent && mobilityEnergyNorm_
+                                        && mode < numComponents)
+                    ? cellSpatialEtaByComponent_[i][mode] : Scalar{-1};
+                os << ',' << etaMode;
+            }
+            const bool haveT1Mc = cellEtaT1ByComponent_.size() == geom_.size()
+                && cellEtaMcByComponent_.size() == geom_.size();
+            const Scalar t1W = (haveT1Mc && watComp >= 0) ? cellEtaT1ByComponent_[i][watComp] : Scalar{-1};
+            const Scalar t1O = (haveT1Mc && oilComp >= 0) ? cellEtaT1ByComponent_[i][oilComp] : Scalar{-1};
+            const Scalar t1G = (haveT1Mc && gasComp >= 0) ? cellEtaT1ByComponent_[i][gasComp] : Scalar{-1};
+            const Scalar mcW = (haveT1Mc && watComp >= 0) ? cellEtaMcByComponent_[i][watComp] : Scalar{-1};
+            const Scalar mcO = (haveT1Mc && oilComp >= 0) ? cellEtaMcByComponent_[i][oilComp] : Scalar{-1};
+            const Scalar mcG = (haveT1Mc && gasComp >= 0) ? cellEtaMcByComponent_[i][gasComp] : Scalar{-1};
+            os << ',' << t1W << ',' << t1O << ',' << t1G
+               << ',' << mcW << ',' << mcO << ',' << mcG;
+            const bool haveU = i < prevU_.size();
+            auto writeU = [&](int comp) {
+                for (int d = 0; d < 3; ++d) {
+                    os << ',';
+                    if (haveU && comp >= 0)
+                        os << prevU_[i][comp][d < dim ? d : dim - 1];
+                    else
+                        os << 0.0;
+                }
+            };
+            writeU(watComp);
+            writeU(oilComp);
+            writeU(gasComp);
+            const bool haveMobility =
+                i < cellComponentMobility_.size() && mobilityEnergyNorm_;
+            auto mobilityEntry = [&](int row, int column) {
+                return (haveMobility && row >= 0 && column >= 0)
+                    ? cellComponentMobility_[i][row][column] : Scalar{0};
+            };
+            os << ',' << mobilityEntry(watComp, watComp)
+               << ',' << mobilityEntry(watComp, oilComp)
+               << ',' << mobilityEntry(watComp, gasComp)
+               << ',' << mobilityEntry(oilComp, oilComp)
+               << ',' << mobilityEntry(oilComp, gasComp)
+               << ',' << mobilityEntry(gasComp, gasComp);
+            os << '\n';
         }
     }
 
@@ -1492,6 +1611,15 @@ public:
             cellEta_.assign(nc, std::array<double, 4>{0, 0, 0, 0});
         cellSpatialEtaByComponent_.assign(
             nc, std::array<double, numComponents>{});
+        cellLinearizationEtaByComponent_.assign(
+            nc, std::array<double, numComponents>{});
+        cellEtaT1ByComponent_.assign(nc, std::array<double, numComponents>{});
+        cellEtaMcByComponent_.assign(nc, std::array<double, numComponents>{});
+        cellDarcyEta_.assign(nc, 0.0);
+        cellConsistencyEta_.assign(nc, 0.0);
+        cellStabilityEta_.assign(nc, 0.0);
+        cellComponentMobility_.assign(
+            nc, std::array<std::array<double, numComponents>, numComponents>{});
         cellEquilibrationEta_.assign(nc, 0.0);
         linAccumRateDef_.assign(nc, CompFlux0{});
         linGeomThetaSum_.assign(nc, CompFlux0{});
@@ -1509,7 +1637,6 @@ public:
         const auto comp = [](int ph) {
             return FluidSystem::canonicalToActiveCompIdx(FluidSystem::solventComponentIndex(ph));
         };
-
         constexpr Scalar invPi = Scalar{0.31830988618379067154}; // 1/pi = C_PW,K (convex)
 
         Scalar sumSp2 = 0.0;
@@ -1711,11 +1838,16 @@ public:
             }
 
             // constitutive component flux u_a (eq. constitutive_flux), constant on K
+            std::array<Scalar, 3> phaseMobility{};
+            std::array<std::array<Scalar, 3>, numComponents> componentPhaseMixing{};
             CompFlux uCell = constitutiveComponentFlux_(
                 g, iqIn, fsIn, watPh, oilPh, gasPh, gradP,
-                hasLambdaHat ? &lambdaHat : nullptr);
+                hasLambdaHat ? &lambdaHat : nullptr, &phaseMobility, &componentPhaseMixing);
             for (unsigned c = 0; c < numComponents; ++c)
                 uCell[c] *= rhoRef[c];
+            for (unsigned c = 0; c < numComponents; ++c)
+                for (int p = 0; p < 3; ++p)
+                    componentPhaseMixing[c][p] *= rhoRef[c];
             curU[i] = uCell;
 
             const Scalar cinv = (g.cKK > Scalar{0})
@@ -1749,13 +1881,13 @@ public:
                 if (len > Scalar{0})
                     nHat[f] /= len;
             }
-            // The MVEM matrix M_K = M^c+M^s depends only on cell geometry, not
-            // on the component -- built once per cell, reused for eta_sp AND
-            // eta_lin's flux term below. Skipped entirely in cheap mode
-            // (nothing there uses it).
-            std::vector<Scalar> MtotLocal;                     // fallback storage
-            if (!cheapNorms_ && (!mvemCacheBuilt_ || i >= mvemMtotCache_.size()
-                                 || mvemMtotCache_[i].empty())) {
+            // The MVEM matrices M^c/M^s depend only on cell geometry, not on
+            // the component -- built once per cell, reused for eta_sp AND
+            // eta_lin's flux term below (kept separate for diagnostics).
+            // Skipped entirely in cheap mode (nothing there uses them).
+            std::vector<Scalar> McLocal, MsLocal;               // fallback storage
+            if (!cheapNorms_ && (!mvemCacheBuilt_ || i >= mvemMcCache_.size()
+                                 || mvemMcCache_[i].empty())) {
                 std::vector<DimVector> Ngeom(geomIdx.size());
                 for (std::size_t k = 0; k < geomIdx.size(); ++k) {
                     const std::size_t f = geomIdx[k];
@@ -1763,18 +1895,201 @@ public:
                     Ngeom[k] *= faceAreaVec[f];
                 }
                 const auto mvem = APosteriori::mvemFluxMassMatrix<Scalar, dim>(
-                    Ngeom, dcFaceGeom, g.permTensor, g.volume);
-                MtotLocal.assign(mvem.nf * mvem.nf, Scalar{0});
-                for (std::size_t k = 0; k < MtotLocal.size(); ++k)
-                    MtotLocal[k] = mvem.Mc[k] + mvem.Ms[k];
-                if (i < mvemMtotCache_.size())
-                    mvemMtotCache_[i] = MtotLocal;
+                    Ngeom, dcFaceGeom, g.permTensor, g.volume, mvemStabilityEpsilon_);
+                McLocal = mvem.Mc;
+                MsLocal = mvem.Ms;
+                if (i < mvemMcCache_.size()) {
+                    mvemMcCache_[i] = McLocal;
+                    mvemMsCache_[i] = MsLocal;
+                }
             }
-            const std::vector<Scalar>& Mtot =
-                (!cheapNorms_ && i < mvemMtotCache_.size() && !mvemMtotCache_[i].empty())
-                    ? mvemMtotCache_[i] : MtotLocal;
+            const std::vector<Scalar>& Mc =
+                (!cheapNorms_ && i < mvemMcCache_.size() && !mvemMcCache_[i].empty())
+                    ? mvemMcCache_[i] : McLocal;
+            const std::vector<Scalar>& Ms =
+                (!cheapNorms_ && i < mvemMsCache_.size() && !mvemMsCache_[i].empty())
+                    ? mvemMsCache_[i] : MsLocal;
 
-            Scalar cSpMim2 = 0, cTime2 = 0, cLin2 = 0;   // per-cell partial sums for the spatial map
+            // Appendix A.4 has conserved component flux u = C v, not one
+            // conserved equation per phase.  The phase Darcy dissipation
+            // therefore induces the coupled component mobility
+            //
+            //     L = C diag(lambda_beta) C^T,
+            //
+            // including b, Rs and Rv (and the mass-reference row scaling used
+            // by Fc/uCell).  If L = A A^T, transforming the actual component
+            // defect z = W-u by A^{-1} gives
+            //
+            //     z^T (L^{-1} tensor K^{-1}) z
+            //       = sum_m ||(A^{-1}z)_m||^2_{K^{-1}}.
+            //
+            // The nonnegative Cholesky-mode pieces below sum exactly to that
+            // coupled energy.  They occupy the existing per-component output
+            // slots only to preserve file/API shape; individually they are
+            // algebraic modes, not water/oil/gas component indicators.
+            std::array<std::vector<Scalar>, numComponents> zComponent;
+            for (auto& z : zComponent)
+                z.assign(geomIdx.size(), Scalar{0});
+            std::array<DimVector, numComponents> p0Defect{};
+            for (unsigned c = 0; c < numComponents; ++c) {
+                std::vector<Scalar> FcGeom(geomIdx.size());
+                for (std::size_t k = 0; k < geomIdx.size(); ++k) {
+                    const std::size_t face = geomIdx[k];
+                    FcGeom[k] = Fc[c][face];
+                    zComponent[c][k] = Fc[c][face]
+                        - faceAreaVec[face] * (uCell[c] * nHat[face]);
+                }
+                p0Defect[c] = APosteriori::piZeroFromFaceFluxes<Scalar, dim>(
+                    FcGeom, dcFaceGeom, g.volume);
+                p0Defect[c] -= uCell[c];
+            }
+
+            std::array<Scalar, numComponents> mobilityModeEta{};
+            std::array<Scalar, numComponents> mobilityModeConsistencyEta{};
+            std::array<Scalar, numComponents> mobilityModeStabilityEta{};
+            std::array<std::array<Scalar, numComponents>, numComponents>
+                mobilityLower{};
+            if (mobilityEnergyNorm_) {
+                const auto componentMobility =
+                    APosteriori::componentMobilityMatrix<Scalar, numComponents, 3>(
+                        componentPhaseMixing, phaseMobility, mobilityFloorFraction_);
+                cellComponentMobility_[i] = componentMobility;
+                mobilityLower =
+                    APosteriori::choleskyLower<Scalar, numComponents>(componentMobility);
+
+                std::array<std::vector<Scalar>, numComponents> transformedZ;
+                for (auto& z : transformedZ)
+                    z.assign(geomIdx.size(), Scalar{0});
+                for (std::size_t k = 0; k < geomIdx.size(); ++k) {
+                    std::array<Scalar, numComponents> rhs{};
+                    for (unsigned c = 0; c < numComponents; ++c)
+                        rhs[c] = zComponent[c][k];
+                    const auto value =
+                        APosteriori::solveLower<Scalar, numComponents>(
+                            mobilityLower, rhs);
+                    for (unsigned c = 0; c < numComponents; ++c)
+                        transformedZ[c][k] = value[c];
+                }
+
+                std::array<DimVector, numComponents> transformedP0{};
+                for (int d = 0; d < dim; ++d) {
+                    std::array<Scalar, numComponents> rhs{};
+                    for (unsigned c = 0; c < numComponents; ++c)
+                        rhs[c] = p0Defect[c][d];
+                    const auto value =
+                        APosteriori::solveLower<Scalar, numComponents>(
+                            mobilityLower, rhs);
+                    for (unsigned c = 0; c < numComponents; ++c)
+                        transformedP0[c][d] = value[c];
+                }
+
+                for (unsigned c = 0; c < numComponents; ++c) {
+                    Scalar consistencyEnergy2;
+                    Scalar stabilityEnergy2;
+                    if (cheapNorms_) {
+                        const DimVector scaled = APosteriori::applyInvSqrtPerm<Scalar, dim>(
+                            transformedP0[c], g.permDiag);
+                        const Scalar norm = APosteriori::weightedStarNorm<Scalar, dim>(
+                            scaled, g.weightPow, g.volume);
+                        consistencyEnergy2 = norm * norm;
+                        stabilityEnergy2 = Scalar{0};
+                    }
+                    else {
+                        consistencyEnergy2 = g.weightPow * g.weightPow
+                            * APosteriori::mvemQuadForm<Scalar>(Mc, transformedZ[c]);
+                        stabilityEnergy2 = g.weightPow * g.weightPow
+                            * APosteriori::mvemQuadForm<Scalar>(Ms, transformedZ[c]);
+                    }
+                    const Scalar sqrtDt = std::sqrt(std::max(dt, Scalar{0}));
+                    mobilityModeConsistencyEta[c] = sqrtDt
+                        * std::sqrt(std::max(consistencyEnergy2, Scalar{0}));
+                    mobilityModeStabilityEta[c] = sqrtDt
+                        * std::sqrt(std::max(stabilityEnergy2, Scalar{0}));
+                    mobilityModeEta[c] = std::sqrt(
+                        mobilityModeConsistencyEta[c] * mobilityModeConsistencyEta[c]
+                        + mobilityModeStabilityEta[c] * mobilityModeStabilityEta[c]);
+                }
+            }
+
+            std::array<DimVector, numComponents> temporalMode{};
+            if (havePrev_) {
+                for (unsigned c = 0; c < numComponents; ++c) {
+                    temporalMode[c] = uCell[c];
+                    temporalMode[c] -= prevU_[i][c];
+                }
+                if (mobilityEnergyNorm_) {
+                    std::array<DimVector, numComponents> transformed{};
+                    for (int d = 0; d < dim; ++d) {
+                        std::array<Scalar, numComponents> rhs{};
+                        for (unsigned c = 0; c < numComponents; ++c)
+                            rhs[c] = temporalMode[c][d];
+                        const auto value =
+                            APosteriori::solveLower<Scalar, numComponents>(
+                                mobilityLower, rhs);
+                        for (unsigned c = 0; c < numComponents; ++c)
+                            transformed[c][d] = value[c];
+                    }
+                    temporalMode = transformed;
+                }
+            }
+
+            std::array<std::vector<Scalar>, numComponents> linearFluxMode;
+            std::array<Scalar, numComponents> linearAccumMode{};
+            if (haveLin_) {
+                for (unsigned c = 0; c < numComponents; ++c) {
+                    linearFluxMode[c].resize(geomIdx.size());
+                    for (std::size_t k = 0; k < geomIdx.size(); ++k) {
+                        const std::size_t f = geomIdx[k];
+                        linearFluxMode[c][k] = Flin_[i][f][c] - Fc[c][f];
+                    }
+                    linGeomThetaSum_[i][c] = std::accumulate(
+                        linearFluxMode[c].begin(), linearFluxMode[c].end(),
+                        Scalar{0});
+                    linearAccumMode[c] = Anew[c] - ownAccumVal_[i][c] - Lval_[i][c];
+                    linAccumRateDef_[i][c] = (dt > Scalar{0})
+                        ? g.volume * linearAccumMode[c] / dt : Scalar{0};
+                }
+                if (mobilityEnergyNorm_) {
+                    for (std::size_t k = 0; k < geomIdx.size(); ++k) {
+                        std::array<Scalar, numComponents> rhs{};
+                        for (unsigned c = 0; c < numComponents; ++c)
+                            rhs[c] = linearFluxMode[c][k];
+                        const auto value =
+                            APosteriori::solveLower<Scalar, numComponents>(
+                                mobilityLower, rhs);
+                        for (unsigned c = 0; c < numComponents; ++c)
+                            linearFluxMode[c][k] = value[c];
+                    }
+                    linearAccumMode =
+                        APosteriori::solveLower<Scalar, numComponents>(
+                            mobilityLower, linearAccumMode);
+                }
+            }
+
+            std::array<DimVector, numComponents> linearProxyMode{};
+            if (!haveLin_ && havePrevIter_) {
+                for (unsigned c = 0; c < numComponents; ++c) {
+                    linearProxyMode[c] = uCell[c];
+                    linearProxyMode[c] -= prevIterU_[i][c];
+                }
+                if (mobilityEnergyNorm_) {
+                    std::array<DimVector, numComponents> transformed{};
+                    for (int d = 0; d < dim; ++d) {
+                        std::array<Scalar, numComponents> rhs{};
+                        for (unsigned c = 0; c < numComponents; ++c)
+                            rhs[c] = linearProxyMode[c][d];
+                        const auto value =
+                            APosteriori::solveLower<Scalar, numComponents>(
+                                mobilityLower, rhs);
+                        for (unsigned c = 0; c < numComponents; ++c)
+                            transformed[c][d] = value[c];
+                    }
+                    linearProxyMode = transformed;
+                }
+            }
+
+            Scalar cSpMim2 = 0, cSpConsistency2 = 0, cSpStability2 = 0;
+            Scalar cTime2 = 0, cLin2 = 0;   // per-cell partial sums for the spatial map
             for (unsigned c = 0; c < numComponents; ++c) {
                 std::vector<Scalar> FcGeom(geomIdx.size());
                 for (std::size_t k = 0; k < geomIdx.size(); ++k)
@@ -1835,25 +2150,52 @@ public:
                 // enter div W_a elsewhere via the full Fc sum. z^T M^c z
                 // reproduces T1^2 above exactly (see the class doc comment's
                 // decomposition remark); z^T M^s z replaces T3.
-                std::vector<Scalar> zgeom(geomIdx.size());
-                for (std::size_t k = 0; k < geomIdx.size(); ++k) {
-                    const std::size_t f = geomIdx[k];
-                    zgeom[k] = Fc[c][f] - faceAreaVec[f] * (uCell[c] * nHat[f]);
-                }
+                const auto& zgeom = zComponent[c];
                 // Rigorous (default): full mimetic z^T M_K z. Cheap
                 // (setCheapNorms): the T1-only Pi0 moment -- no stability
-                // term, diagonal K -- i.e. etaSpT1 (Mtot is not built).
+                // term, diagonal K -- i.e. etaSpT1 (Mc/Ms are not built).
                 Scalar etaSpMim;
-                if (cheapNorms_) {
+                Scalar etaConsistency;
+                Scalar etaStability;
+                if (mobilityEnergyNorm_) {
+                    etaSpMim = mobilityModeEta[c];
+                    etaConsistency = mobilityModeConsistencyEta[c];
+                    etaStability = mobilityModeStabilityEta[c];
+                }
+                else if (cheapNorms_) {
                     etaSpMim = etaSpT1;
+                    etaConsistency = etaSpT1;
+                    etaStability = Scalar{0};
                 }
                 else {
-                    const Scalar mimEnergy2 = APosteriori::mvemQuadForm<Scalar>(Mtot, zgeom);
-                    etaSpMim = std::sqrt(std::max(dt, Scalar{0})) * g.weightPow
-                        * std::sqrt(std::max(mimEnergy2, Scalar{0}));
+                    const Scalar sqrtDtWeight =
+                        std::sqrt(std::max(dt, Scalar{0})) * g.weightPow;
+                    etaConsistency = sqrtDtWeight * std::sqrt(std::max(
+                        APosteriori::mvemQuadForm<Scalar>(Mc, zgeom), Scalar{0}));
+                    etaStability = sqrtDtWeight * std::sqrt(std::max(
+                        APosteriori::mvemQuadForm<Scalar>(Ms, zgeom), Scalar{0}));
+                    etaSpMim = std::sqrt(
+                        etaConsistency * etaConsistency
+                        + etaStability * etaStability);
                 }
                 sumSpMim2 += etaSpMim * etaSpMim; cSpMim2 += etaSpMim * etaSpMim;
+                cSpConsistency2 += etaConsistency * etaConsistency;
+                cSpStability2 += etaStability * etaStability;
                 cellSpatialEtaByComponent_[i][c] = etaSpMim;
+
+                // Diagnostic only: T1 vs sqrt(z^T M^c z), same z, same run/step
+                // (see cellEtaT1ByComponent_'s doc comment).
+                if (i < cellEtaT1ByComponent_.size()) {
+                    cellEtaT1ByComponent_[i][c] = etaSpT1;
+                    if (!cheapNorms_) {
+                        const Scalar mcEnergy2 = APosteriori::mvemQuadForm<Scalar>(Mc, zgeom);
+                        cellEtaMcByComponent_[i][c] = std::sqrt(std::max(dt, Scalar{0}))
+                            * g.weightPow * std::sqrt(std::max(mcEnergy2, Scalar{0}));
+                    }
+                    else {
+                        cellEtaMcByComponent_[i][c] = Scalar{-1};
+                    }
+                }
 
                 if (etaSp > Scalar{1e8} && std::getenv("OPM_APOST_TRACE")) {
                     std::cerr << "[apost-trace] i=" << i << " c=" << c
@@ -1881,8 +2223,7 @@ public:
                 }
 
                 if (havePrev_) {
-                    DimVector du = uCell[c];
-                    du -= prevU_[i][c];
+                    const DimVector& du = temporalMode[c];
                     // Same *,K energy norm as eta_D: rigorous (default) is the
                     // full-tensor P0 form D_K^l |K| (du.K^{-1}du), which for a
                     // P0 field equals the mimetic z^T M_K z on z = N du
@@ -1924,13 +2265,7 @@ public:
                     //     moments (z = Theta_lin's own moments, not F-N.u) --
                     //     geometric faces only, same reason NNCs are excluded
                     //     from eta_sp's construction above.
-                    std::vector<Scalar> thetaLinGeom(geomIdx.size());
-                    for (std::size_t k = 0; k < geomIdx.size(); ++k) {
-                        const std::size_t f = geomIdx[k];
-                        thetaLinGeom[k] = Flin_[i][f][c] - Fc[c][f];
-                    }
-                    linGeomThetaSum_[i][c] = std::accumulate(
-                        thetaLinGeom.begin(), thetaLinGeom.end(), Scalar{0});
+                    const auto& thetaLinGeom = linearFluxMode[c];
                     // linEnergy2 is the UNWEIGHTED energy squared in both
                     // branches; g.weightPow (= D_K^{l/2}) is applied once
                     // outside. Rigorous: z^T M_K z. Cheap: |Pi0 Theta_lin|^2
@@ -1943,7 +2278,9 @@ public:
                         linEnergy2 = g.volume * sLin.two_norm2();
                     }
                     else {
-                        linEnergy2 = APosteriori::mvemQuadForm<Scalar>(Mtot, thetaLinGeom);
+                        linEnergy2 =
+                            APosteriori::mvemQuadForm<Scalar>(Mc, thetaLinGeom)
+                            + APosteriori::mvemQuadForm<Scalar>(Ms, thetaLinGeom);
                     }
                     const Scalar etaLinFlux = std::sqrt(std::max(dt, Scalar{0})) * g.weightPow
                         * std::sqrt(std::max(linEnergy2, Scalar{0}));
@@ -1959,10 +2296,7 @@ public:
                     //     product), and Anew/ownAccumVal_/Lval_ are ALL built
                     //     from that same computeStorage() call. Multiplying
                     //     by g.phiRef again here would double-count porosity.
-                    const Scalar Aold = ownAccumVal_[i][c];
-                    const Scalar signedNaDefect = Anew[c] - Aold - Lval_[i][c];
-                    linAccumRateDef_[i][c] =
-                        (dt > Scalar{0}) ? g.volume * signedNaDefect / dt : Scalar{0};
+                    const Scalar signedNaDefect = linearAccumMode[c];
                     const Scalar naDefect = std::abs(signedNaDefect);
                     const Scalar tauInv = (dt > Scalar{0}) ? Scalar{1} / std::sqrt(dt) : Scalar{0};
                     const Scalar epsInv = (epsilon_ > Scalar{0}) ? Scalar{1} / std::sqrt(epsilon_) : Scalar{0};
@@ -1973,6 +2307,7 @@ public:
                     sumLin2 += etaL * etaL; cLin2 += etaL * etaL;
                     sumLinAccum2 += etaNA * etaNA;
                     sumLinFlux2  += etaLinFlux * etaLinFlux;
+                    cellLinearizationEtaByComponent_[i][c] = etaL;
                 }
                 else if (havePrevIter_) {
                     // Fallback (recordLinearizationDefect() never called this
@@ -1980,8 +2315,7 @@ public:
                     // paper's Theta_lin -- documented stand-in only -- but it
                     // uses the SAME *,K energy norm as eta_D/eta_time: full
                     // tensor P0 form by default, diagonal under cheapNorms_.
-                    DimVector dl = uCell[c];
-                    dl -= prevIterU_[i][c];
+                    const DimVector& dl = linearProxyMode[c];
                     Scalar norm2;
                     if (cheapNorms_) {
                         const DimVector sl = APosteriori::applyInvSqrtPerm<Scalar, dim>(dl, g.permDiag);
@@ -1995,10 +2329,16 @@ public:
                     const Scalar etaL = std::sqrt(std::max(dt, Scalar{0}))
                         * std::sqrt(std::max(norm2, Scalar{0}));
                     sumLin2 += etaL * etaL; cLin2 += etaL * etaL;
+                    cellLinearizationEtaByComponent_[i][c] = etaL;
                 }
             }
             if (i < cellEta_.size()) {
                 cellEta_[i][0] = std::sqrt(std::max(cSpMim2, Scalar{0}));
+                cellDarcyEta_[i] = cellEta_[i][0];
+                cellConsistencyEta_[i] =
+                    std::sqrt(std::max(cSpConsistency2, Scalar{0}));
+                cellStabilityEta_[i] =
+                    std::sqrt(std::max(cSpStability2, Scalar{0}));
                 cellEta_[i][1] = std::sqrt(std::max(cTime2,  Scalar{0}));
                 cellEta_[i][2] = std::sqrt(std::max(cLin2,   Scalar{0}));
                 // cellEta_[i][3] (eta_alg) is filled by computeAlgebraicEstimator()
@@ -2313,15 +2653,20 @@ private:
                                const FS& fsIn,
                                int watPh, int oilPh, int gasPh,
                                const std::array<DimVector, 3>& gradP,
-                               const std::array<Scalar, 3>* lambdaHat) const
+                               const std::array<Scalar, 3>* lambdaHat,
+                               std::array<Scalar, 3>* phaseMobilityOut = nullptr,
+                               std::array<std::array<Scalar, 3>, numComponents>*
+                                   componentPhaseMixingOut = nullptr) const
     {
         const DimVector& grav = simulator_.problem().gravity();
+        std::array<Scalar, 3> phaseMobility{};
 
         auto phaseVelocity = [&](int ph, int gpIdx) -> DimVector {
             DimVector v(0.0);
             if (ph < 0)
                 return v;
             const Scalar mob = lambdaHat ? (*lambdaHat)[gpIdx] : getValue(iqIn.mobility(ph));
+            phaseMobility[gpIdx] = mob;
             const Scalar rho = getValue(fsIn.density(ph));
             // v = -lambda K (grad p - rho g): full permeability tensor, so the
             // reconstructed velocity is consistent with the full-tensor energy
@@ -2340,6 +2685,8 @@ private:
         const DimVector vW = phaseVelocity(watPh, 0);
         const DimVector vO = phaseVelocity(oilPh, 1);
         const DimVector vG = phaseVelocity(gasPh, 2);
+        if (phaseMobilityOut)
+            *phaseMobilityOut = phaseMobility;
 
         const Scalar bW = (watPh >= 0) ? getValue(fsIn.invB(watPh)) : Scalar{0};
         const Scalar bO = (oilPh >= 0) ? getValue(fsIn.invB(oilPh)) : Scalar{0};
@@ -2374,6 +2721,30 @@ private:
             add(u[gc], vG, bG);
             if (oilPh >= 0)
                 add(u[gc], vO, Rs * bO);
+        }
+        if (componentPhaseMixingOut) {
+            auto& C = *componentPhaseMixingOut;
+            for (auto& row : C)
+                row.fill(Scalar{0});
+            if (watPh >= 0) {
+                const unsigned wc = FluidSystem::canonicalToActiveCompIdx(
+                    FluidSystem::solventComponentIndex(watPh));
+                C[wc][0] = bW;
+            }
+            if (oilPh >= 0) {
+                const unsigned oc = FluidSystem::canonicalToActiveCompIdx(
+                    FluidSystem::solventComponentIndex(oilPh));
+                C[oc][1] = bO;
+                if (gasPh >= 0)
+                    C[oc][2] = Rv * bG;
+            }
+            if (gasPh >= 0) {
+                const unsigned gc = FluidSystem::canonicalToActiveCompIdx(
+                    FluidSystem::solventComponentIndex(gasPh));
+                C[gc][2] = bG;
+                if (oilPh >= 0)
+                    C[gc][1] = Rs * bO;
+            }
         }
         return u;
     }
@@ -2505,6 +2876,18 @@ private:
                                 pressure, neighbourPressure[p],
                                 neighbourOffsets, lsWeights);
                     }
+
+                    Scalar lower = pressure;
+                    Scalar upper = pressure;
+                    for (const Scalar neighbourValue : neighbourPressure[p]) {
+                        if (std::isfinite(neighbourValue)) {
+                            lower = std::min(lower, neighbourValue);
+                            upper = std::max(upper, neighbourValue);
+                        }
+                    }
+                    fluxGrad[p][i] =
+                        APosteriori::limitGradientToBounds<Scalar, dim>(
+                            pressure, fluxGrad[p][i], g.vtxOff, lower, upper);
                 }
             }
         }
@@ -2620,8 +3003,8 @@ private:
 
     Simulator& simulator_;
 
-    PressureRecon pressureRecon_ {PressureRecon::PatchAverageLift};
-    bool useLiftedRelperm_ {true};
+    PressureRecon pressureRecon_ {PressureRecon::ConnectionLS};
+    bool useLiftedRelperm_ {false};
     bool useBubbleCorrection_ {true};
     Scalar ell_ {0};
     std::vector<int> wellCells_;
@@ -2657,7 +3040,8 @@ private:
 
     //! Cached MVEM flux mass matrix M_K per interior cell (flat nf*nf, row
     //! major). Rebuilt lazily on the first compute() after updateGeometry().
-    std::vector<std::vector<Scalar>> mvemMtotCache_;
+    std::vector<std::vector<Scalar>> mvemMcCache_;
+    std::vector<std::vector<Scalar>> mvemMsCache_;
     bool mvemCacheBuilt_ {false};
 
     std::vector<CompFlux> prevU_;
@@ -2685,6 +3069,9 @@ private:
     bool cheapNorms_ {false};  //!< drop all *,K energy norms to the cheap diagonal form -- see setCheapNorms()
     bool disableCkkWeight_ {false};  //!< eta_eq,K ablation: c_KK=1 -- see setDisableCkkWeight()
     bool separateNeumannMean_ {false};  //!< H1/R experiment: eta_eq is diagnostic, not marking energy
+    bool mobilityEnergyNorm_ {false};  //!< component defects use induced black-oil mobility
+    Scalar mobilityFloorFraction_ {Scalar{1e-12}};  //!< see setMobilityFloorFraction()
+    Scalar mvemStabilityEpsilon_ {Scalar{1e-2}};    //!< see setMvemStabilityEpsilon()
 
     Scalar etaSp_   {0};
     Scalar etaSpT1_ {0};
@@ -2704,6 +3091,25 @@ private:
     //! dumpCellEstimators().
     std::vector<std::array<double, 4>> cellEta_;
     std::vector<std::array<double, numComponents>> cellSpatialEtaByComponent_;
+    std::vector<std::array<double, numComponents>>
+        cellLinearizationEtaByComponent_;
+    //! Diagnostic-only (not used by any estimator decision): per-cell/component
+    //! T1 (the Pi0-moment, diagonal-K form) vs sqrt(z^T M^c z) (the mimetic
+    //! consistency form, full tensor K) computed within the SAME run/step, to
+    //! check the "z^T M^c z reproduces T1^2 exactly" claim directly instead of
+    //! comparing across separate cheap/rigorous runs (which can diverge in
+    //! their Newton path, contaminating the comparison). See dumpCellEstimators().
+    std::vector<std::array<double, numComponents>> cellEtaT1ByComponent_;
+    std::vector<std::array<double, numComponents>> cellEtaMcByComponent_;
+    //! Darcy-only spatial energy and its MVEM consistency/stability split in
+    //! the active norm (componentwise K^-1 or coupled component mobility).
+    std::vector<double> cellDarcyEta_;
+    std::vector<double> cellConsistencyEta_;
+    std::vector<double> cellStabilityEta_;
+    //! Regularised L=C diag(lambda) C^T used by the coupled norm. Diagnostic
+    //! output for evaluating reference flux errors in exactly the same norm.
+    std::vector<std::array<std::array<double, numComponents>, numComponents>>
+        cellComponentMobility_;
     std::vector<double> cellEquilibrationEta_;
     bool   etaLinRigorousLastCall_ {false};
 };

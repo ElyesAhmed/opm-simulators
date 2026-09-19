@@ -152,7 +152,7 @@ bool newtonConverged(Scalar etaLin,
 
 /*!
  * \brief Linear-solver stopping, eq. (Criteria_alg):
- *        eta_alg <= Gamma_alg eta_lin.
+ *        eta_alg <= Gamma_alg max(eta_sp, eta_time).
  *
  * Loose in the early Newton iterations (large eta_lin), tight near nonlinear
  * convergence.  Returns the relative reduction target to hand the Krylov
@@ -160,26 +160,30 @@ bool newtonConverged(Scalar etaLin,
  * left to the caller (pass redMax when eta_lin is not yet available).
  */
 template<class Scalar>
-Scalar linearSolveTarget(Scalar etaLin,
-                         Scalar etaLinPrev,
+Scalar linearSolveTarget(Scalar etaAlgInitial,
+                         Scalar etaSp,
+                         Scalar etaTime,
                          const BalancingTargets<Scalar>& t,
                          Scalar redMin,
                          Scalar redMax)
 {
-    // Use the current linearization-error level relative to the previous one as
-    // the admissible algebraic level, scaled by Gamma_alg.
-    if (!(etaLinPrev > Scalar{0}) || !std::isfinite(etaLin))
+    const Scalar disc = std::max(etaSp, etaTime);
+    if (!(etaAlgInitial > Scalar{0}) || !(disc > Scalar{0})
+        || !std::isfinite(etaAlgInitial) || !std::isfinite(disc))
         return redMax;
-    const Scalar target = t.GammaAlg * (etaLin / etaLinPrev);
+    const Scalar target = t.GammaAlg * disc / etaAlgInitial;
     return std::clamp(target, redMin, redMax);
 }
 
 template<class Scalar>
-bool linearConverged(Scalar etaAlg, Scalar etaLin, const BalancingTargets<Scalar>& t)
+bool linearConverged(Scalar etaAlg,
+                     Scalar etaSp,
+                     Scalar etaTime,
+                     const BalancingTargets<Scalar>& t)
 {
-    if (!(etaLin > Scalar{0}))
-        return true;
-    return etaAlg <= t.GammaAlg * etaLin;
+    const Scalar disc = std::max(etaSp, etaTime);
+    return (disc > Scalar{0}) && std::isfinite(disc) && std::isfinite(etaAlg)
+        && etaAlg <= t.GammaAlg * disc;
 }
 
 /*!
