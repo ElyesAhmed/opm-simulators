@@ -139,13 +139,16 @@ NonlinearSystemBlackOilReservoir(Simulator& simulator,
         aposteriori_estimator_->setCheapNorms(this->param_.aposteriori_cheap_norms_);
         aposteriori_estimator_->setDisableCkkWeight(this->param_.aposteriori_disable_ckk_weight_);
         aposteriori_estimator_->setSeparateNeumannMean(this->param_.aposteriori_separate_neumann_mean_);
+        aposteriori_estimator_->setMobilityEnergyNorm(this->param_.aposteriori_mobility_energy_norm_);
+        aposteriori_estimator_->setMobilityFloorFraction(this->param_.aposteriori_mobility_floor_fraction_);
+        aposteriori_estimator_->setMvemStabilityEpsilon(this->param_.aposteriori_mvem_stability_epsilon_);
         aposteriori_estimator_->setUseLiftedRelperm(this->param_.aposteriori_use_lifted_relperm_);
         aposteriori_estimator_->setUseBubbleCorrection(this->param_.aposteriori_use_bubble_correction_);
         aposteriori_estimator_->setPressureReconstruction(
-            this->param_.aposteriori_use_connection_ls_gradient_
-                ? APosterioriSpatialTemporalEstimator<TypeTag>::PressureRecon::ConnectionLS
-                : (this->param_.aposteriori_use_flux_taylor_pressure_
-                    ? APosterioriSpatialTemporalEstimator<TypeTag>::PressureRecon::FluxTaylorLift
+            this->param_.aposteriori_use_flux_taylor_pressure_
+                ? APosterioriSpatialTemporalEstimator<TypeTag>::PressureRecon::FluxTaylorLift
+                : (this->param_.aposteriori_use_connection_ls_gradient_
+                    ? APosterioriSpatialTemporalEstimator<TypeTag>::PressureRecon::ConnectionLS
                     : APosterioriSpatialTemporalEstimator<TypeTag>::PressureRecon::PatchAverageLift));
 
         // The vertex-patch reconstruction and the linearization-defect mirror
@@ -166,36 +169,21 @@ NonlinearSystemBlackOilReservoir(Simulator& simulator,
             }
         }
 
-        // Diagnosed 2026-09-13 on the L40 five-spot: combining
-        // --enable-aposteriori-newton-stopping with a nonzero
-        // --aposteriori-alg-max-resolves causes severe Newton instability
-        // (repeated timestep chops, iteration counts 40-70x higher than with
-        // resolves disabled) -- isolated to this exact three-way combination;
-        // neither feature alone, nor Gamma_alg's one-shot forcing term
-        // (max-resolves=0) combined with Newton stopping, showed the problem.
-        // Root cause: when the resolve loop still leaves eta_alg short of its
-        // target and aposteriori_alg_unmet_ blocks Criteria_newton's early
-        // accept, Newton must keep going toward OPM's own (stricter) native
-        // convergence -- but the linear solve reduction stays calibrated to
-        // the looser, unmet Gamma_alg target rather than tightening to what
-        // native convergence actually needs, starving subsequent Newton
-        // iterations of the accuracy to make adequate progress. Disable the
-        // resolve loop rather than the whole linear-tolerance forcing term:
-        // the one-shot forcing term (max-resolves=0) is unaffected and
-        // remains the validated, safe way to drive the linear solve from
-        // Criteria_alg.
+        // The endpoint-verified controller may be combined with estimator
+        // Newton stopping. A failed algebraic endpoint check now latches the
+        // next Newton solve to the configured strict reduction, so an unmet
+        // target cannot repeatedly starve nonlinear convergence. Correction
+        // solves recompute the full increment from zero with the requested
+        // reduction calibrated by the measured physical endpoint shortfall.
         if (this->param_.enable_aposteriori_newton_stopping_
             && this->param_.enable_aposteriori_linear_tolerance_
             && this->param_.aposteriori_alg_max_resolves_ > 0) {
             if (terminal_output)
-                OpmLog::warning(fmt::format(
-                    "--aposteriori-alg-max-resolves={} combined with "
-                    "--enable-aposteriori-newton-stopping is a known-unsafe "
-                    "combination (severe Newton instability, diagnosed "
-                    "2026-09-13) -- forcing max-resolves to 0 for this run. "
-                    "The one-shot Gamma_alg forcing term stays active.",
+                OpmLog::info(fmt::format(
+                    "Endpoint-verified Criteria_alg is enabled with up to {} "
+                    "endpoint correction solve(s); an unmet endpoint forces "
+                    "the next Newton linear solve to the strict tolerance.",
                     this->param_.aposteriori_alg_max_resolves_));
-            this->param_.aposteriori_alg_max_resolves_ = 0;
         }
 
         if (terminal_output) {
@@ -346,7 +334,9 @@ initialLinearization(SimulatorReportSingle& report,
                 this->aposteriori_eta_lin_prev_ =
                     aposteriori_estimator_->etaLinearization();
                 const Scalar etaSpDarcy =
-                    aposteriori_estimator_->etaSpatialDarcyMimetic();
+                    this->param_.aposteriori_use_total_spatial_budget_
+                    ? aposteriori_estimator_->etaSpatialMimetic()
+                    : aposteriori_estimator_->etaSpatialDarcyMimetic();
                 const Scalar etaTime =
                     aposteriori_estimator_->temporalAvailable()
                         ? aposteriori_estimator_->etaTemporal()
@@ -402,11 +392,13 @@ initialLinearization(SimulatorReportSingle& report,
             // within ~4 Newton iterations on a well-posed step, but can swing
             // by 100s of % while Newton oscillates (well control switch,
             // over-large step). Only accept once both have stabilised to
-            // within kPlateauTol between the last two computed iterates --
-            // otherwise the guarantee does not hold.
-            constexpr Scalar kPlateauTol = Scalar{0.05};
-            bool estimatorsPlateaued = false;
-            if (aposteriori_rows_.size() >= 2) {
+            // within the configured tolerance between the last two computed
+            // iterates. Zero exposes the bare estimator criterion for a
+            // reproducible ablation instead of relying on process state.
+            const Scalar plateauTol =
+                this->param_.aposteriori_newton_plateau_tolerance_;
+            bool estimatorsPlateaued = plateauTol <= Scalar{0};
+            if (!estimatorsPlateaued && aposteriori_rows_.size() >= 2) {
                 const auto& rNow  = aposteriori_rows_[aposteriori_rows_.size() - 1];
                 const auto& rPrev = aposteriori_rows_[aposteriori_rows_.size() - 2];
                 const auto relChange = [](Scalar cur, Scalar prev) -> Scalar {
@@ -415,19 +407,13 @@ initialLinearization(SimulatorReportSingle& report,
                 };
                 const Scalar dMim  = relChange(rNow[0], rPrev[0]); // eta_sp(mim)
                 const Scalar dTime = relChange(rNow[3], rPrev[3]); // eta_time
-                estimatorsPlateaued = (dMim <= kPlateauTol) && (dTime <= kPlateauTol);
-            }
-            // Diagnostic: OPM_APOST_NO_PLATEAU=1 removes the plateau guard so the
-            // accept decision is the bare Criteria_newton
-            // eta_lin <= Gamma_lin*max(eta_sp,eta_time) (+ well/group/network +
-            // MB when tol-mb keeps it). For testing the estimator criterion in
-            // isolation -- not a production option.
-            if (std::getenv("OPM_APOST_NO_PLATEAU")) {
-                estimatorsPlateaued = true;
+                estimatorsPlateaued = (dMim <= plateauTol) && (dTime <= plateauTol);
             }
 
             const Scalar etaSpMim =
-                aposteriori_estimator_->etaSpatialDarcyMimetic();
+                this->param_.aposteriori_use_total_spatial_budget_
+                ? aposteriori_estimator_->etaSpatialMimetic()
+                : aposteriori_estimator_->etaSpatialDarcyMimetic();
             const Scalar etaTime = aposteriori_estimator_->temporalAvailable()
                 ? aposteriori_estimator_->etaTemporal() : etaSpMim;
             const bool estimatorPassed =
@@ -437,6 +423,45 @@ initialLinearization(SimulatorReportSingle& report,
                                              etaTime,
                                              this->last_mass_balance_residual_,
                                              aposteriori_targets_);
+            // Opt-in validation trace: report every constituent of the
+            // Criteria_newton decision without changing acceptance. This is
+            // intentionally environment-gated because per-iteration output is
+            // too verbose for normal simulator use.
+            if (std::getenv("OPM_APOST_TRACE_REJECT") && !this->grid_.comm().rank()) {
+                std::size_t cnvFailures = 0;
+                std::size_t mbFailures = 0;
+                std::size_t otherReservoirFailures = 0;
+                for (const auto& failure : failures) {
+                    using T = ConvergenceReport::ReservoirFailure::Type;
+                    if (failure.type() == T::Cnv) {
+                        ++cnvFailures;
+                    }
+                    else if (failure.type() == T::MassBalance) {
+                        ++mbFailures;
+                    }
+                    else {
+                        ++otherReservoirFailures;
+                    }
+                }
+                OpmLog::info(fmt::format(
+                    "  [a posteriori reject trace] iter={} cnv_fail={} mb_fail={} "
+                    "other_res_fail={} only_cnv={} nonreservoir_ok={} estimator_ok={} "
+                    "plateau_ok={} alg_ok={} eta_lin={:.3e} budget={:.3e} MB={:.3e} "
+                    "MB_tol={:.3e}",
+                    this->simulator_.problem().iterationContext().iteration(),
+                    cnvFailures,
+                    mbFailures,
+                    otherReservoirFailures,
+                    onlyCnvFailures,
+                    nonReservoirChecksPassed,
+                    estimatorPassed,
+                    estimatorsPlateaued,
+                    !aposteriori_alg_unmet_,
+                    aposteriori_estimator_->etaLinearization(),
+                    this->param_.aposteriori_gamma_lin_ * std::max(etaSpMim, etaTime),
+                    this->last_mass_balance_residual_,
+                    aposteriori_targets_.tolMB));
+            }
             if (onlyCnvFailures && nonReservoirChecksPassed && estimatorPassed
                 && estimatorsPlateaued && !aposteriori_alg_unmet_) {
                 report.converged = true;
@@ -501,7 +526,13 @@ nonlinearIteration(const SimulatorTimerInterface& timer,
         this->aposteriori_rows_.clear();
         this->aposteriori_alg_rhs_.clear();
         this->aposteriori_eta_lin_prev_ = 0;
-        this->aposteriori_max_sptime_prev_ = 0;
+        // Keep the last converged discretization budget for the first linear
+        // solve of the new timestep. Resetting it to zero forced one strict
+        // solve per timestep even though the previous accepted state supplies
+        // the only available predictor for Criteria_alg. Invalid/non-positive
+        // values are still rejected at the forcing-term call site.
+        this->aposteriori_alg_unmet_ = false;
+        this->aposteriori_force_strict_linear_ = false;
         if (this->aposteriori_estimator_) {
             this->aposteriori_estimator_->resetNewtonIterateHistory();
         }
@@ -661,6 +692,9 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
     // MFD-family design choice per Lemma 3.7 -- see the doc comments at
     // mvemFluxMassMatrix and etaSpatialMimetic() for both caveats in full.
     const Scalar etaSpMim  = aposteriori_estimator_->etaSpatialMimetic();
+    const Scalar etaSpControl =
+        this->param_.aposteriori_use_total_spatial_budget_
+        ? etaSpMim : aposteriori_estimator_->etaSpatialDarcyMimetic();
     const Scalar etaSpT1   = aposteriori_estimator_->etaSpatialT1();
     const Scalar etaSp     = aposteriori_estimator_->etaSpatial();
     const Scalar etaTime   = aposteriori_estimator_->etaTemporal();
@@ -684,7 +718,7 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
     // L40 five-spot vs. 47 / 198 with estimators off entirely, identical
     // across Gamma_alg in {0.1,0.05,0.01}).
     this->aposteriori_max_sptime_prev_ =
-        std::max(etaSpMim, haveT ? etaTime : etaSpMim);
+        std::max(etaSpControl, haveT ? etaTime : etaSpControl);
 
     if (haveLinW && std::isfinite(etaLinW)) {
         this->aposteriori_eta_lin_prev_ = etaLinW;
@@ -777,7 +811,8 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
     // the point where OPM's own Newton loop actually stopped?  This does NOT
     // drive anything; it is logged for comparison in the final table row.
     const bool wouldStopNewton = haveLinW &&
-        APosteriori::newtonConverged(etaLinW, etaSpMim, haveT ? etaTime : etaSpMim,
+        APosteriori::newtonConverged(
+            etaLinW, etaSpControl, haveT ? etaTime : etaSpControl,
                                      this->last_mass_balance_residual_, aposteriori_targets_);
 
     if (!converged) {
@@ -792,15 +827,16 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
 
     // --- flush the per-Newton-iteration table for this step ---
     // Control uses etaSpMim throughout -- see its declaration above.
-    const Scalar ratio = (etaSpMim > 0.0 && haveT) ? etaTime / etaSpMim
+    const Scalar ratio = (etaSpControl > 0.0 && haveT) ? etaTime / etaSpControl
                                                 : std::numeric_limits<Scalar>::quiet_NaN();
     // The estimator-driven rescale needs a usable spatial reference: a
     // non-finite or collapsed eta_sp(mim) (e.g. from incomplete cell-face
     // geometry) must leave dt untouched, never drive it.
-    const bool discOk = std::isfinite(etaSpMim) && etaSpMim > Scalar{0}
+    const bool discOk = std::isfinite(etaSpControl) && etaSpControl > Scalar{0}
                         && (!haveT || std::isfinite(etaTime));
     const bool   band  = !haveT || !discOk
-        || APosteriori::spaceTimeBalanced(etaSpMim, etaTime, aposteriori_targets_);
+        || APosteriori::spaceTimeBalanced(
+            etaSpControl, etaTime, aposteriori_targets_);
     // In limiter mode (the production default -- see
     // aposterioriTimestepGrowthOverrideEnabled()), the caller applies
     // min(nativeDt, dtNew), which already bounds growth by whatever
@@ -815,7 +851,8 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
         ? this->param_.aposteriori_max_grow_
         : std::numeric_limits<Scalar>::max();
     const Scalar dtNew = (haveT && discOk)
-        ? APosteriori::rescaledTimeStep(dt, etaSpMim, etaTime, aposteriori_targets_,
+        ? APosteriori::rescaledTimeStep(
+            dt, etaSpControl, etaTime, aposteriori_targets_,
                                         /*dtMin=*/Scalar{0},
                                         /*dtMax=*/std::numeric_limits<Scalar>::max(),
                                         effMaxGrow,
@@ -844,7 +881,8 @@ evalAposterioriEstimators(const SimulatorTimerInterface& timer, const bool conve
                     "Control will resume at the next report boundary.",
                     timer.reportStepNum(), aposteriori_total_ctrl_steps_,
                     aposteriori_period_steps_,
-                    etaSpMim > 0 ? static_cast<double>(etaTime / etaSpMim) : 0.0));
+                    etaSpControl > 0
+                        ? static_cast<double>(etaTime / etaSpControl) : 0.0));
         }
         if (aposteriori_ctrl_suspended_)
             aposteriori_suggested_dt_.reset();
@@ -1124,6 +1162,17 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
         // opt-in, off-by-default diagnostic.
         std::optional<Mat> linearDumpMatrix;
 
+        // Endpoint-verified Criteria_alg state for this Newton linear solve.
+        // The absolute target is expressed in the physical estimator norm;
+        // the requested reduction is the tolerance passed to ISTL.
+        std::optional<Scalar> algebraicAbsoluteTarget;
+        std::optional<Scalar> algebraicRawReduction;
+        double algebraicRequestedReduction =
+            static_cast<double>(this->adaptive_linear_reduction_.reductionMin());
+        const char* algebraicForcingSource = "static";
+        int linearIterationsThisNewton = 0;
+        int algebraicCorrections = 0;
+
         // Inexact-Newton: relax the linear tolerance to the current nonlinear
         // (linearization) error level for this solve. The converged nonlinear
         // solution is unchanged; only the linear iteration count is affected.
@@ -1187,12 +1236,35 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
             // Evaluated AFTER wellModel().linearize() so eta_alg^{(0)} is on the
             // scale of the reduced (well-eliminated) system actually solved.
             if (this->param_.enable_aposteriori_linear_tolerance_ && etaAlg0) {
-                const auto forcing = this->adaptive_linear_reduction_.forcingTermFromEstimator(
-                    *etaAlg0, this->aposteriori_max_sptime_prev_,
-                    this->aposteriori_targets_.GammaAlg);
-                linSolver.setLinearSolveReduction(
-                    forcing.has_value() ? std::optional<double>(static_cast<double>(*forcing))
-                                        : std::nullopt);
+                const Scalar budget = this->aposteriori_max_sptime_prev_;
+                if (*etaAlg0 > Scalar{0} && std::isfinite(budget) && budget > Scalar{0}) {
+                    algebraicAbsoluteTarget = this->aposteriori_targets_.GammaAlg * budget;
+                    algebraicRawReduction = *algebraicAbsoluteTarget / *etaAlg0;
+                }
+
+                if (this->aposteriori_force_strict_linear_) {
+                    algebraicForcingSource = "strict-after-unmet";
+                    this->aposteriori_force_strict_linear_ = false;
+                    linSolver.setLinearSolveReduction(algebraicRequestedReduction);
+                }
+                else {
+                    const auto forcing =
+                        this->adaptive_linear_reduction_.forcingTermFromEstimator(
+                            *etaAlg0, budget, this->aposteriori_targets_.GammaAlg);
+                    if (forcing) {
+                        algebraicForcingSource = "criteria-alg";
+                        algebraicRequestedReduction = static_cast<double>(*forcing);
+                        linSolver.setLinearSolveReduction(algebraicRequestedReduction);
+                    }
+                    else {
+                        algebraicForcingSource =
+                            this->adaptive_linear_reduction_.previousIterations()
+                                    < this->adaptive_linear_reduction_.minimumIterations()
+                                ? "fixed-cheap-previous"
+                                : "fixed-missing-budget";
+                        linSolver.setLinearSolveReduction(std::nullopt);
+                    }
+                }
             }
 
             solveJacobianSystem(x);
@@ -1200,6 +1272,7 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
             report.linear_solve_setup_time += linear_solve_setup_time_;
             report.linear_solve_time += perfTimer.stop();
             report.total_linear_iterations += linearIterationsLastSolve();
+            linearIterationsThisNewton = linearIterationsLastSolve();
 
             if (this->adaptive_linear_reduction_.enabled()) {
                 this->adaptive_linear_reduction_.recordLinearIterations(linearIterationsLastSolve());
@@ -1355,41 +1428,89 @@ nonlinearIterationNewton(const SimulatorTimerInterface& timer,
             this->aposteriori_alg_unmet_ = false;
             if (this->aposteriori_estimator_ && this->param_.enable_aposteriori_estimators_) {
                 Scalar etaAlg = evalEtaAlg();
+                const Scalar etaAlgBeforeCorrection = etaAlg;
 
-                // The predicted forcing term normally avoids an extra solve.
-                // A positive max-resolves opts into a bounded loop of guarded
-                // tighter solves, each re-deriving its own reduction target
-                // from the just-measured shortfall (not repeating the first
-                // guess), so a solve that undershoots still converges toward
-                // the target rather than retrying the same request.
+                // Endpoint-verified Criteria_alg. solveJacobianSystem() does
+                // not preserve x as a Krylov warm start, so each correction
+                // recomputes the full Newton increment from zero. Each request
+                // tightens the preceding request by the measured physical
+                // target/eta_alg shortfall, with a factor-two safety margin.
                 if (this->param_.enable_aposteriori_linear_tolerance_
-                    && this->param_.aposteriori_alg_max_resolves_ > 0) {
-                    const Scalar target = this->aposteriori_targets_.GammaAlg
-                                        * this->aposteriori_max_sptime_prev_;
+                    && this->param_.aposteriori_alg_max_resolves_ > 0
+                    && algebraicAbsoluteTarget) {
+                    const Scalar target = *algebraicAbsoluteTarget;
+                    double correctionReduction = algebraicRequestedReduction;
                     for (int resolve = 0;
                          resolve < this->param_.aposteriori_alg_max_resolves_
                              && std::isfinite(target) && target > Scalar{0}
-                             && etaAlg > Scalar{1.2} * target;
+                             && etaAlg > target;
                          ++resolve) {
-                        const double red = std::clamp(
-                            this->adaptive_linear_reduction_.lastTarget()
+                        correctionReduction = std::clamp(
+                            correctionReduction
                                 * static_cast<double>(target / etaAlg) * 0.5,
-                            Parameters::Get<Parameters::LinearSolverReduction>(), 0.5);
-                        linSolver.setLinearSolveReduction(std::optional<double>(red));
-                        solveJacobianSystem(x);
+                            static_cast<double>(this->adaptive_linear_reduction_.reductionMin()),
+                            static_cast<double>(this->adaptive_linear_reduction_.reductionMax()));
+                        linSolver.setLinearSolveReduction(
+                            std::optional<double>(correctionReduction));
+                        BVector correctedX(nc);
+                        correctedX = 0.0;
+                        // The first solve may use the linearizer residual as
+                        // scaling/workspace storage. Restore the immutable
+                        // post-Schur RHS before solving the same physical
+                        // system again; otherwise the correction sees the
+                        // mutated near-zero workspace residual.
+                        this->simulator_.model().linearizer().residual() =
+                            *algebraicRhs;
+                        solveJacobianSystem(correctedX);
+                        x = std::move(correctedX);
                         report.total_linear_iterations += linearIterationsLastSolve();
+                        linearIterationsThisNewton += linearIterationsLastSolve();
+                        ++algebraicCorrections;
                         etaAlg = evalEtaAlg();
                     }
                     this->aposteriori_alg_unmet_ =
                         std::isfinite(target) && target > Scalar{0}
-                        && etaAlg > Scalar{1.2} * target;
+                        && etaAlg > target;
+                    this->aposteriori_force_strict_linear_ =
+                        this->aposteriori_alg_unmet_;
                     if (this->aposteriori_alg_unmet_ && !this->grid_.comm().rank()) {
                         OpmLog::info(fmt::format(
                             "  [a posteriori] Criteria_alg still not met after "
-                            "{} guarded re-solve(s) (kept increment; "
-                            "estimator-based Newton acceptance disabled).",
-                            this->param_.aposteriori_alg_max_resolves_));
+                            "{} endpoint correction(s); estimator Newton "
+                            "acceptance is disabled and the next linear solve "
+                            "is forced to the strict tolerance.",
+                            algebraicCorrections));
                     }
+                }
+
+                if (this->adaptive_linear_reduction_.enabled()) {
+                    this->adaptive_linear_reduction_.recordLinearIterations(
+                        linearIterationsThisNewton);
+                }
+
+                if (std::getenv("OPM_APOST_TRACE_LINEAR") != nullptr
+                    && !this->grid_.comm().rank()) {
+                    const double nan = std::numeric_limits<double>::quiet_NaN();
+                    const double target = algebraicAbsoluteTarget
+                        ? static_cast<double>(*algebraicAbsoluteTarget) : nan;
+                    const double raw = algebraicRawReduction
+                        ? static_cast<double>(*algebraicRawReduction) : nan;
+                    const bool checked = algebraicAbsoluteTarget.has_value();
+                    OpmLog::info(fmt::format(
+                        "  [a posteriori linear] step={} k={} source={} "
+                        "raw_reduction={:.6e} requested_reduction={:.6e} "
+                        "eta_alg_0={:.6e} target={:.6e} "
+                        "eta_alg_first={:.6e} corrections={} "
+                        "eta_alg_final={:.6e} pass={} linear_iterations={}",
+                        timer.currentStepNum(),
+                        this->simulator_.problem().iterationContext().iteration(),
+                        algebraicForcingSource, raw, algebraicRequestedReduction,
+                        static_cast<double>(etaAlg0.value_or(Scalar{0})), target,
+                        static_cast<double>(etaAlgBeforeCorrection),
+                        algebraicCorrections, static_cast<double>(etaAlg),
+                        checked ? (etaAlg <= *algebraicAbsoluteTarget ? "true" : "false")
+                                : "not-available",
+                        linearIterationsThisNewton));
                 }
             }
             if (this->aposteriori_estimator_

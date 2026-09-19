@@ -37,6 +37,7 @@
 #include <dune/common/fvector.hh>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -45,6 +46,111 @@
 
 namespace Opm::APosteriori {
 
+/*! \brief Build the regularised mobility matrix induced in component space.
+ *
+ * If the conserved component flux is u = C v and the phase dissipation is
+ * diag(lambda)^{-1}, then the induced component mobility is
+ *
+ *     L = C diag(lambda) C^T.
+ *
+ * The diagonal shift is an explicit numerical regularisation for disappearing
+ * phases (or a nearly singular black-oil mixing matrix), not part of the
+ * guaranteed K^{-1} residual estimator. Each component's shift is scaled by
+ * the squared norm of its row of C and by the largest phase mobility. This
+ * preserves the energy when a conserved equation and its defect are rescaled
+ * together (for example by a component reference density); a global shift
+ * proportional to max(diag(L)) does not have that invariance.
+ */
+template<class Scalar, std::size_t NumComponents, std::size_t NumPhases>
+std::array<std::array<Scalar, NumComponents>, NumComponents>
+componentMobilityMatrix(
+    const std::array<std::array<Scalar, NumPhases>, NumComponents>& mixing,
+    const std::array<Scalar, NumPhases>& mobility,
+    Scalar floorFraction)
+{
+    std::array<std::array<Scalar, NumComponents>, NumComponents> result{};
+    Scalar mobilityScale = Scalar{0};
+    for (const Scalar value : mobility) {
+        if (!std::isfinite(value) || value < Scalar{0}) {
+            const Scalar nan = std::numeric_limits<Scalar>::quiet_NaN();
+            for (auto& row : result) {
+                row.fill(nan);
+            }
+            return result;
+        }
+        mobilityScale = std::max(mobilityScale, value);
+    }
+
+    for (std::size_t a = 0; a < NumComponents; ++a) {
+        for (std::size_t b = 0; b < NumComponents; ++b) {
+            for (std::size_t p = 0; p < NumPhases; ++p) {
+                if (!std::isfinite(mixing[a][p])
+                    || !std::isfinite(mixing[b][p])) {
+                    const Scalar nan = std::numeric_limits<Scalar>::quiet_NaN();
+                    for (auto& row : result) {
+                        row.fill(nan);
+                    }
+                    return result;
+                }
+                result[a][b] += mixing[a][p] * mobility[p] * mixing[b][p];
+            }
+        }
+    }
+
+    const Scalar fraction = std::max(floorFraction, Scalar{0});
+    for (std::size_t a = 0; a < NumComponents; ++a) {
+        Scalar rowNorm2 = Scalar{0};
+        for (std::size_t p = 0; p < NumPhases; ++p) {
+            rowNorm2 += mixing[a][p] * mixing[a][p];
+        }
+        result[a][a] += fraction * mobilityScale * rowNorm2;
+    }
+    return result;
+}
+
+/*! \brief Cholesky factor A of a small SPD matrix L = A A^T. */
+template<class Scalar, std::size_t N>
+std::array<std::array<Scalar, N>, N>
+choleskyLower(const std::array<std::array<Scalar, N>, N>& matrix)
+{
+    std::array<std::array<Scalar, N>, N> lower{};
+    Scalar diagonalScale = Scalar{0};
+    for (std::size_t i = 0; i < N; ++i) {
+        diagonalScale = std::max(diagonalScale, matrix[i][i]);
+    }
+    const Scalar pivotFloor = std::max(
+        std::numeric_limits<Scalar>::epsilon() * diagonalScale,
+        std::numeric_limits<Scalar>::min());
+    for (std::size_t i = 0; i < N; ++i) {
+        for (std::size_t j = 0; j <= i; ++j) {
+            Scalar value = matrix[i][j];
+            for (std::size_t k = 0; k < j; ++k)
+                value -= lower[i][k] * lower[j][k];
+            if (i == j)
+                lower[i][j] = std::sqrt(std::max(value, pivotFloor));
+            else
+                lower[i][j] = value / lower[j][j];
+        }
+    }
+    return lower;
+}
+
+/*! \brief Apply A^{-1} to component data, where A is lower triangular. */
+template<class Scalar, std::size_t N>
+std::array<Scalar, N>
+solveLower(const std::array<std::array<Scalar, N>, N>& lower,
+           const std::array<Scalar, N>& rhs)
+{
+    std::array<Scalar, N> result{};
+    for (std::size_t i = 0; i < N; ++i) {
+        Scalar value = rhs[i];
+        for (std::size_t j = 0; j < i; ++j)
+            value -= lower[i][j] * result[j];
+        result[i] = value / lower[i][i];
+    }
+    return result;
+}
+
 /*! \brief Combine the Darcy defect with the local Neumann mean defect.
  *
  * The default reproduces the paper estimator. In the experimental H1/R
@@ -52,13 +158,19 @@ namespace Opm::APosteriori {
  * contains the Darcy defect only; the global constant mode is guarded by the
  * simulator's material-balance test.
  */
-template<class Scalar>
-constexpr Scalar
-spatialIndicatorWithMeanPolicy(Scalar darcy,
-                               Scalar equilibration,
-                               bool separateNeumannMean)
+template<class Scalar, std::size_t N>
+Scalar componentwiseCombinedIndicator(
+    const std::array<Scalar, N>& primary,
+    const std::array<Scalar, N>& correction,
+    bool separateCorrection)
 {
-    return darcy + (separateNeumannMean ? Scalar{0} : equilibration);
+    Scalar sum2 = 0;
+    for (std::size_t c = 0; c < N; ++c) {
+        const Scalar value = primary[c]
+            + (separateCorrection ? Scalar{0} : correction[c]);
+        sum2 += value * value;
+    }
+    return std::sqrt(std::max(sum2, Scalar{0}));
 }
 
 /*!
@@ -146,18 +258,27 @@ leastSquaresGradient(Scalar uCell,
                      std::span<const Dune::FieldVector<Scalar, dim>> d,
                      std::span<const Scalar> w = {})
 {
+    Dune::FieldVector<Scalar, dim> g(Scalar{0});
+    if (!std::isfinite(uCell)) {
+        return g;
+    }
+
     Dune::FieldMatrix<Scalar, dim, dim> M(Scalar{0});
     Dune::FieldVector<Scalar, dim> rhs(Scalar{0});
 
-    const std::size_t n = uNb.size();
+    std::size_t n = std::min(uNb.size(), d.size());
+    if (!w.empty()) {
+        n = std::min(n, w.size());
+    }
     for (std::size_t c = 0; c < n; ++c) {
         const auto& dc = d[c];
         const Scalar len2 = dc.two_norm2();
-        if (len2 <= Scalar{0}) {
+        if (!(len2 > Scalar{0}) || !std::isfinite(len2)
+            || !std::isfinite(uNb[c])) {
             continue;
         }
         const Scalar wc = w.empty() ? (Scalar{1} / len2) : w[c];
-        if (wc <= Scalar{0}) {
+        if (!(wc > Scalar{0}) || !std::isfinite(wc)) {
             continue;
         }
         const Scalar du = uNb[c] - uCell;
@@ -169,7 +290,6 @@ leastSquaresGradient(Scalar uCell,
         }
     }
 
-    Dune::FieldVector<Scalar, dim> g(Scalar{0});
     // Regularise a rank-deficient system (e.g. a cell with < dim connections).
     Scalar tr{0};
     for (int i = 0; i < dim; ++i) {
@@ -182,12 +302,63 @@ leastSquaresGradient(Scalar uCell,
         }
         try {
             M.solve(g, rhs);
+            for (int i = 0; i < dim; ++i) {
+                if (!std::isfinite(g[i])) {
+                    return Dune::FieldVector<Scalar, dim>(Scalar{0});
+                }
+            }
         }
         catch (...) {
             g = Scalar{0};
         }
     }
     return g;
+}
+
+/*!
+ * \brief Scale a reconstructed gradient so its vertex extrapolations remain
+ *        inside a local one-ring value range.
+ *
+ * This is a multidimensional slope limiter: it preserves the gradient when all
+ * extrapolated values are admissible and otherwise applies one scalar factor
+ * in [0,1]. Using one factor preserves the gradient direction and avoids
+ * introducing a new cross-flow direction at permeability jumps.
+ */
+template<class Scalar, int dim>
+Dune::FieldVector<Scalar, dim>
+limitGradientToBounds(
+    Scalar cellValue,
+    const Dune::FieldVector<Scalar, dim>& gradient,
+    std::span<const Dune::FieldVector<Scalar, dim>> vertexOffsets,
+    Scalar lower,
+    Scalar upper)
+{
+    Dune::FieldVector<Scalar, dim> limited = gradient;
+    if (!std::isfinite(cellValue) || !std::isfinite(lower)
+        || !std::isfinite(upper) || lower > cellValue || upper < cellValue) {
+        return Dune::FieldVector<Scalar, dim>(Scalar{0});
+    }
+    for (int d = 0; d < dim; ++d) {
+        if (!std::isfinite(gradient[d])) {
+            return Dune::FieldVector<Scalar, dim>(Scalar{0});
+        }
+    }
+
+    Scalar factor = Scalar{1};
+    for (const auto& offset : vertexOffsets) {
+        const Scalar increment = gradient * offset;
+        if (!std::isfinite(increment)) {
+            return Dune::FieldVector<Scalar, dim>(Scalar{0});
+        }
+        if (increment > Scalar{0}) {
+            factor = std::min(factor, (upper - cellValue) / increment);
+        }
+        else if (increment < Scalar{0}) {
+            factor = std::min(factor, (lower - cellValue) / increment);
+        }
+    }
+    limited *= std::clamp(factor, Scalar{0}, Scalar{1});
+    return limited;
 }
 
 /*!

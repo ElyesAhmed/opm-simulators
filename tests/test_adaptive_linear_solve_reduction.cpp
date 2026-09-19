@@ -178,15 +178,22 @@ BOOST_AUTO_TEST_CASE(EstimatorForcingHonoursConfiguredMaximum)
     BOOST_CHECK_CLOSE(*target, rmax, 1e-10);
 }
 
-BOOST_AUTO_TEST_CASE(EstimatorForcingUsesCheapSolveGuard)
+BOOST_AUTO_TEST_CASE(EstimatorForcingIgnoresCheapSolveGuard)
 {
     AdaptiveLinearSolveReduction<double> a(true, gamma_, rmin, rmax,
                                             /*min_iterations=*/10);
     a.reset();
-    BOOST_REQUIRE(a.forcingTermFromEstimator(10.0, 1.0, 0.1).has_value());
+    const auto expected = a.forcingTermFromEstimator(10.0, 1.0, 0.1);
+    BOOST_REQUIRE(expected.has_value());
 
+    // The minimum-iteration guard belongs to Eisenstat--Walker.  Criteria_alg
+    // must continue to return its estimator-derived target after a cheap
+    // solve, otherwise the controller alternates loose and forced-strict
+    // solves rather than enforcing the requested estimator inequality.
     a.recordLinearIterations(4);
-    BOOST_CHECK(a.forcingTermFromEstimator(10.0, 1.0, 0.1) == std::nullopt);
+    const auto afterCheapSolve = a.forcingTermFromEstimator(10.0, 1.0, 0.1);
+    BOOST_REQUIRE(afterCheapSolve.has_value());
+    BOOST_CHECK_CLOSE(*afterCheapSolve, *expected, 1e-10);
 
     a.recordLinearIterations(12);
     BOOST_REQUIRE(a.forcingTermFromEstimator(10.0, 1.0, 0.1).has_value());

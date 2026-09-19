@@ -95,17 +95,16 @@ BOOST_AUTO_TEST_CASE(NewtonStopNeedsMaterialBalance)
     BOOST_CHECK(!newtonConverged(qnan, etaSp, etaTime, 1e-9, t));
 }
 
-BOOST_AUTO_TEST_CASE(LinearStopRelativeToLinearizationError)
+BOOST_AUTO_TEST_CASE(LinearStopRelativeToDiscretizationError)
 {
     T t;
     t.GammaAlg = 0.1;
-    BOOST_CHECK(linearConverged(0.05, 1.0, t));   // 0.05 <= 0.1
-    BOOST_CHECK(!linearConverged(0.5, 1.0, t));
-    // target loose early (eta_lin ~ eta_lin_prev) and tight late
-    const double loose = linearSolveTarget(1.0, 1.0, t, 1e-4, 0.1);
-    const double tight = linearSolveTarget(1e-3, 1.0, t, 1e-4, 0.1);
-    BOOST_CHECK_CLOSE(loose, 0.1, 1e-9);          // clamped to redMax
-    BOOST_CHECK_CLOSE(tight, 1e-4, 1e-9);         // clamped to redMin
+    BOOST_CHECK(linearConverged(0.15, 2.0, 1.0, t));
+    BOOST_CHECK(!linearConverged(0.5, 2.0, 1.0, t));
+    const double loose = linearSolveTarget(1.0, 2.0, 1.0, t, 1e-4, 0.1);
+    const double tight = linearSolveTarget(1.0e4, 2.0, 1.0, t, 1e-4, 0.1);
+    BOOST_CHECK_CLOSE(loose, 0.1, 1e-9);
+    BOOST_CHECK_CLOSE(tight, 1e-4, 1e-9);
 }
 
 BOOST_AUTO_TEST_CASE(SubProblemBranching)
@@ -147,7 +146,7 @@ BOOST_AUTO_TEST_CASE(NewtonConvergenceTable)
     for (int k = 1; k <= 8; ++k) {
         const double etaAlg = 0.05 * etaLin;               // inexact solve residue
         const double mb     = 2.0e-2 * std::pow(0.05, k);  // material balance -> 0
-        const bool linOk    = linearConverged(etaAlg, etaLin, t);
+        const bool linOk    = linearConverged(etaAlg, etaSp, etaTime, t);
         const bool newtOk   = newtonConverged(etaLin, etaSp, etaTime, mb, t);
         if (newtOk && newtonStopK < 0)
             newtonStopK = k;

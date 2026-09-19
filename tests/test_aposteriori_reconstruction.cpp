@@ -30,6 +30,7 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 using namespace Opm::APosteriori;
@@ -56,12 +57,15 @@ BOOST_AUTO_TEST_CASE(EquilibrationIndicatorHasExpectedScaling)
 
 BOOST_AUTO_TEST_CASE(NeumannMeanPolicySeparatesCompatibilityDefect)
 {
-    constexpr double darcy = 5.0;
-    constexpr double equilibration = 2.0;
+    constexpr std::array<double, 2> darcy{3.0, 0.0};
+    constexpr std::array<double, 2> orthogonalEq{0.0, 4.0};
+    constexpr std::array<double, 2> alignedEq{4.0, 0.0};
     BOOST_CHECK_EQUAL(
-        spatialIndicatorWithMeanPolicy(darcy, equilibration, false), 7.0);
+        componentwiseCombinedIndicator(darcy, orthogonalEq, false), 5.0);
     BOOST_CHECK_EQUAL(
-        spatialIndicatorWithMeanPolicy(darcy, equilibration, true), darcy);
+        componentwiseCombinedIndicator(darcy, alignedEq, false), 7.0);
+    BOOST_CHECK_EQUAL(
+        componentwiseCombinedIndicator(darcy, orthogonalEq, true), 3.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -141,8 +145,55 @@ BOOST_AUTO_TEST_CASE(TaylorVertexAverageReproducesAffineField)
         vertexAverage += taylorExtrapolate<double, 3>(
             cellValue, gradient, offset);
     }
+
     vertexAverage /= static_cast<double>(centres.size());
     BOOST_CHECK_CLOSE(vertexAverage, intercept + gradient * vertex, 1e-10);
+}
+
+BOOST_AUTO_TEST_CASE(GradientLimiterPreservesAdmissibleAffineGradient)
+{
+    const V3 gradient{2.0, -1.0, 0.5};
+    const std::vector<V3> offsets = {
+        {0.5, 0.5, 0.5}, {-0.5, -0.5, -0.5}
+    };
+    const auto limited = limitGradientToBounds<double, 3>(
+        10.0, gradient, offsets, 8.0, 12.0);
+    for (int i = 0; i < 3; ++i) {
+        BOOST_CHECK_CLOSE(limited[i], gradient[i], 1e-12);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(GradientLimiterClipsTaylorOvershoot)
+{
+    const V3 gradient{20.0, 0.0, 0.0};
+    const std::vector<V3> offsets = {
+        {0.5, 0.0, 0.0}, {-0.5, 0.0, 0.0}
+    };
+    const auto limited = limitGradientToBounds<double, 3>(
+        10.0, gradient, offsets, 8.0, 12.0);
+    BOOST_CHECK_CLOSE(limited[0], 4.0, 1e-12);
+    for (const auto& offset : offsets) {
+        const double value = taylorExtrapolate<double, 3>(
+            10.0, limited, offset);
+        BOOST_CHECK(value >= 8.0);
+        BOOST_CHECK(value <= 12.0);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(LSGradientIgnoresNonFiniteConnections)
+{
+    const V3 expected{3.0, -2.0, 0.0};
+    const std::vector<V3> offsets = {
+        {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}
+    };
+    const std::vector<double> values = {
+        8.0, 3.0, std::numeric_limits<double>::quiet_NaN()
+    };
+    const auto gradient = leastSquaresGradient<double, 3>(
+        5.0, values, offsets);
+    BOOST_CHECK_CLOSE(gradient[0], expected[0], 1e-7);
+    BOOST_CHECK_CLOSE(gradient[1], expected[1], 1e-7);
+    BOOST_CHECK_SMALL(gradient[2], tol);
 }
 
 // ---------------------------------------------------------------------------
@@ -386,4 +437,211 @@ BOOST_AUTO_TEST_CASE(WeightedStarNormScaling)
     const double vol = 8.0;
     const double got = weightedStarNorm<double, 3>(iv, DkPow, vol);
     BOOST_CHECK_CLOSE(got, DkPow * std::sqrt(vol) * 2.5, tol);
+}
+
+BOOST_AUTO_TEST_CASE(ComponentMobilityIncludesBlackOilMixing)
+{
+    // Two conserved components (oil, gas), three canonical phase slots
+    // (water is inactive).  C includes b_o, R_v b_g, R_s b_o, b_g.
+    const std::array<std::array<double, 3>, 2> C{{
+        {{0.0, 2.0, 0.5}},
+        {{0.0, 3.0, 4.0}}
+    }};
+    const std::array<double, 3> mobility{{0.0, 5.0, 7.0}};
+    const auto L = componentMobilityMatrix<double, 2, 3>(C, mobility, 0.0);
+
+    BOOST_CHECK_CLOSE(L[0][0], 21.75, tol);
+    BOOST_CHECK_CLOSE(L[0][1], 44.0, tol);
+    BOOST_CHECK_CLOSE(L[1][0], 44.0, tol);
+    BOOST_CHECK_CLOSE(L[1][1], 157.0, tol);
+}
+
+BOOST_AUTO_TEST_CASE(ComponentMobilityCholeskyProducesInverseEnergy)
+{
+    const std::array<std::array<double, 2>, 2> C{{
+        {{1.0, 0.0}},
+        {{0.0, 1.0}}
+    }};
+    const std::array<double, 2> mobility{{3.0, 4.0}};
+    const auto L = componentMobilityMatrix<double, 2, 2>(C, mobility, 0.0);
+    const auto lower = choleskyLower<double, 2>(L);
+    const auto transformed =
+        solveLower<double, 2>(lower, std::array<double, 2>{{6.0, 8.0}});
+
+    // z^T L^{-1} z = 6^2/3 + 8^2/4 = 28.
+    BOOST_CHECK_CLOSE(transformed[0] * transformed[0]
+                      + transformed[1] * transformed[1],
+                      28.0, tol);
+}
+
+BOOST_AUTO_TEST_CASE(ComponentMobilityCorrelatedInverseEnergy)
+{
+    const std::array<std::array<double, 2>, 2> C{{
+        {{1.0, 1.0}},
+        {{0.0, 1.0}}
+    }};
+    const std::array<double, 2> mobility{{2.0, 3.0}};
+    const auto L = componentMobilityMatrix<double, 2, 2>(C, mobility, 0.0);
+    const auto lower = choleskyLower<double, 2>(L);
+    const std::array<double, 2> defect{{4.0, -1.0}};
+    const auto transformed = solveLower<double, 2>(lower, defect);
+
+    // L = [5 3; 3 3], L^-1 = [0.5 -0.5; -0.5 5/6].
+    const double expected = 0.5 * defect[0] * defect[0]
+        - defect[0] * defect[1]
+        + (5.0 / 6.0) * defect[1] * defect[1];
+    BOOST_CHECK_CLOSE(transformed[0] * transformed[0]
+                      + transformed[1] * transformed[1],
+                      expected, tol);
+}
+
+BOOST_AUTO_TEST_CASE(ComponentMobilityRegularisationIsScaleInvariant)
+{
+    const std::array<std::array<double, 2>, 2> C{{
+        {{1.0, 0.4}},
+        {{0.3, 2.0}}
+    }};
+    const std::array<double, 2> mobility{{1e-10, 4.0}};
+    const std::array<double, 2> defect{{2.0, -3.0}};
+    constexpr double floorFraction = 1e-3;
+
+    const auto L = componentMobilityMatrix<double, 2, 2>(
+        C, mobility, floorFraction);
+    const auto transformed = solveLower<double, 2>(
+        choleskyLower<double, 2>(L), defect);
+    const double energy = transformed[0] * transformed[0]
+        + transformed[1] * transformed[1];
+
+    constexpr std::array<double, 2> scale{{1000.0, 0.01}};
+    auto scaledC = C;
+    auto scaledDefect = defect;
+    for (std::size_t component = 0; component < scale.size(); ++component) {
+        scaledDefect[component] *= scale[component];
+        for (double& value : scaledC[component]) {
+            value *= scale[component];
+        }
+    }
+    const auto scaledL = componentMobilityMatrix<double, 2, 2>(
+        scaledC, mobility, floorFraction);
+    const auto scaledTransformed = solveLower<double, 2>(
+        choleskyLower<double, 2>(scaledL), scaledDefect);
+    const double scaledEnergy =
+        scaledTransformed[0] * scaledTransformed[0]
+        + scaledTransformed[1] * scaledTransformed[1];
+
+    BOOST_CHECK_CLOSE(scaledEnergy, energy, 1e-8);
+}
+
+BOOST_AUTO_TEST_CASE(ComponentMobilityFloorControlsPhaseDegeneracy)
+{
+    const std::array<std::array<double, 2>, 2> C{{
+        {{1.0, 0.0}},
+        {{0.0, 1.0}}
+    }};
+    const std::array<double, 2> mobility{{0.0, 2.0}};
+    const auto L = componentMobilityMatrix<double, 2, 2>(C, mobility, 1e-3);
+    const auto transformed = solveLower<double, 2>(
+        choleskyLower<double, 2>(L), std::array<double, 2>{{1.0, 1.0}});
+
+    BOOST_CHECK(std::isfinite(transformed[0]));
+    BOOST_CHECK(std::isfinite(transformed[1]));
+    BOOST_CHECK_CLOSE(L[0][0], 2e-3, 1e-10);
+    BOOST_CHECK_CLOSE(L[1][1], 2.002, 1e-10);
+}
+
+BOOST_AUTO_TEST_CASE(ComponentMobilityActiveThreePhaseInverseEnergy)
+{
+    const std::array<std::array<double, 3>, 3> C{{
+        {{1.0, 0.0, 0.0}},
+        {{0.0, 1.0, 0.0}},
+        {{0.0, 0.0, 1.0}}
+    }};
+    const std::array<double, 3> mobility{{2.0, 3.0, 5.0}};
+    const std::array<double, 3> defect{{2.0, 3.0, 5.0}};
+    const auto L = componentMobilityMatrix<double, 3, 3>(C, mobility, 0.0);
+    const auto transformed = solveLower<double, 3>(
+        choleskyLower<double, 3>(L), defect);
+    const double energy = transformed[0] * transformed[0]
+        + transformed[1] * transformed[1]
+        + transformed[2] * transformed[2];
+
+    // z^T L^-1 z = 2^2/2 + 3^2/3 + 5^2/5 = 10.
+    BOOST_CHECK_CLOSE(energy, 10.0, tol);
+}
+
+BOOST_AUTO_TEST_CASE(ComponentMobilityInRangeDefectIsFloorStable)
+{
+    // The gas phase has disappeared. The two active columns span e_w and
+    // (0,1,2), and the chosen defect lies in that physical flux range.
+    const std::array<std::array<double, 3>, 3> C{{
+        {{1.0, 0.0, 0.0}},
+        {{0.0, 1.0, 0.0}},
+        {{0.0, 2.0, 1.0}}
+    }};
+    const std::array<double, 3> mobility{{4.0, 9.0, 0.0}};
+    const std::array<double, 3> defect{{1.0, 1.0, 2.0}};
+    auto energy = [&](double floorFraction) {
+        const auto L = componentMobilityMatrix<double, 3, 3>(
+            C, mobility, floorFraction);
+        const auto transformed = solveLower<double, 3>(
+            choleskyLower<double, 3>(L), defect);
+        return transformed[0] * transformed[0]
+            + transformed[1] * transformed[1]
+            + transformed[2] * transformed[2];
+    };
+
+    const double coarseFloor = energy(1e-6);
+    const double fineFloor = energy(1e-10);
+    const double limitingEnergy = 1.0 / 4.0 + 1.0 / 9.0;
+    BOOST_CHECK_CLOSE(fineFloor, limitingEnergy, 1e-5);
+    BOOST_CHECK_CLOSE(coarseFloor, fineFloor, 1e-3);
+}
+
+BOOST_AUTO_TEST_CASE(ComponentMobilityOutOfRangeDefectIsFloorDominated)
+{
+    // With the gas phase absent, (0,-2,1) is orthogonal to both active phase
+    // columns. Its regularised inverse energy must diverge as the artificial
+    // mobility floor is removed. This is the failure mode a componentwise
+    // reconstruction can trigger when its defect does not remain in range(C).
+    const std::array<std::array<double, 3>, 3> C{{
+        {{1.0, 0.0, 0.0}},
+        {{0.0, 1.0, 0.0}},
+        {{0.0, 2.0, 1.0}}
+    }};
+    const std::array<double, 3> mobility{{4.0, 9.0, 0.0}};
+    const std::array<double, 3> defect{{0.0, -2.0, 1.0}};
+    auto energy = [&](double floorFraction) {
+        const auto L = componentMobilityMatrix<double, 3, 3>(
+            C, mobility, floorFraction);
+        const auto transformed = solveLower<double, 3>(
+            choleskyLower<double, 3>(L), defect);
+        return transformed[0] * transformed[0]
+            + transformed[1] * transformed[1]
+            + transformed[2] * transformed[2];
+    };
+
+    const double coarseFloor = energy(1e-6);
+    const double fineFloor = energy(1e-10);
+    BOOST_CHECK(std::isfinite(coarseFloor));
+    BOOST_CHECK(std::isfinite(fineFloor));
+    BOOST_CHECK_GT(fineFloor, 1000.0 * coarseFloor);
+}
+
+BOOST_AUTO_TEST_CASE(ComponentMobilityZeroStateAcceptsOnlyZeroDefect)
+{
+    const std::array<std::array<double, 3>, 3> C{{
+        {{1.0, 0.0, 0.0}},
+        {{0.0, 1.0, 0.0}},
+        {{0.0, 0.0, 1.0}}
+    }};
+    const std::array<double, 3> mobility{{0.0, 0.0, 0.0}};
+    const auto L = componentMobilityMatrix<double, 3, 3>(C, mobility, 1e-6);
+    const auto transformed = solveLower<double, 3>(
+        choleskyLower<double, 3>(L), std::array<double, 3>{{0.0, 0.0, 0.0}});
+
+    for (std::size_t i = 0; i < 3; ++i) {
+        BOOST_CHECK_EQUAL(L[i][i], 0.0);
+        BOOST_CHECK(std::isfinite(transformed[i]));
+        BOOST_CHECK_EQUAL(transformed[i], 0.0);
+    }
 }

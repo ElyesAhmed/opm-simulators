@@ -371,7 +371,9 @@ private:
 
     //! eta_lin and max(eta_sp,eta_time) at the most recent Newton iterate, for
     //! the Criteria_alg linear-solve forcing term
-    //! (--enable-aposteriori-linear-tolerance). Reset to 0 at each timestep init.
+    //! (--enable-aposteriori-linear-tolerance). The last converged value is
+    //! retained across timesteps to seed the first linear solve of the next
+    //! fixed/adaptive step; it starts at zero before the first simulation step.
     Scalar aposteriori_eta_lin_prev_     {0};
     Scalar aposteriori_max_sptime_prev_  {0};
 
@@ -379,6 +381,11 @@ private:
     //! after the allowed re-solves: the increment is kept but a posteriori
     //! Newton acceptance is forbidden for that iteration.
     bool aposteriori_alg_unmet_ {false};
+    //! A failed endpoint-verified Criteria_alg check forces the next Newton
+    //! linear solve to the configured strict reduction. This prevents an
+    //! unmet algebraic target from repeatedly starving Newton with a loose
+    //! estimator-predicted tolerance.
+    bool aposteriori_force_strict_linear_ {false};
     //! True when initialLinearization() has already applied the well Schur
     //! complement so the Newton solve must not apply it a second time.
     bool aposteriori_well_linearized_early_ {false};

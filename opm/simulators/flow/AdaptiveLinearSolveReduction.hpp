@@ -168,12 +168,12 @@ public:
      *        max(eta_sp,eta_time)), unlike eta_lin which is much smaller near
      *        Newton convergence.
      *
-     *        A stricter solve also satisfies Criteria_alg.  The request is
-     *        therefore bounded by the same cost and Newton-stability guards as
-     *        the Eisenstat--Walker controller: keep the static tolerance after
-     *        an already-cheap solve, never ask for more accuracy than
-     *        --linear-solver-reduction, and never loosen beyond the configured
-     *        adaptive reduction maximum.
+     *        A stricter solve also satisfies Criteria_alg, but an iteration-
+     *        count guard from the unrelated Eisenstat--Walker controller must
+     *        not replace this estimator criterion. Doing so produces an
+     *        alternating loose/strict sequence whenever a successful loose
+     *        solve is cheap. The request is therefore bounded only by the
+     *        configured strict floor and adaptive ceiling.
      *
      * \param etaAlg0     eta_alg of the un-reduced residual b (rAlg = b).
      * \param maxSpTime   max(eta_sp, eta_time) at the most recent iterate.
@@ -185,12 +185,6 @@ public:
     forcingTermFromEstimator(Scalar etaAlg0, Scalar maxSpTime, Scalar gammaAlg)
     {
         if (!enabled_)
-            return std::nullopt;
-
-        // A stricter solve still satisfies Criteria_alg.  If the previous
-        // solve was already cheap, loosening its tolerance cannot save useful
-        // work but can substantially degrade the Newton correction.
-        if (prev_iterations_ < min_iterations_)
             return std::nullopt;
 
         // Without a valid discretization-error budget there is no estimator
@@ -208,6 +202,9 @@ public:
     //! (starting point for an enforcement re-solve).
     Scalar lastTarget() const { return prev_target_; }
     Scalar reductionMin() const { return reduction_min_; }
+    Scalar reductionMax() const { return reduction_max_; }
+    int previousIterations() const { return prev_iterations_; }
+    int minimumIterations() const { return min_iterations_; }
 
     //! \brief Max-norm of a per-component residual measure vector.
     static Scalar norm(const std::vector<Scalar>& v)
